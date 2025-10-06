@@ -16,6 +16,7 @@ import { Device as BleDevice } from 'react-native-ble-plx';
 
 import { AddDevice, addDevice, getLayout } from '@/api/devics';
 import Toast from '@/components/Toast';
+import { DATA_CHAR_UUID } from '@/constants';
 import bleManager from '@/services/bleManager';
 import { getBleDevice, storeBleDevice } from '@/utils/storage';
 import { loadWifi, saveWifi } from '@/utils/wifiCreds';
@@ -144,7 +145,8 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
 
     const text = `WIFI:${wifiSSID};${wifiPassword}`;
     console.log('Send to ESP:', text);
-    await bleManager.sendData(device, text, serviceIds[0]);
+    //await bleManager.sendData(device, text, serviceIds[0]);
+    await bleManager.safeWrite({device, serviceUUID: serviceIds[0], charUUID: DATA_CHAR_UUID, base64Payload: Buffer.from(text).toString("base64")})
 
   };
 

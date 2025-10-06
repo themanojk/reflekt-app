@@ -183,7 +183,7 @@ class BLEManagerService {
     charUUID = DATA_CHAR_UUID,
     base64Payload,
   }: {
-    device: any;
+    device: Device;
     serviceUUID: string;
     charUUID: string;
     base64Payload: string; // e.g., btoa("REST:")
