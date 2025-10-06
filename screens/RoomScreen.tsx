@@ -1,5 +1,7 @@
 import { DatabaseDevice, fetchDevicesByRoom } from '@/api/devics';
 import { ROOM_ICONS } from '@/constants';
+import type { RootStackParamList } from '@/constants/types';
+import { RouteProp } from '@react-navigation/native';
 import { ChevronLeft, Plus } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
 import {
@@ -12,8 +14,13 @@ import {
   View,
 } from 'react-native';
 
-export default function RoomScreen({ route, navigation }: any) {
-  const { roomId, roomName, roomIcon } = route.params;
+type Props = {
+  route: RouteProp<RootStackParamList, 'Room'>;
+  navigation: any;
+};
+
+export default function RoomScreen({ route, navigation }: Props) {
+  const { roomId, roomName, roomIcon, devices } = route.params;
   const [switchboards, setSwitchboards] = useState<DatabaseDevice[]>([]);
   const [loading, setLoading] = useState(false);
   const [toggleAnimations, setToggleAnimations] = useState<Map<string, Animated.Value>>(new Map());
@@ -61,6 +68,14 @@ export default function RoomScreen({ route, navigation }: any) {
   const loadSwitchboards = async () => {
     setLoading(true);
     const data = await fetchDevicesByRoom(roomId);
+    const deviceObj: any = {};
+    devices.forEach(device => {
+      deviceObj[device.id] = true
+    })
+
+    data.forEach(item => {
+      item.is_online = deviceObj[item.device_id] ?? false
+    })
     setSwitchboards(data);
     setLoading(false);
   };
@@ -91,101 +106,110 @@ export default function RoomScreen({ route, navigation }: any) {
         </View>
 
         <View style={styles.switchboardsList}>
-          {switchboards.map((switchboard) => (
-            <TouchableOpacity
-              key={switchboard._id}
-              style={styles.switchboardCard}
-              onPress={() =>
-                navigation.navigate('Switchboard', {
-                  switchboardId: switchboard._id,
-                  switchboardName: switchboard.title,
-                  deviceId: switchboard.device_id,
-                  roomIcon: roomIcon,
-                  roomId: roomId
-                })
-              }
-            >
-              <View
-                style={[styles.switchboardIcon]}
-              >
-                <IconComponent size={24} color="#5b8def" strokeWidth={2} />
-              </View>
-              <View style={styles.switchboardInfo}>
-                <Text style={styles.switchboardName}>{switchboard.title}</Text>
-                <View style={styles.statusRow}>
-                  <View style={styles.onlineDot} />
-                  <Text style={styles.onlineText}>Online</Text>
-                </View>
-              </View>
-              <TouchableOpacity
-                style={styles.toggleContainer}
-                onPress={(e) => {
-                  e.stopPropagation();
-                  togglePower(switchboard._id);
-                }}
-                activeOpacity={0.8}
-              >
-                <Animated.View
-                  style={[
-                    styles.toggleButton,
-                    {
-                      backgroundColor: toggleAnimations.get(switchboard._id)?.interpolate({
-                        inputRange: [0, 1],
-                        outputRange: ['rgba(51, 65, 85, 0.4)', 'rgba(91, 141, 239, 0.35)'],
-                      }),
-                      borderColor: toggleAnimations.get(switchboard._id)?.interpolate({
-                        inputRange: [0, 1],
-                        outputRange: ['rgba(148, 163, 184, 0.2)', 'rgba(91, 141, 239, 0.5)'],
-                      }),
-                    },
-                  ]}
+          {switchboards.map((switchboard) => 
+            {
+              return (
+                <TouchableOpacity
+                  key={switchboard._id}
+                  style={styles.switchboardCard}
+                  onPress={() =>
+                    navigation.navigate('Switchboard', {
+                      switchboardId: switchboard._id,
+                      switchboardName: switchboard.title,
+                      deviceId: switchboard.device_id,
+                      roomIcon: roomIcon,
+                      roomId: roomId,
+                      status: switchboard.is_online
+                    })
+                  }
                 >
-                  <Animated.View
-                    style={[
-                      styles.toggleThumb,
-                      {
-                        transform: [
-                          {
-                            translateX: toggleAnimations.get(switchboard._id)?.interpolate({
-                              inputRange: [0, 1],
-                              outputRange: [0, 22],
-                            }) || 0,
-                          },
-                        ],
-                        backgroundColor: toggleAnimations.get(switchboard._id)?.interpolate({
-                          inputRange: [0, 1],
-                          outputRange: ['rgba(148, 163, 184, 0.9)', '#5b8def'],
-                        }),
-                      },
-                    ]}
+                  <View
+                    style={[styles.switchboardIcon]}
+                  >
+                    <IconComponent size={24} color="#5b8def" strokeWidth={2} />
+                  </View>
+                  <View style={styles.switchboardInfo}>
+                    <Text style={styles.switchboardName}>{switchboard.title}</Text>
+                    {switchboard.is_online && <View style={styles.statusRow}>
+                      <View style={styles.onlineDot} />
+                      <Text style={styles.onlineText}>Online</Text>
+                    </View>}
+                    {!switchboard.is_online && <View style={styles.statusRow}>
+                      <View style={styles.offlineDot} />
+                      <Text style={styles.offlineText}>Offline</Text>
+                    </View>}
+                  </View>
+                  <TouchableOpacity
+                    style={styles.toggleContainer}
+                    onPress={(e) => {
+                      e.stopPropagation();
+                      togglePower(switchboard._id);
+                    }}
+                    activeOpacity={0.8}
                   >
                     <Animated.View
                       style={[
-                        styles.thumbGloss,
+                        styles.toggleButton,
                         {
-                          opacity: toggleAnimations.get(switchboard._id)?.interpolate({
+                          backgroundColor: toggleAnimations.get(switchboard._id)?.interpolate({
                             inputRange: [0, 1],
-                            outputRange: [0.3, 0.6],
+                            outputRange: ['rgba(51, 65, 85, 0.4)', 'rgba(91, 141, 239, 0.35)'],
+                          }),
+                          borderColor: toggleAnimations.get(switchboard._id)?.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: ['rgba(148, 163, 184, 0.2)', 'rgba(91, 141, 239, 0.5)'],
                           }),
                         },
                       ]}
-                    />
-                  </Animated.View>
-                  <Animated.View
-                    style={[
-                      styles.toggleGlow,
-                      {
-                        opacity: toggleAnimations.get(switchboard._id)?.interpolate({
-                          inputRange: [0, 1],
-                          outputRange: [0, 0.6],
-                        }),
-                      },
-                    ]}
-                  />
-                </Animated.View>
-              </TouchableOpacity>
-            </TouchableOpacity>
-          ))}
+                    >
+                      <Animated.View
+                        style={[
+                          styles.toggleThumb,
+                          {
+                            transform: [
+                              {
+                                translateX: toggleAnimations.get(switchboard._id)?.interpolate({
+                                  inputRange: [0, 1],
+                                  outputRange: [0, 22],
+                                }) || 0,
+                              },
+                            ],
+                            backgroundColor: toggleAnimations.get(switchboard._id)?.interpolate({
+                              inputRange: [0, 1],
+                              outputRange: ['rgba(148, 163, 184, 0.9)', '#5b8def'],
+                            }),
+                          },
+                        ]}
+                      >
+                        <Animated.View
+                          style={[
+                            styles.thumbGloss,
+                            {
+                              opacity: toggleAnimations.get(switchboard._id)?.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: [0.3, 0.6],
+                              }),
+                            },
+                          ]}
+                        />
+                      </Animated.View>
+                      <Animated.View
+                        style={[
+                          styles.toggleGlow,
+                          {
+                            opacity: toggleAnimations.get(switchboard._id)?.interpolate({
+                              inputRange: [0, 1],
+                              outputRange: [0, 0.6],
+                            }),
+                          },
+                        ]}
+                      />
+                    </Animated.View>
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              )
+            }
+          )}
 
           <TouchableOpacity
             style={styles.addButton}
@@ -291,6 +315,17 @@ const styles = StyleSheet.create({
   onlineText: {
     fontSize: 13,
     color: '#10b981',
+    fontWeight: '500',
+  },
+  offlineDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#b91010ff',
+  },
+  offlineText: {
+    fontSize: 13,
+    color: '#b91010ff',
     fontWeight: '500',
   },
   addButton: {

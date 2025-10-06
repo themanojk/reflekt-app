@@ -1,7 +1,9 @@
 import { getLayout, sendCommandOverWifi } from '@/api/devics';
 import { DATA_CHAR_UUID, ROOM_ICONS } from '@/constants';
+import { RootStackParamList } from '@/constants/types';
 import bleManager from '@/services/bleManager';
 import { loadWifi, saveWifi } from '@/utils/wifiCreds';
+import { RouteProp } from '@react-navigation/native';
 import {
   ChevronLeft,
   Lightbulb,
@@ -47,8 +49,13 @@ const COLOR_PALETTE = [
   'rgb(251, 146, 60)',
 ];
 
-export default function SwitchboardScreen({ route, navigation }: any) {
-  const { switchboardName, deviceId, roomIcon } = route.params;
+type Props = {
+  route: RouteProp<RootStackParamList, 'Switchboard'>;
+  navigation: any;
+};
+
+export default function SwitchboardScreen({ route, navigation }: Props) {
+  const { switchboardName, deviceId, roomIcon, status } = route.params;
   const [devices, setDevices] = useState<Device[]>([]);
   const [activeDevice, setActiveDevice] = useState<BleDevice>();
   const [services, setServices] = useState<string[]>([]);
@@ -61,13 +68,18 @@ export default function SwitchboardScreen({ route, navigation }: any) {
   const [wifiSSID, setWifiSSID] = useState('');
   const [wifiPassword, setWifiPassword] = useState('');
   const [pins, setPins] = useState<any>({})
+  const [isOnline, setIsOnline] = useState<boolean>(status);
+
+  useEffect(() => {
+    setIsOnline(status);
+  }, [status]);
 
   useEffect(() => {
     loadSwitchboardData();
   }, [deviceId]);
 
   useEffect(() => {
-    if (!activeDevice || !services.length) return;
+    if (!activeDevice || !services.length || !isOnline) return;
     const onReceived = (data: any) => {
       console.log('data', data);
       const pinDataArray = data.split(',');
@@ -85,7 +97,7 @@ export default function SwitchboardScreen({ route, navigation }: any) {
     };
 
     bleManager.subscribeToData(activeDevice, services[0], onReceived, onError);
-  }, [activeDevice, services]);
+  }, [activeDevice, services, isOnline]);
 
   useEffect(() => {
     if (!pins || Object.keys(pins).length === 0) return;
@@ -171,16 +183,22 @@ export default function SwitchboardScreen({ route, navigation }: any) {
   const getBleConnection = async (macAddress: string) => {
     try {
       const already = await bleManager.getAlreadyConnected();
-      let connected: BleDevice | undefined =
-        already.find(d => d.id === macAddress) || undefined;
+      let connected: BleDevice | null =
+        already.find(d => d.id === macAddress) || null;
       console.log('is connected', connected);
 
       if (!connected) {
-        connected = await bleManager.connectAndDiscover(macAddress);
-        console.debug(connected);
+        console.debug("Not Connected. Retrying connection");
+        connected = await bleManager.connectSafely(deviceId, {
+          retries: 2,
+          connectTimeoutMs: 5000,
+          autoConnect: false,
+        });
+        console.log("Connection status", connected);
       }
 
       if(connected) {
+        setIsOnline(true);
         setActiveDevice(connected);
         const serviceIds = await bleManager.getCustomServiceId(connected);
         subscribeToDevice(connected, serviceIds[0]);
@@ -366,8 +384,16 @@ export default function SwitchboardScreen({ route, navigation }: any) {
           <View style={styles.boardInfo}>
             <Text style={styles.boardName}>{switchboardName || 'Main Panel'}</Text>
             <View style={styles.boardStatus}>
-              <View style={styles.onlineDot} />
-              <Text style={styles.onlineText}>Online</Text>
+              {
+                isOnline && <><View style={styles.onlineDot} />
+                <Text style={styles.onlineText}>Online</Text></>
+              }
+
+              {
+                !isOnline && <><View style={styles.offlineDot} />
+                <Text style={styles.offlineText}>Offline</Text></>
+              }
+              
               <Text style={styles.separator}>|</Text>
               <View style={styles.wifiContainer}>
                 <Wifi size={14} color="#5b8def" strokeWidth={2} />
@@ -578,6 +604,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#10b981',
     fontWeight: '600',
+  },
+  offlineDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#b91010ff',
+  },
+  offlineText: {
+    fontSize: 14,
+    color: '#b91010ff',
+    fontWeight: 600,
   },
   separator: {
     fontSize: 14,

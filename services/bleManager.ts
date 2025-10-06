@@ -1,7 +1,9 @@
+import { sleep } from '@/utils/general';
 import { AppState, AppStateStatus, Platform } from 'react-native';
 import {
   BleManager,
   Characteristic,
+  ConnectionPriority,
   Device,
   ScanCallbackType,
   ScanMode
@@ -13,7 +15,17 @@ import {
 } from 'react-native-permissions';
 import { DATA_CHAR_UUID, ESP_SERVICE_UUID, STANDARD_SERVICE_UUIDS } from '../constants';
 
+
 const Buffer = require('buffer').Buffer;
+
+type ConnectOpts = {
+  serviceUUIDs?: string[]; // for scan filtering (better than id on iOS)
+  connectTimeoutMs?: number; // per-attempt
+  scanTimeoutMs?: number;    // pre-scan budget
+  retries?: number;          // retry count on transient errors (e.g., 133)
+  autoConnect?: boolean;     // default false; true only if you know why
+  refreshGatt?: "OnConnected" | "Never";
+};
 
 class BLEManagerService {
   private connectedDeviceIds = new Set<string>();
@@ -42,7 +54,7 @@ class BLEManagerService {
       const ok = Object.values(perms).every(
         status => status === RESULTS.GRANTED,
       );
-      console.log('BLE Response', ok);
+      console.log('BLE Permission Response', ok);
       if (!ok) throw new Error('BLE permissions not granted');
     }
   }
@@ -297,8 +309,9 @@ class BLEManagerService {
           timeout: 5000,
           refreshGatt: "OnConnected",
         });
+        console.log("Device", device)
         const discoveredDevice = await device.discoverAllServicesAndCharacteristics();
-        console.log('✅ Connected and discovered');
+        console.log('Connected and discovered');
 
         this.connectedDeviceIds.add(deviceId);
 
@@ -337,13 +350,86 @@ class BLEManagerService {
   }
 
   cancelDeviceConnection = async (device: Device) => {
+    try {
+      await this.manager.cancelDeviceConnection(device.id);
+    } catch (e) {
+      console.log("error", e)
+    }
+  }
 
+  async connectSafely(
+    deviceId: string,
+    {
+      connectTimeoutMs = 6000,
+      scanTimeoutMs = 4000,
+      retries = 1,
+      autoConnect = false,
+      refreshGatt = Platform.OS === "android" ? "OnConnected" : "Never",
+    }: ConnectOpts = {}
+  ): Promise<Device | null> {
+    // 0) BLE on?
+    const state = await this.manager.state();
+    if (state !== "PoweredOn") {
+      // You may want to prompt the user to enable Bluetooth here
+      return null;
+    }
+
+    // 1) Pre-scan so we don't try connecting to a device that's off
+    const seen = await this.scanForPresence(this.manager, { deviceId, serviceUUIDs: ESP_SERVICE_UUID, timeoutMs: scanTimeoutMs });
+    if (!seen) return null;
+
+    // 2) Connect with retries and proper try/catch
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        await this.manager.cancelDeviceConnection(device.id);
-      } catch (e) {
-        console.log("error", e)
+        const device = await this.manager.connectToDevice(deviceId, {
+          autoConnect,          // prefer false for foreground connects
+          timeout: connectTimeoutMs
+        });
+
+        // 3) MTU / connection priority tweaks (optional)
+        if (Platform.OS === "android") {
+          try { await device.requestMTU(185); } catch {}
+          try { await device.requestConnectionPriority(ConnectionPriority.High); } catch {}
+        }
+
+        // 4) Always discover before any read/write
+        await device.discoverAllServicesAndCharacteristics();
+        return device; // ✅ success
+      } catch (err) {
+        lastErr = err;
+        // Common transient Android errors: 133, 8, 62… small delay then retry
+        await sleep(250 + attempt * 250);
       }
-    
+    }
+    // 5) Give up gracefully
+    console.warn("connectSafely failed:", lastErr);
+    return null;
+  }
+
+async scanForPresence(
+  manager: BleManager,
+  {
+    deviceId,
+      serviceUUIDs,
+      timeoutMs,
+    }: { deviceId: string; serviceUUIDs?: string[]; timeoutMs: number }
+  ): Promise<boolean> {
+    return new Promise<boolean>(resolve => {
+      let done = false;
+      const stop = () => { if (!done) { done = true; manager.stopDeviceScan(); } };
+
+      manager.startDeviceScan(serviceUUIDs ?? null, { allowDuplicates: false }, (_err, dev) => {
+        if (done) return;
+        // On Android, dev.id is the MAC; on iOS it's a UUID—service filter helps.
+        if (dev && (dev.id === deviceId || !deviceId)) {
+          stop();
+          resolve(true);
+        }
+      });
+
+      setTimeout(() => { stop(); resolve(false); }, timeoutMs);
+    });
   }
 }
 

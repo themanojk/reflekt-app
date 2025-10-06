@@ -42,7 +42,7 @@ const SWITCHBOARD_COLORS = [
 ];
 
 export default function HomeScreen({ navigation }: any) {
-  const [scanning, setScanning] = useState(false);
+  const [_scanning, setScanning] = useState(false);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [devices, setDevices] = useState<BleDevice[]>([]);
   const [switchboards, setSwitchboards] = useState<Switchboard[]>([]);
@@ -112,9 +112,7 @@ export default function HomeScreen({ navigation }: any) {
 
   const fetchDevicesDebounced = useDebouncedCallback(
     async (ids: string[]) => {
-      console.log(ids);
       const foundDevices = await fetchDevicesByMac(ids);
-      console.log(foundDevices);
       const nearByDevices: Switchboard[] = []
       foundDevices.forEach(device => {
         
@@ -212,6 +210,7 @@ export default function HomeScreen({ navigation }: any) {
                         roomId: room._id,
                         roomName: room.name,
                         roomIcon: room.icon,
+                        devices: devices
                       })
                     }
                   >

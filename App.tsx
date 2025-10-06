@@ -3,6 +3,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import React from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import type { RootStackParamList } from './constants/types';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import AddRoomScreen from './screens/AddRoomScreen';
 import AddSwitchboardScreen from './screens/AddSwitchboardScreen';
@@ -12,7 +13,7 @@ import ProfileScreen from './screens/ProfileScreen';
 import RoomScreen from './screens/RoomScreen';
 import SwitchboardScreen from './screens/SwitchboardScreen';
 
-const Stack = createNativeStackNavigator();
+const Stack = createNativeStackNavigator<RootStackParamList>();
 
 function Navigation() {
   const { user, loading } = useAuth();
