@@ -2,7 +2,7 @@ import axios from 'axios';
 import { getToken } from '../utils/storage';
 
 const client = axios.create({
-  baseURL: 'http://192.168.0.249:3100', // your API base
+  baseURL: 'https://reflekt.onrender.com', // your API base
   timeout: 10000,
 });
 

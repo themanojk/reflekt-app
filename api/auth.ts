@@ -30,3 +30,7 @@ export async function requestOtp(phone: string): Promise<RequestOTP> {
 export async function verifyOtp(transactionId: string, code: string): Promise<AuthenticatedUser | AuthenticatedFailed> {
   return client.post('/user/verify-otp', {transaction_id: transactionId, code}).then(res => res.data);
 }
+
+export async function getProfile() : Promise<User> {
+  return client.get('/user').then(res => res.data.user);
+}

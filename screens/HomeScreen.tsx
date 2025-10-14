@@ -210,7 +210,8 @@ export default function HomeScreen({ navigation }: any) {
                         roomId: room._id,
                         roomName: room.name,
                         roomIcon: room.icon,
-                        devices: devices
+                        devices: devices,
+                        status: true
                       })
                     }
                   >

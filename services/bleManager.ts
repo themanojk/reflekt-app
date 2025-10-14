@@ -6,7 +6,8 @@ import {
   ConnectionPriority,
   Device,
   ScanCallbackType,
-  ScanMode
+  ScanMode,
+  Subscription
 } from 'react-native-ble-plx';
 import {
   PERMISSIONS,
@@ -26,6 +27,7 @@ type ConnectOpts = {
   autoConnect?: boolean;     // default false; true only if you know why
   refreshGatt?: "OnConnected" | "Never";
 };
+export type Disposer = { remove: () => void };
 
 class BLEManagerService {
   private connectedDeviceIds = new Set<string>();
@@ -160,15 +162,12 @@ class BLEManagerService {
    * Subscribe to incoming data notifications.
    * Returns a subscription you can call .remove() on when you're done.
    */
-  async subscribeToData(
+  subscribeToData(
     device: Device,
     serviceUUID: string,
     onReceive: (data: string) => void,
     onError?: (error: Error) => void,
   ) {
-    if (Platform.OS === 'android') {
-      await device.requestMTU(185); // call before subscribing
-    }
     return device.monitorCharacteristicForService(
       serviceUUID,
       DATA_CHAR_UUID,
@@ -253,6 +252,16 @@ class BLEManagerService {
     } catch (e) {
       console.warn('Error destroying BLE manager', e);
     }
+  }
+
+  onDeviceDisconnected(
+    deviceId: string,
+    cb: (info: { error: Error | null; device: Device | null }) => void
+  ): Disposer {
+    const sub: Subscription = this.manager.onDeviceDisconnected(deviceId, (error, device) => {
+      cb({ error: error ?? null, device: device ?? null });
+    });
+    return { remove: () => sub.remove() };
   }
 
   /**

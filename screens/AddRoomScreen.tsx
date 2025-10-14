@@ -4,19 +4,18 @@ import React, { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView,
-  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import { useAuth } from '../contexts/AuthContext';
 
 const ROOM_ICONS = [
-  { name: 'bed', icon: Home, label: 'Home' },
+  { name: 'home', icon: Home, label: 'Home' },
   { name: 'bed', icon: Bed, label: 'Bedroom' },
   { name: 'coffee', icon: Coffee, label: 'Kitchen' },
   { name: 'tv', icon: Tv, label: 'Living Room' },
@@ -48,9 +47,10 @@ export default function AddRoomScreen({ navigation }: any) {
   };
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    <KeyboardAwareScrollView
+      contentContainerStyle={styles.container}
+      enableOnAndroid
+      extraScrollHeight={16}
     >
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}>
@@ -116,7 +116,7 @@ export default function AddRoomScreen({ navigation }: any) {
           )}
         </TouchableOpacity>
       </ScrollView>
-    </KeyboardAvoidingView>
+    </KeyboardAwareScrollView>
   );
 }
 

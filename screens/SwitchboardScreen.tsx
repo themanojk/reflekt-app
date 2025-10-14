@@ -1,9 +1,10 @@
-import { getLayout, sendCommandOverWifi } from '@/api/devics';
+import { getLayout, sendCommandOverWifi, WifiPayload } from '@/api/devics';
 import { DATA_CHAR_UUID, ROOM_ICONS } from '@/constants';
 import { RootStackParamList } from '@/constants/types';
 import bleManager from '@/services/bleManager';
 import { loadWifi, saveWifi } from '@/utils/wifiCreds';
 import { RouteProp } from '@react-navigation/native';
+import { Buffer } from 'buffer';
 import {
   ChevronLeft,
   Lightbulb,
@@ -53,6 +54,7 @@ type Props = {
   route: RouteProp<RootStackParamList, 'Switchboard'>;
   navigation: any;
 };
+type Disposable = { remove?: () => void; unsubscribe?: () => void };
 
 export default function SwitchboardScreen({ route, navigation }: Props) {
   const { switchboardName, deviceId, roomIcon, status } = route.params;
@@ -70,6 +72,28 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [pins, setPins] = useState<any>({})
   const [isOnline, setIsOnline] = useState<boolean>(status);
 
+  const monitorRef = React.useRef<Disposable | null>(null);
+  const disconnectRef = React.useRef<Disposable | null>(null);
+  const mountedRef = React.useRef(true);
+
+  const IconComponent = ROOM_ICONS[roomIcon] ?? ROOM_ICONS['home'];
+
+  useEffect(() => {
+    return () => {               // on unmount
+      mountedRef.current = false;
+      monitorRef.current?.remove?.();
+      monitorRef.current?.unsubscribe?.();
+      disconnectRef.current?.remove?.();
+      disconnectRef.current?.unsubscribe?.();
+    };
+  }, []);
+
+  const teardownBle = React.useCallback(() => {
+    monitorRef.current?.remove?.();
+    monitorRef.current?.unsubscribe?.();
+    monitorRef.current = null;
+  }, []);
+
   useEffect(() => {
     setIsOnline(status);
   }, [status]);
@@ -80,6 +104,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   useEffect(() => {
     if (!activeDevice || !services.length || !isOnline) return;
+    teardownBle();
+
     const onReceived = (data: any) => {
       console.log('data', data);
       const pinDataArray = data.split(',');
@@ -92,11 +118,43 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       setPins(pinObj);
     };
 
-    const onError = (error: any) => {
-      console.error(error);
+    const onError = (err: any) => {
+      console.warn('BLE monitor error', err?.message || err);
+      teardownBle();
+      if (mountedRef.current) {
+        setIsOnline(false);
+        setServices([]);
+        setActiveDevice(undefined);
+      }
     };
 
-    bleManager.subscribeToData(activeDevice, services[0], onReceived, onError);
+    monitorRef.current = bleManager.subscribeToData(activeDevice, services[0], onReceived, onError) as unknown as Disposable;
+    getCurrentState(activeDevice, services[0]);
+
+    try {
+      // @ts-ignore – many ble managers follow this pattern
+      const dsub = bleManager.onDeviceDisconnected?.(activeDevice.id, () => {
+        teardownBle();
+        if (mountedRef.current) {
+          setIsOnline(false);
+          setServices([]);
+          setActiveDevice(undefined);
+        }
+      }) as Disposable | undefined;
+      if (dsub) {
+        // drop previous disconnect listener
+        disconnectRef.current?.remove?.();
+        disconnectRef.current?.unsubscribe?.();
+        disconnectRef.current = dsub;
+      }
+    } catch {}
+
+    return () => {
+      teardownBle();
+      disconnectRef.current?.remove?.();
+      disconnectRef.current?.unsubscribe?.();
+      disconnectRef.current = null;
+    }
   }, [activeDevice, services, isOnline]);
 
   useEffect(() => {
@@ -113,8 +171,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         changed = true;
         return { ...d, is_on };
       });
-
-      console.log(next);
 
       return changed ? next : prev;
     });
@@ -153,33 +209,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     }
   }
 
-  const subscribeToDevice = async (device: BleDevice, serviceId: string) => {
-    if (!device || !serviceId) return;
-    const onReceived = (data: any) => {
-      console.log('data', data);
-      const text = String(data).trim().replace(/\u0000/g, "");
-      try {
-        const msg = JSON.parse(text);
-        setPins(msg.pins);
-
-      } catch (e) {
-        console.warn("JSON parse failed", {
-          textPreview: text.slice(0, 80),
-          error: String(e),
-          codes: [...text].map(c => c.charCodeAt(0)).slice(0, 40), // debug hidden chars
-        });
-      }
-    };
-
-    const onError = (error: any) => {
-      console.error(error);
-    };
-
-    await bleManager.subscribeToData(device, serviceId, onReceived, onError);
-
-    getCurrentState(device, serviceId);
-  }
-
   const getBleConnection = async (macAddress: string) => {
     try {
       const already = await bleManager.getAlreadyConnected();
@@ -201,7 +230,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         setIsOnline(true);
         setActiveDevice(connected);
         const serviceIds = await bleManager.getCustomServiceId(connected);
-        subscribeToDevice(connected, serviceIds[0]);
         setServices(serviceIds);
       }
     } catch(err) {
@@ -209,44 +237,41 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     }
   }
 
-  const sendDataToESP = async (pin: number, command: string) => {
+  const sendDataToESP = async (pin: number, command: string): Promise<boolean> => {
     if (!services.length || !activeDevice) {
-      const payload = {}
-      await sendCommandOverWifi(payload);
-      return;
+      console.log("Trying to send over wifi")
+      const payload: WifiPayload = {
+        mac_address: deviceId,
+        data: {
+          cmd: command,
+          pin: pin
+        }
+      }
+      const status = await sendCommandOverWifi(payload);
+      return status;
     };
-    console.log('Send to ESP:', pin, command);
 
     try {
+      console.log('Send to ESP:', pin, command);
       const text = `PIN:${pin}:STATUS:${command}`;
       await bleManager.sendData(activeDevice, text, services[0]);
+      return true;
     } catch (e) {
       console.error('Write failed', e);
+      return false;
     }
   };
 
   const toggleDevice = async (deviceId: number) => {
-    // const device = devices.find((d) => d.id === deviceId);
-    // if (!device) return;
-
-    // console.log(device)
-    // await sendDataToESP(device.id, device.command);
-
-    // const newState = !device.is_on;
-    // console.log(newState)
-    // setDevices(
-    //   devices.map((d) => (d.id === deviceId ? { ...d, is_on: newState } : d))
-    // );
-
-    setDevices(prev =>
-      prev.map(d => d.id === deviceId ? { ...d, is_on: !d.is_on } : d)
-    );
-
-    // send command; if it fails, revert
     try {
       const dev = devices.find(d => d.id === deviceId);
       if (!dev) return;
-      await sendDataToESP(dev.id, dev.command);
+      const status = await sendDataToESP(dev.id, dev.command);
+      if(status) {
+        setDevices(prev =>
+          prev.map(d => d.id === deviceId ? { ...d, is_on: !d.is_on } : d)
+        );
+      }
     } catch (e) {
       // revert on failure
       setDevices(prev =>
@@ -268,19 +293,30 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
     // @ts-ignore
     const selectedColor = tempColor?.match(/\d+/g).join(',')
-    console.log(tempColor, tempIntensity, selectedColor)
 
-    if (!services.length || !activeDevice) return;
+    if (!services.length || !activeDevice){
+       // @ts-ignore
+      const arr = tempColor.match(/\d+/g).map(Number);
+      console.log("Trying to send settings over wifi")
+      const payload: WifiPayload = {
+        mac_address: deviceId,
+        data: {
+          cmd: "color",
+          color: arr,
+          brightness: tempIntensity
+        }
+      }
+      const status = await sendCommandOverWifi(payload);
+      return status;
+    }
     const text = `COLOR:${selectedColor};BRIGHTNESS:${tempIntensity}`;
     await bleManager.sendData(activeDevice, text, services[0]);
-
 
     setShowSettings(false);
   };
 
   const openWifiModal = async () => {
     const wifiCreds = await  loadWifi();
-    console.log("creds", wifiCreds);
     if(wifiCreds && wifiCreds.ssid) {
       setWifiSSID(wifiCreds.ssid);
       setWifiPassword(wifiCreds.pass);
@@ -353,8 +389,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     );
   };
 
-  const boardColor = '#5b8def';
-
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -403,7 +437,12 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
               </View>
             </View>
           </View>
-          <View style={[styles.boardIcon, { backgroundColor: boardColor }]} />
+          <View
+            style={[styles.boardIcon]}
+          >
+            <IconComponent size={24} color="#5b8def" strokeWidth={2} />
+          </View>
+          {/* <View style={[styles.boardIcon, { backgroundColor: boardColor }]} /> */}
         </View>
 
         {showSettings && (
@@ -700,7 +739,12 @@ const styles = StyleSheet.create({
   boardIcon: {
     width: 60,
     height: 60,
+    borderWidth: 1,
     borderRadius: 16,
+    borderColor: "#fff",
+    backgroundColor: '#2d3b52',
+    alignItems: 'center',
+    justifyContent: 'center'
   },
   settingsPanel: {
     backgroundColor: '#1e293b',

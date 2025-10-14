@@ -3,7 +3,6 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView,
   Platform,
   ScrollView,
   StyleSheet,
@@ -13,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import { Device as BleDevice } from 'react-native-ble-plx';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 
 import { AddDevice, addDevice, getLayout } from '@/api/devics';
 import Toast from '@/components/Toast';
@@ -20,6 +20,7 @@ import { DATA_CHAR_UUID } from '@/constants';
 import bleManager from '@/services/bleManager';
 import { getBleDevice, storeBleDevice } from '@/utils/storage';
 import { loadWifi, saveWifi } from '@/utils/wifiCreds';
+import { Buffer } from 'buffer';
 
 type Step = 'scan' | 'form';
 
@@ -295,9 +296,10 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    <KeyboardAwareScrollView
+      contentContainerStyle={styles.container}
+      enableOnAndroid
+      extraScrollHeight={16}
     >
       <View style={styles.header}>
         <TouchableOpacity onPress={() => setStep('scan')}>
@@ -357,7 +359,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
           )}
         </TouchableOpacity>
       </ScrollView>
-    </KeyboardAvoidingView>
+    </KeyboardAwareScrollView>
   );
 }
 

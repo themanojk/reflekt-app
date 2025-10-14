@@ -1,3 +1,6 @@
+import { getProfile } from '@/api/auth';
+import { useAuth } from '@/contexts/AuthContext';
+import Constants from 'expo-constants';
 import { CreditCard as Edit2, Mail, Phone, Save, User, X } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
 import {
@@ -12,7 +15,8 @@ import {
 } from 'react-native';
 
 export default function ProfileScreen({ navigation }: any) {
-  const { user, signOut } = {user: {id: "12345", phone: "8577033940", email: "manoj@gmail.com"}, signOut: {}};
+
+  const { user, logout } = useAuth();
   const [profile, setProfile] = useState<any>(null);
   const [editing, setEditing] = useState(false);
   const [fullName, setFullName] = useState('');
@@ -26,20 +30,18 @@ export default function ProfileScreen({ navigation }: any) {
 
   const loadProfile = async () => {
     setLoading(true);
-    // Simulate API call
-    setTimeout(() => {
-      const mockProfile = {
-        id: user?.id || '12345',
-        phone: user?.phone || '+1234567890',
-        full_name: 'John Doe',
-        email: 'john.doe@example.com',
-        created_at: new Date('2024-01-15').toISOString(),
-      };
-      setProfile(mockProfile);
-      setFullName(mockProfile.full_name);
-      setPhone(mockProfile.phone);
-      setLoading(false);
-    }, 500);
+    const userDetails = await getProfile();
+
+    const userObj = {
+      id: userDetails.id,
+      phone: userDetails.phone,
+      full_name: userDetails?.firstName ? (userDetails?.firstName ?? '') + " " + (userDetails?.lastName ?? '') : "Not Set",
+      email: userDetails?.email,
+    };
+    setProfile(userObj);
+    setFullName(userObj.full_name);
+    setPhone(userObj.phone);
+    setLoading(false);
   };
 
   const handleSave = async () => {
@@ -65,7 +67,9 @@ export default function ProfileScreen({ navigation }: any) {
         text: 'Sign Out',
         style: 'destructive',
         onPress: async () => {
-          //await signOut();
+          await logout();
+
+          navigation.navigate("Login");
         },
       },
     ]);
@@ -181,10 +185,7 @@ export default function ProfileScreen({ navigation }: any) {
         </View>
 
         <View style={styles.footer}>
-          <Text style={styles.footerText}>App Version 1.0.0</Text>
-          <Text style={styles.footerText}>
-            Created at: {new Date(profile?.created_at).toLocaleDateString()}
-          </Text>
+          <Text style={styles.footerText}>App Version {Constants.expoConfig?.version}</Text>
         </View>
       </ScrollView>
     </View>

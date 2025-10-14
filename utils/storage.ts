@@ -7,7 +7,7 @@ export async function setToken(token: string) {
   await AsyncStorage.setItem(TOKEN_KEY, token);
 }
 export async function getToken(): Promise<string | null> {
-  return 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2ODZmZTE2OWE3Y2NhYzNiMDk2ZTEwN2QiLCJpYXQiOjE3NTMzNjI1OTV9.jgU1VXbAF5nQ1STUj0iamUU4fEKkRKIrQB0ApcgjPKM'//AsyncStorage.getItem(TOKEN_KEY);
+  return await AsyncStorage.getItem(TOKEN_KEY);
 }
 export async function setUser(user: object) {
   await AsyncStorage.setItem(USER_KEY, JSON.stringify(user));

@@ -46,6 +46,16 @@ export interface Layout {
   buttons: Button[];
 }
 
+export interface WifiPayload {
+  mac_address: string,
+  data: {
+    cmd: string,
+    pin?: number,
+    color?: number[],
+    brightness?: number
+  }
+}
+
 export async function fetchDevices(): Promise<DatabaseDevice[]> {
   return client.get("/devices").then((res) => res.data);
 }
@@ -76,7 +86,7 @@ export async function getLayout(macAddress: string): Promise<Layout> {
     .then((res) => res.data);
 }
 
-export async function sendCommandOverWifi(payload: any): Promise<any> {
+export async function sendCommandOverWifi(payload: WifiPayload): Promise<boolean> {
   return client.post(`/presence`, payload).then((res) => res.data);
 }
 

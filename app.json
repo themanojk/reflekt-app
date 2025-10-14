@@ -31,7 +31,9 @@
         "android.permission.BLUETOOTH_ADMIN",
         "android.permission.BLUETOOTH_CONNECT"
       ],
-      "package": "com.themanojk.reflekt"
+      "package": "com.littra.reflekt",
+      "softwareKeyboardLayoutMode": "resize",
+      "versionCode": 1
     },
     "web": {
       "output": "static",
@@ -74,5 +76,10 @@
       }
     },
     "owner": "themanojk"
+  },
+  "build": {
+    "development": { "developmentClient": true, "distribution": "internal" },
+    "preview":     { "android": { "buildType": "apk" }, "distribution": "internal" },
+    "production":  { "autoincrement": true }
   }
 }
