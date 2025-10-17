@@ -11,12 +11,13 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Device as BleDevice } from 'react-native-ble-plx';
+import { Device as BleDevice, Device } from 'react-native-ble-plx';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 
 import { AddDevice, addDevice, getLayout } from '@/api/devics';
 import Toast from '@/components/Toast';
 import { DATA_CHAR_UUID } from '@/constants';
+import { getCanonicalId } from '@/services/bleCanonicalId';
 import bleManager from '@/services/bleManager';
 import { getBleDevice, storeBleDevice } from '@/utils/storage';
 import { loadWifi, saveWifi } from '@/utils/wifiCreds';
@@ -24,12 +25,20 @@ import { Buffer } from 'buffer';
 
 type Step = 'scan' | 'form';
 
+type Row = {
+  id: string;           // transport id (device.id)
+  name: string | null;
+  rssi: number | null;
+  device: Device;
+  canonicalId?: string; // <-- added directly on the row
+};
+
 export default function AddSwitchboardScreen({ navigation, route }: any) {
   const { roomId } = route.params;
   const [_connectingId, setConnectingId] = useState<string | null>(null);
   const [step, setStep] = useState<Step>('scan');
   const [scanning, setScanning] = useState(false);
-  const [devices, setDevices] = useState<BleDevice[]>([]);
+  const [devices, setDevices] = useState<Row[]>([]);
   const [device, setDevice] = useState<BleDevice>();
   const [_selectedDevice, setSelectedDevice] = useState<BleDevice | null>(null);
   const [name, setName] = useState('');
@@ -70,7 +79,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
           if(d) {
             await d.discoverAllServicesAndCharacteristics();
             didReconnect = true;
-            setDevices([d]);
+            //setDevices([d]);
           }
         } catch (err) {
           console.warn('Auto‐reconnect failed, falling back to scan', err);
@@ -82,18 +91,34 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
       if (lastId && !already.find(d => d.id === lastId)) {
         console.log('Previously connected device not found:', lastId);
       }
-      setDevices(seed);
-      bleManager.startScan(device => {
-        setDevices(prev =>
-          prev.find(d => d.id === device.id) ? prev : [...prev, device],
-        );
+      //setDevices(seed);
+      bleManager.startScan(async (device: Device) => {
+        const cid = await getCanonicalId(device);
+        const row: Row = {
+          id: device.id,
+          name: device.name ?? null,
+          rssi: device.rssi ?? null,
+          device: device,
+          canonicalId: cid
+        };
+
+        setDevices(prev => {
+          const i = prev.findIndex(d => d.id === row.id);
+          if (i >= 0) {
+            const next = [...prev];
+            next[i] = { ...next[i], name: row.name ?? next[i].name, rssi: row.rssi, device: device, canonicalId: row.canonicalId };
+            return next;
+          }
+          return [...prev, row];
+        });
+
+        console.log(devices)
       });
     } catch (err: any) {
       console.log(err);
       bleManager.stopScan();
       return;
     }
-
     
     setTimeout(() => {
       bleManager.stopScan();
@@ -123,10 +148,11 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
     loadWifiCreds();
   }, []);
 
-  const getDeviceLayout = async (device: BleDevice) => {
+  const getDeviceLayout = async (deviceId: string | undefined) => {
     try {
-      console.info("Fetching layout for", device.id)
-      const deviceLayout = await getLayout(device.id);
+      if(!deviceId) return;
+      console.info("Fetching layout for", deviceId)
+      const deviceLayout = await getLayout(deviceId);
       return deviceLayout;
     } catch (err) {
       console.log("Error while fetching layout", err)
@@ -151,21 +177,21 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
 
   };
 
-  const handleDeviceSelect = async (device: BleDevice) => {
+  const handleDeviceSelect = async (bleDevice: Row) => {
+    const { device, canonicalId } = bleDevice;
     console.log("Starting connection")
     setConnectingId(device.id);
     bleManager.stopScan();
 
     try {
-      const connected = await bleManager.connect(device);
-      const layout = await getDeviceLayout(connected);
+      await bleManager.connect(device);
+      const layout = await getDeviceLayout(canonicalId);
 
       if (!layout) {
         showToast('Unrecognized device');
       } else {
         
         await storeBleDevice(device.id);
-
         setSelectedDevice(device);
         setName(device.id);
         setStep('form');
@@ -269,7 +295,8 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
                   <View style={styles.deviceInfo}>
                     <Bluetooth size={24} color="#3b82f6" />
                     <View style={styles.deviceDetails}>
-                      <Text style={styles.deviceName}>{device.id}</Text>
+                      <Text style={styles.deviceName}>{device.id.slice(0, 20)}</Text>
+                      <Text style={styles.deviceName}>{device.canonicalId}</Text>
                       <Text style={styles.deviceSignal}>
                         Signal: {device.rssi ? Math.abs(device.rssi): ''} dBm
                       </Text>

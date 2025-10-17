@@ -10,10 +10,12 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.themanojk.reflekt",
+      "bundleIdentifier": "com.littra.reflekt",
       "infoPlist": {
-        "NSBluetoothAlwaysUsageDescription": "We use Bluetooth to connect to nearby devices."
-      }
+        "NSBluetoothAlwaysUsageDescription": "Reflekt use Bluetooth to connect to nearby devices.",
+        "NSBluetoothPeripheralUsageDescription": "Reflekt uses Bluetooth to communicate with nearby accessories."
+      },
+      "appleTeamId": "7A2483D2W6"
     },
     "android": {
       "adaptiveIcon": {
@@ -63,7 +65,14 @@
           "bluetoothAlwaysPermission": "Allow $(PRODUCT_NAME) to connect to Bluetooth devices"
         }
       ],
-      ["react-native-permissions", { "iosPermissions": ["Bluetooth"] }]
+      [
+        "react-native-permissions",
+        {
+          "iosPermissions": [
+            "Bluetooth"
+          ]
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
@@ -78,8 +87,18 @@
     "owner": "themanojk"
   },
   "build": {
-    "development": { "developmentClient": true, "distribution": "internal" },
-    "preview":     { "android": { "buildType": "apk" }, "distribution": "internal" },
-    "production":  { "autoincrement": true }
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "android": {
+        "buildType": "apk"
+      },
+      "distribution": "internal"
+    },
+    "production": {
+      "autoincrement": true
+    }
   }
 }

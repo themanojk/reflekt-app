@@ -15,6 +15,7 @@ import {
   RESULTS,
 } from 'react-native-permissions';
 import { DATA_CHAR_UUID, ESP_SERVICE_UUID, STANDARD_SERVICE_UUIDS } from '../constants';
+import { getScanId } from './bleIds';
 
 
 const Buffer = require('buffer').Buffer;
@@ -84,40 +85,73 @@ class BLEManagerService {
     });
   }
 
-  /**
-   * Start scanning for ESP devices.
-   * onDeviceFound is called for each discovered device.
-   */
   async startScan(onDeviceFound: (device: Device) => void) {
     if (this.isScanning) return;
 
     await this.initialize();
-
     await this.waitForPoweredOn();
 
-    console.log('Strating Scan...');
+    console.log('Starting Scan…');
     this.isScanning = true;
 
-    this.manager.startDeviceScan(ESP_SERVICE_UUID, Platform.select({
-    ios: { allowDuplicates: false }, // iOS-only
-    android: {
-      // Android controls are these, not `allowDuplicates`
-      allowDuplicates: false,
-      scanMode: ScanMode.LowLatency,
-      callbackType: ScanCallbackType.AllMatches, // default, but set explicitly
-      // legacyScan: true, // (default) keep unless you know you need otherwise
-    },
-  }) as any, (error, device) => {
-      if (error) {
-        console.error('BLE scan error', error);
-        return;
-      }
+    this.manager.startDeviceScan(
+      ESP_SERVICE_UUID,
+      Platform.select({
+        ios: { allowDuplicates: false },
+        android: {
+          allowDuplicates: false,
+          scanMode: ScanMode.LowLatency,
+          callbackType: ScanCallbackType.AllMatches,
+        },
+      }) as any,
+      async (error, device) => {
+        if (error) {
+          console.error('BLE scan error', error);
+          return;
+        }
+        if (!device) return;
+        const scanId = getScanId(device);
+        console.log('Found:', device.name, 'device.id=', device.id, 'scanId=', scanId);
 
-      if (device) {
         onDeviceFound(device);
       }
-    });
+    );
   }
+
+  /**
+   * Start scanning for ESP devices.
+   * onDeviceFound is called for each discovered device.
+   */
+  // async startScan(onDeviceFound: (device: Device) => void) {
+  //   if (this.isScanning) return;
+
+  //   await this.initialize();
+
+  //   await this.waitForPoweredOn();
+
+  //   console.log('Strating Scan...');
+  //   this.isScanning = true;
+
+  //   this.manager.startDeviceScan(ESP_SERVICE_UUID, Platform.select({
+  //   ios: { allowDuplicates: false }, // iOS-only
+  //   android: {
+  //     // Android controls are these, not `allowDuplicates`
+  //     allowDuplicates: false,
+  //     scanMode: ScanMode.LowLatency,
+  //     callbackType: ScanCallbackType.AllMatches, // default, but set explicitly
+  //     // legacyScan: true, // (default) keep unless you know you need otherwise
+  //   },
+  // }) as any, (error, device) => {
+  //     if (error) {
+  //       console.error('BLE scan error', error);
+  //       return;
+  //     }
+
+  //     if (device) {
+  //       onDeviceFound(device);
+  //     }
+  //   });
+  // }
 
   /** Stop an ongoing scan */
   stopScan() {

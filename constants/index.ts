@@ -2,6 +2,7 @@ import { Bath, Bed, Coffee, Fan, Hop as Home, Lamp, Lightbulb, Plug, Sofa, Tv, U
 
 export const ESP_SERVICE_UUID = [
   "3f542309-50a0-4edb-aa41-c4d068dc72f5",
+  "3f542309-50a0-4edb-aa41-c4d068dc72f4",
   "12345678-1234-1234-1234-1234567890ab",
 ];
 
