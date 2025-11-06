@@ -37,7 +37,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
   const { roomId } = route.params;
   const [_connectingId, setConnectingId] = useState<string | null>(null);
   const [step, setStep] = useState<Step>('scan');
-  const [scanning, setScanning] = useState(false);
+  const [scanning, setScanning] = useState(true);
   const [devices, setDevices] = useState<Row[]>([]);
   const [device, setDevice] = useState<BleDevice>();
   const [_selectedDevice, setSelectedDevice] = useState<BleDevice | null>(null);
@@ -113,7 +113,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
         });
 
         console.log(devices)
-      });
+      }, {stopAfterMs: 30000});
     } catch (err: any) {
       console.log(err);
       bleManager.stopScan();

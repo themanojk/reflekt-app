@@ -1,7 +1,8 @@
 import { RequestOTP, requestOtp, verifyOtp } from '@/api/auth';
+import { fetchServiceIds } from '@/api/service';
 import { clearWifi } from '@/utils/wifiCreds';
 import { createContext, ReactNode, useContext, useEffect, useState } from 'react';
-import { clearAuth, getToken, getUser, setToken, setUser } from '../utils/storage';
+import { clearAuth, getToken, getUser, setESPServiceIds, setToken, setUser } from '../utils/storage';
 
 interface AuthContextValue {
   user: any;
@@ -43,7 +44,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       if("jwtToken" in response) {
-        const { jwtToken, user } = response
+        const { jwtToken, user } = response;
+        const services = await fetchServiceIds();
+        await setESPServiceIds(services);
         setToken(jwtToken);
         setUser(user);
         setUserState(user);
