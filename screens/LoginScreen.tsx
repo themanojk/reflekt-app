@@ -26,8 +26,7 @@ export default function LoginScreen() {
     }
 
     setLoading(true);
-    const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`;
-    const id = await signInWithPhone(formattedPhone);
+    const id = await signInWithPhone(phone);
     setTransactionId(id);
     setLoading(false);
 

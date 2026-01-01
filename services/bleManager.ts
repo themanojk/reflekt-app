@@ -1,6 +1,6 @@
 import { sleep } from '@/utils/general';
 import { getESPServiceIds } from '@/utils/storage';
-import { AppState, AppStateStatus, Platform } from 'react-native';
+import { AppState, AppStateStatus, PermissionsAndroid, Platform } from 'react-native';
 import {
   BleManager,
   Characteristic,
@@ -8,13 +8,9 @@ import {
   Device,
   ScanCallbackType,
   ScanMode,
+  State,
   Subscription
 } from 'react-native-ble-plx';
-import {
-  PERMISSIONS,
-  requestMultiple,
-  RESULTS,
-} from 'react-native-permissions';
 import { DATA_CHAR_UUID, STANDARD_SERVICE_UUIDS } from '../constants';
 import { getScanId } from './bleIds';
 
@@ -61,17 +57,24 @@ class BLEManagerService {
 
   /** Call once at app startup (or before scanning) */
   async initialize() {
-    if (Platform.OS === "android" && Platform.Version >= 23) {
-      const perms = await requestMultiple([
-        PERMISSIONS.ANDROID.ACCESS_FINE_LOCATION,
-        PERMISSIONS.ANDROID.BLUETOOTH_SCAN,
-        PERMISSIONS.ANDROID.BLUETOOTH_CONNECT,
-      ]);
-      const ok = Object.values(perms).every(
-        (status) => status === RESULTS.GRANTED
+    if (Platform.OS !== 'android') return true;
+
+    if (Platform.Version >= 31) {
+      const scan = await PermissionsAndroid.request(
+        'android.permission.BLUETOOTH_SCAN',
+        { title: 'Bluetooth permission', message: 'Needed to scan for devices', buttonPositive: 'OK' }
       );
-      console.log("BLE Permission Response", ok);
-      if (!ok) throw new Error("BLE permissions not granted");
+      const connect = await PermissionsAndroid.request(
+        'android.permission.BLUETOOTH_CONNECT',
+        { title: 'Bluetooth permission', message: 'Needed to connect to devices', buttonPositive: 'OK' }
+      );
+      return scan === PermissionsAndroid.RESULTS.GRANTED &&
+            connect === PermissionsAndroid.RESULTS.GRANTED;
+    } else {
+      const loc = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
+      );
+      return loc === PermissionsAndroid.RESULTS.GRANTED;
     }
   }
 
@@ -79,22 +82,23 @@ class BLEManagerService {
    * Resolves once CBCentralManager reports that Bluetooth is PoweredOn on iOS.
    * (On Android it resolves immediately.)
    */
-  async waitForPoweredOn(): Promise<void> {
-    return new Promise((resolve) => {
-      // check current state first
-      this.manager.state().then((s) => {
-        if (s === "PoweredOn") {
+  async waitForPoweredOn(timeoutMs = 10000): Promise<void> {
+    const s = await this.manager.state();
+    if (s === State.PoweredOn) return;
+
+    await new Promise<void>((resolve, reject) => {
+      const tid = setTimeout(() => {
+        sub.remove();
+        reject(new Error('Bluetooth not PoweredOn'));
+      }, timeoutMs);
+
+      const sub = this.manager.onStateChange((state) => {
+        if (state === State.PoweredOn) {
+          clearTimeout(tid);
+          sub.remove();
           resolve();
-        } else {
-          // subscribe until it becomes powered on
-          const sub = this.manager.onStateChange((state) => {
-            if (state === "PoweredOn") {
-              sub.remove(); // stop listening
-              resolve();
-            }
-          }, true); // `true` means trigger callback immediately with current state
         }
-      });
+      }, true);
     });
   }
 
@@ -102,7 +106,12 @@ class BLEManagerService {
     onDeviceFound: (device: Device) => void,
     opts?: { stopAfterMs?: number; rssiDelta?: number; minIntervalMs?: number }
   ) {
-    if (this.isScanning) return;
+    if (this.isScanning) {
+      // stop previous scan before starting a new one
+      try { this.manager.stopDeviceScan(); } catch {}
+      this.isScanning = false;
+      await new Promise(r => setTimeout(r, 200)); // small cool-down
+    }
 
     await this.initialize();
     await this.waitForPoweredOn();
@@ -139,20 +148,6 @@ class BLEManagerService {
         const rssi = device.rssi ?? null;
 
         if (!this.seen.has(scanId)) {
-          this.seen.add(scanId);
-          this.last.set(scanId, { ts: now, rssi });
-          onDeviceFound(device);
-          return;
-        }
-
-        const prev = this.last.get(scanId);
-        const timeOk = !prev || (now - prev.ts) >= minIntervalMs;
-        const rssiOk =
-          prev?.rssi == null || rssi == null
-            ? false
-            : Math.abs(rssi - prev.rssi) >= rssiDelta;
-
-        if (timeOk || rssiOk) {
           console.log(
             "Found:",
             device.name,
@@ -161,8 +156,10 @@ class BLEManagerService {
             "scanId=",
             scanId
           );
+          this.seen.add(scanId);
           this.last.set(scanId, { ts: now, rssi });
-          onDeviceFound(device); // update row in UI if you want live RSSI
+          onDeviceFound(device);
+          return;
         }
       }
     );
@@ -566,4 +563,4 @@ class BLEManagerService {
   }
 }
 
-export default new BLEManagerService();
+export default BLEManagerService;

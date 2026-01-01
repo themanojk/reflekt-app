@@ -15,6 +15,27 @@ import SwitchboardScreen from './screens/SwitchboardScreen';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
+function AuthStack() {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="Login" component={LoginScreen} />
+    </Stack.Navigator>
+  );
+}
+
+function AppStack() {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="Home" component={HomeScreen} />
+      <Stack.Screen name="AddRoom" component={AddRoomScreen} />
+      <Stack.Screen name="Room" component={RoomScreen} />
+      <Stack.Screen name="Switchboard" component={SwitchboardScreen} />
+      <Stack.Screen name="AddSwitchboard" component={AddSwitchboardScreen} />
+      <Stack.Screen name="Profile" component={ProfileScreen} />
+    </Stack.Navigator>
+  );
+}
+
 function Navigation() {
   const { user, loading } = useAuth();
 
@@ -28,20 +49,7 @@ function Navigation() {
 
   return (
     <NavigationContainer>
-      <Stack.Navigator screenOptions={{ headerShown: false }}>
-        {!user ? (
-          <Stack.Screen name="Login" component={LoginScreen} />
-        ) : (
-          <>
-            <Stack.Screen name="Home" component={HomeScreen} />
-            <Stack.Screen name="AddRoom" component={AddRoomScreen} />
-            <Stack.Screen name="Room" component={RoomScreen} />
-            <Stack.Screen name="Switchboard" component={SwitchboardScreen} />
-            <Stack.Screen name="AddSwitchboard" component={AddSwitchboardScreen} />
-            <Stack.Screen name="Profile" component={ProfileScreen} />
-          </>
-        )}
-      </Stack.Navigator>
+      {user ? <AppStack /> : <AuthStack />}
     </NavigationContainer>
   );
 }

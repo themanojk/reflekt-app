@@ -1,7 +1,8 @@
 import { getLayout, sendCommandOverWifi, WifiPayload } from '@/api/devics';
+import HingeSlider from '@/components/HingeSlider';
 import { DATA_CHAR_UUID, ROOM_ICONS } from '@/constants';
 import { RootStackParamList } from '@/constants/types';
-import bleManager from '@/services/bleManager';
+import BLEManagerService from '@/services/bleManager';
 import { loadWifi, saveWifi } from '@/utils/wifiCreds';
 import { RouteProp } from '@react-navigation/native';
 import { Buffer } from 'buffer';
@@ -50,6 +51,8 @@ const COLOR_PALETTE = [
   'rgb(251, 146, 60)',
 ];
 
+const FAN_SPEED_LEVELS = [30, 45, 60, 75, 90, 100];
+
 type Props = {
   route: RouteProp<RootStackParamList, 'Switchboard'>;
   navigation: any;
@@ -57,6 +60,10 @@ type Props = {
 type Disposable = { remove?: () => void; unsubscribe?: () => void };
 
 export default function SwitchboardScreen({ route, navigation }: Props) {
+  const bleManagerRef = React.useRef<BLEManagerService>(null);
+  if (!bleManagerRef.current) bleManagerRef.current = new BLEManagerService();
+  const bleManager = bleManagerRef.current;
+
   const { switchboardName, deviceId, roomIcon, status } = route.params;
   const [devices, setDevices] = useState<Device[]>([]);
   const [activeDevice, setActiveDevice] = useState<BleDevice>();
@@ -71,12 +78,16 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [wifiPassword, setWifiPassword] = useState('');
   const [pins, setPins] = useState<any>({})
   const [isOnline, setIsOnline] = useState<boolean>(status);
+  const [speed, setSpeed] = useState(0);
 
   const monitorRef = React.useRef<Disposable | null>(null);
   const disconnectRef = React.useRef<Disposable | null>(null);
   const mountedRef = React.useRef(true);
 
   const IconComponent = ROOM_ICONS[roomIcon] ?? ROOM_ICONS['home'];
+
+  const levelToPercent = (level: number) =>
+  FAN_SPEED_LEVELS[Math.max(0, Math.min(5, Math.round(level)))];
 
   useEffect(() => {
     return () => {               // on unmount
@@ -112,9 +123,11 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       const pinObj:any = {};
       pinDataArray.forEach((pinData: string) => {
         const statusData: string[] = pinData.split(':');
+        console.log(statusData)
         const pin = Number(statusData[0])
         pinObj[pin] = statusData[1] === "1" ? true : false;
       })
+      console.log("Pin Obj", pinObj)
       setPins(pinObj);
     };
 
@@ -159,6 +172,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   useEffect(() => {
     if (!pins || Object.keys(pins).length === 0) return;
+
+    console.log("Updating devices")
 
     setDevices(prev => {
       let changed = false;
@@ -350,42 +365,142 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     }
   };
 
+  const sendFanSpeed = async (speed: number, device: Device) => {
+
+    const val = Math.max(30, Math.min(100, Math.round(speed)));
+
+    if (!services.length || !activeDevice) {
+      // Wi-Fi fallback
+      // const payload: WifiPayload = {
+      //   mac_address: deviceId,
+      //   data: { cmd: 'speed', pin: device.id, speed: clamped }
+      // };
+      // await sendCommandOverWifi(payload);
+      return;
+    }
+
+    const text = `SPEED:${val};PIN:${device.id}`;
+    console.log(text);
+    await bleManager.sendData(activeDevice, text, services[0]);
+  }
+
+  const changeDeviceSpeed = React.useCallback((device: Device, speed: number) => {
+    const clamped = Math.max(0, Math.min(5, Math.round(speed)));
+    const percent = levelToPercent(clamped);
+
+    setDevices(prev => {
+      const idx = prev.findIndex(d => d.id === device.id);
+      if (idx === -1) return prev;
+
+      const old = prev[idx].speed ?? 0;
+      const next = [...prev];
+      next[idx] = {
+        ...prev[idx],
+        speed: clamped,
+        is_on: clamped > 0 ? true : prev[idx].is_on,
+      };
+
+      (async () => {
+        try {
+          await sendFanSpeed(percent, device);
+        } catch {
+          // revert only that device
+          setDevices(curr => {
+            const j = curr.findIndex(d => d.id === device.id);
+            if (j === -1) return curr;
+            const copy = [...curr];
+            copy[j] = { ...copy[j], speed: old };
+            return copy;
+          });
+        }
+      })();
+
+      return next;
+    });
+  }, [services.length, activeDevice]);
+
   const renderDeviceCard = (device: Device) => {
     const IconComponent = ROOM_ICONS[device.device_type] || Lightbulb;
     const isActive = device.is_on;
+    const speedValue = device.speed ?? 0;
 
     return (
-      <TouchableOpacity
-        key={device.id}
-        style={[
-          styles.deviceCard,
-          isActive && styles.deviceCardActive,
-        ]}
-        onPress={() => toggleDevice(device.id)}
-      >
-        <View style={isActive ? styles.glassOverlay : null} />
-        <View style={[styles.deviceIcon, isActive && styles.deviceIconActive]}>
-          <IconComponent
-            size={26}
-            color={isActive ? '#fff' : '#64748b'}
-            strokeWidth={1.5}
+      <View style={[
+            styles.deviceCard,
+            isActive && styles.deviceCardActive,
+          ]}>
+        <TouchableOpacity
+          key={device.id}
+          onPress={() => toggleDevice(device.id)}
+        >
+          <View style={isActive ? styles.glassOverlay : null} />
+          <View style={[styles.deviceIcon, isActive && styles.deviceIconActive]}>
+            <IconComponent
+              size={26}
+              color={isActive ? '#fff' : '#64748b'}
+              strokeWidth={1.5}
+            />
+          </View>
+          <View style={styles.deviceInfo}>
+            <Text style={[styles.deviceButton, isActive && styles.deviceButtonActive]}>
+              Button {device.position}
+            </Text>
+            <Text style={[styles.deviceName, isActive && styles.deviceNameActive]}>
+              {device.name}
+            </Text>
+          </View>
+          <View
+            style={[
+              styles.deviceStatus,
+              { backgroundColor: isActive ? '#fff' : '#64748b' },
+            ]}
           />
-        </View>
-        <View style={styles.deviceInfo}>
-          <Text style={[styles.deviceButton, isActive && styles.deviceButtonActive]}>
-            Button {device.position}
-          </Text>
-          <Text style={[styles.deviceName, isActive && styles.deviceNameActive]}>
-            {device.name}
-          </Text>
-        </View>
-        <View
-          style={[
-            styles.deviceStatus,
-            { backgroundColor: isActive ? '#fff' : '#64748b' },
-          ]}
-        />
-      </TouchableOpacity>
+        </TouchableOpacity>
+
+        {device.device_type === 'fan' && (
+          <View style={styles.speedControllerBox}>
+            <View style={styles.sliderRow}>
+              <Text style={styles.label}>Speed</Text>
+
+              <HingeSlider
+                value={speedValue}
+                minimumValue={0}
+                maximumValue={5}
+                step={1}
+                // live UI update (no network)
+                onValueChange={(v: number) => {
+                  const clamped = Math.max(0, Math.min(5, Math.round(v)));
+                  setDevices(prev => prev.map(d => d.id === device.id ? {
+                    ...d,
+                    speed: clamped,
+                    is_on: clamped > 0 ? true : d.is_on,
+                  } : d));
+                }}
+                // commit on release
+                onSlidingComplete={(v: number) => changeDeviceSpeed(device, v)}
+                trackHeight={20}
+              />
+            </View>
+          </View>
+        )}
+
+        {/* {device.device_type === 'fan' && <View style={styles.speedControllerBox}>
+          <View style={styles.sliderRow}>
+            <Text style={styles.label}>Speed</Text>
+
+            <HingeSlider
+              value={localSpeed}
+              minimumValue={0}
+              maximumValue={5}
+              step={1}
+              onValueChange={(v) => setLocalSpeed(v)}
+              onSlidingComplete={(v) => changeDeviceSpeed(device, v)}
+              trackHeight={20}
+            />
+          </View>
+
+          </View>} */}
+      </View>
     );
   };
 
@@ -574,6 +689,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
+  speedControllerBox: {
+    flexDirection: "column",
+  },
+  speedController: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: 'space-between'
+  },
+  speedInput: {
+    height: 40,
+    borderWidth: 1,
+    padding: 10,
+    marginBottom: 5,
+    borderColor: '#fff',
+    borderRadius: 5,
+    color: '#fff'
+  },
+  sliderRow: { marginTop: 6 },
+  label: { color: '#cbd5e1', fontSize: 13, marginBottom: 6 },
+  speedMarks: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
+  mark: { color: '#64748b', fontSize: 12 },
+  markActive: { color: '#fff', fontWeight: '700' },
   backText: {
     fontSize: 16,
     color: '#fff',

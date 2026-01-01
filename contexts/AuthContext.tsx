@@ -46,6 +46,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if("jwtToken" in response) {
         const { jwtToken, user } = response;
         const services = await fetchServiceIds();
+        console.log("Services", services);
         await setESPServiceIds(services);
         setToken(jwtToken);
         setUser(user);
@@ -59,6 +60,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = async () => {
     await clearAuth();
     await clearWifi();
+    setUserState(null);
   };
 
   return (

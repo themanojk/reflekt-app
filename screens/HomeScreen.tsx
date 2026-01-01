@@ -2,7 +2,7 @@ import { fetchDevicesByMac } from '@/api/devics';
 import { getRooms } from '@/api/room';
 import { useDebouncedCallback } from '@/callbacks/useDeboundcedCallback';
 import { ROOM_ICONS } from '@/constants';
-import bleManager from '@/services/bleManager';
+import BLEManagerService from '@/services/bleManager';
 import { getBleDevice } from '@/utils/storage';
 import { Hop as Home, Plus, User } from 'lucide-react-native';
 import React, { useCallback, useEffect, useState } from 'react';
@@ -42,6 +42,7 @@ const SWITCHBOARD_COLORS = [
 ];
 
 export default function HomeScreen({ navigation }: any) {
+  const bleManager = new BLEManagerService();
   const [_scanning, setScanning] = useState(false);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [devices, setDevices] = useState<BleDevice[]>([]);
@@ -141,7 +142,8 @@ export default function HomeScreen({ navigation }: any) {
   useEffect(() => {
     startScan();
     return () => {
-      setScanning(false)
+      console.log("Moving to screen, Stopping the scan")
+      setScanning(false);
       bleManager.stopScan();
     };
   }, [startScan]);
