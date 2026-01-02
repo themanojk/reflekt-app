@@ -7,6 +7,7 @@ export type RootStackParamList = {
   AddRoom: undefined;
   Switchboard: {switchboardName: string; deviceId: string, roomIcon: string, status: boolean};
   AddSwitchboard: undefined;
+  AddSwitchboardAdmin: undefined;
   Profile: undefined;
   Room: { roomId: string; roomName: string; roomIcon: string; devices: BleDevice[] };
 };
@@ -25,3 +26,10 @@ export interface CanonicalBleDevice {
   rssi: number | null;
   lastSeen: number;
 }
+
+export const ROLES = {
+  ADMIN: 'admin' as Role,
+  USER: 'user' as Role,
+}
+
+export type Role = 'admin' | 'user';

@@ -1,3 +1,4 @@
+import { Role } from '@/constants/types';
 import client from './client';
 
 export interface RequestOTP {
@@ -10,6 +11,7 @@ export interface User {
   firstName?: string;
   lastName?: string;
   email?: string;
+  role: Role
 }
 
 export type AuthenticatedUser = {

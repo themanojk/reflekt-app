@@ -4,8 +4,10 @@ import { StatusBar } from 'expo-status-bar';
 import React from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import type { RootStackParamList } from './constants/types';
+import { ROLES } from './constants/types';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import AddRoomScreen from './screens/AddRoomScreen';
+import AddSwitchboardAdminScreen from './screens/AddSwitchBoardAdminScreen';
 import AddSwitchboardScreen from './screens/AddSwitchboardScreen';
 import HomeScreen from './screens/HomeScreen';
 import LoginScreen from './screens/LoginScreen';
@@ -23,7 +25,16 @@ function AuthStack() {
   );
 }
 
-function AppStack() {
+function AdminStack() {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="AddSwitchboardAdmin" component={AddSwitchboardAdminScreen} />
+      <Stack.Screen name="Switchboard" component={SwitchboardScreen} />
+    </Stack.Navigator>
+  );
+}
+
+function UserStack() {
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="Home" component={HomeScreen} />
@@ -47,11 +58,27 @@ function Navigation() {
     );
   }
 
-  return (
+  if(!user) return (
     <NavigationContainer>
-      {user ? <AppStack /> : <AuthStack />}
+      <AuthStack />
     </NavigationContainer>
-  );
+  )
+
+  switch(user?.role) {
+    case ROLES.ADMIN:
+      return (
+        <NavigationContainer>
+          <AdminStack />
+        </NavigationContainer>
+      );
+    case ROLES.USER:
+    default:
+      return (
+        <NavigationContainer>
+          <UserStack />
+        </NavigationContainer>
+      );
+  }
 }
 
 export default function App() {

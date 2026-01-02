@@ -26,6 +26,8 @@ type ConnectOpts = {
   refreshGatt?: "OnConnected" | "Never";
 };
 export type Disposer = { remove: () => void };
+type StartOpts = { stopAfterMs?: number };
+type StartScanHandle = { stop: () => void; done: Promise<void> };
 
 class BLEManagerService {
   private connectedDeviceIds = new Set<string>();
@@ -35,6 +37,9 @@ class BLEManagerService {
   private appStateSub?: { remove: () => void };
   public ESP_SERVICE_UUID: string[] = [];
 
+  private session = 0;
+  private currentStop: (() => void) | null = null;
+  private currentDoneResolve: (() => void) | null = null;
   private seen = new Set<string>();
   private last = new Map<string, { ts: number; rssi: number | null }>();
 
@@ -54,6 +59,11 @@ class BLEManagerService {
     console.log("App got in background");
     this.appState = nextState;
   };
+
+  async ensureRestartableCoolDown(ms = 150) {
+    // brief cool-down to avoid "Cannot start scanning operation"
+    await new Promise(r => setTimeout(r, ms));
+  }
 
   /** Call once at app startup (or before scanning) */
   async initialize() {
@@ -167,6 +177,88 @@ class BLEManagerService {
       setTimeout(() => this.stopScan(), stopAfterMs);
     }
   }
+
+  startScan_new(
+    onDeviceFound: (device: Device) => void,
+    opts: StartOpts = {}
+  ): StartScanHandle {
+    // If already scanning, stop the previous one first (callable safety)
+    if (this.isScanning) {
+      try { this.stopScan(); } catch {}
+    }
+
+    const mySession = ++this.session;
+    this.isScanning = true;
+    this.seen.clear();
+
+    // Promise that resolves when this scan ends
+    const done = new Promise<void>(resolve => {
+      this.currentDoneResolve = () => {
+        if (this.session === mySession) resolve();
+      };
+    });
+
+    const stop = () => {
+      if (this.session !== mySession) return; // only stop if this session is current
+      try { this.manager.stopDeviceScan(); } catch {}
+      this.isScanning = false;
+      this.currentStop = null;
+      this.currentDoneResolve?.();
+      this.currentDoneResolve = null;
+    };
+    this.currentStop = stop;
+
+    (async () => {
+      try {
+        await this.initialize();
+        await this.waitForPoweredOn();
+        await this.ensureRestartableCoolDown(120); // tiny delay helps some Android stacks
+      } catch (e) {
+        console.warn('BLE init/poweredOn failed', e);
+        stop();
+        return;
+      }
+
+      console.log('Starting Scan with', this.ESP_SERVICE_UUID);
+
+      this.manager.startDeviceScan(
+        this.ESP_SERVICE_UUID,
+        Platform.select({
+          ios: { allowDuplicates: false } as any,
+          android: {
+            allowDuplicates: false,
+            scanMode: ScanMode.LowLatency,
+            callbackType: ScanCallbackType.AllMatches,
+          } as any,
+        }) as any,
+        (error, device) => {
+          // ignore callbacks from stale sessions
+          if (this.session !== mySession) return;
+
+          if (error) {
+            console.warn('BLE scan error', error);
+            stop();
+            return;
+          }
+          if (!device) return;
+
+          // de-dupe per scan
+          const key = device.id; // or your getScanId()
+          if (this.seen.has(key)) return;
+          this.seen.add(key);
+
+          // important: do NOT stop/restart from inside this callback
+          onDeviceFound(device);
+        }
+      );
+
+      const stopAfterMs = opts.stopAfterMs ?? 15000;
+      if (stopAfterMs > 0) setTimeout(stop, stopAfterMs);
+    })();
+
+    return { stop, done };
+  }
+
 
   /**
    * Start scanning for ESP devices.

@@ -1,3 +1,4 @@
+import { User } from '@/api/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const TOKEN_KEY = '@app:token';
@@ -10,10 +11,10 @@ export async function setToken(token: string) {
 export async function getToken(): Promise<string | null> {
   return await AsyncStorage.getItem(TOKEN_KEY);
 }
-export async function setUser(user: object) {
+export async function setUser(user: User) {
   await AsyncStorage.setItem(USER_KEY, JSON.stringify(user));
 }
-export async function getUser(): Promise<any> {
+export async function getUser(): Promise<User | null> {
   const s = await AsyncStorage.getItem(USER_KEY);
   return s ? JSON.parse(s) : null;
 }
