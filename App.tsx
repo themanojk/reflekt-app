@@ -30,6 +30,7 @@ function AdminStack() {
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="AddSwitchboardAdmin" component={AddSwitchboardAdminScreen} />
       <Stack.Screen name="Switchboard" component={SwitchboardScreen} />
+      <Stack.Screen name="Profile" component={ProfileScreen} />
     </Stack.Navigator>
   );
 }

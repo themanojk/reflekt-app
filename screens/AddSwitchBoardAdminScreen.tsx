@@ -1,4 +1,11 @@
-import { Bluetooth } from 'lucide-react-native';
+import { getLayout } from '@/api/devics';
+import Toast from '@/components/Toast';
+import { DATA_CHAR_UUID } from '@/constants';
+import { getCanonicalId } from '@/services/bleCanonicalId';
+import BLEManagerService from '@/services/bleManager';
+import { loadWifi, saveWifi } from '@/utils/wifiCreds';
+import { Buffer } from 'buffer';
+import { Bluetooth, User } from 'lucide-react-native';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -13,14 +20,6 @@ import {
 } from 'react-native';
 import { Device as BleDevice, Device } from 'react-native-ble-plx';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
-
-import { getLayout } from '@/api/devics';
-import Toast from '@/components/Toast';
-import { DATA_CHAR_UUID } from '@/constants';
-import { getCanonicalId } from '@/services/bleCanonicalId';
-import BLEManagerService from '@/services/bleManager';
-import { loadWifi, saveWifi } from '@/utils/wifiCreds';
-import { Buffer } from 'buffer';
 
 type Step = 'scan' | 'form';
 
@@ -295,11 +294,14 @@ export default function AddSwitchboardAdminScreen({ navigation, route }: any) {
           onHide={() => setToast({ ...toast, visible: false })}
         />
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => navigation.goBack()}>
-            <Text style={styles.cancelButton}>Cancel</Text>
-          </TouchableOpacity>
           <Text style={styles.title}>Scan Switchboard</Text>
           <View style={styles.placeholder} />
+          <TouchableOpacity
+            style={styles.profileButton}
+            onPress={() => navigation.navigate("Profile")}
+          >
+            <User size={20} color="#94a3b8" strokeWidth={2} />
+          </TouchableOpacity>
         </View>
 
         <View style={styles.scanContent}>
@@ -612,5 +614,15 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     textAlign: 'center',
+  },
+  profileButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    backgroundColor: '#1e293b',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#334155',
   },
 });
