@@ -118,7 +118,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   }, [status]);
 
   useEffect(() => {
-    loadWifiStatusData();
+    loadSwitchboardData();
   }, [deviceId]);
 
   useEffect(() => {
@@ -126,8 +126,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     teardownBle();
 
     const onReceived = (data: any) => {
-      console.log("data", data);
       const pinDataArray = data.split(",");
+
       const pinObj: any = {};
       pinDataArray.forEach((pinData: string) => {
         const statusData: string[] = pinData.split(":");
@@ -227,19 +227,18 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     });
     setDevices(buttons);
     setLoading(false);
+    await loadWifiStatusData();
     getBleConnection(deviceId);
   };
 
   const loadWifiStatusData = async () => {
     const wifiStatus = await getDeviceStatusOverWifi(deviceId);
-
     if (wifiStatus) {
       setIsWifiOnline(wifiStatus?.status?.online);
       if (wifiStatus?.status?.online) {
         onReceivedOverWifi(wifiStatus.status.pins);
       }
     }
-    loadSwitchboardData();
   };
   const getCurrentState = async (device: BleDevice, serviceId: string) => {
     if (!device) {
