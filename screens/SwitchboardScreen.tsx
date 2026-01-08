@@ -1,20 +1,25 @@
-import { getLayout, sendCommandOverWifi, WifiPayload } from '@/api/devics';
-import HingeSlider from '@/components/HingeSlider';
-import { DATA_CHAR_UUID, ROOM_ICONS } from '@/constants';
-import { RootStackParamList } from '@/constants/types';
-import BLEManagerService from '@/services/bleManager';
-import { loadWifi, saveWifi } from '@/utils/wifiCreds';
-import { RouteProp } from '@react-navigation/native';
-import { Buffer } from 'buffer';
+import {
+  getDeviceStatusOverWifi,
+  getLayout,
+  sendCommandOverWifi,
+  WifiPayload,
+} from "@/api/devics";
+import HingeSlider from "@/components/HingeSlider";
+import { DATA_CHAR_UUID, ROOM_ICONS } from "@/constants";
+import { RootStackParamList } from "@/constants/types";
+import BLEManagerService from "@/services/bleManager";
+import { loadWifi, saveWifi } from "@/utils/wifiCreds";
+import { RouteProp } from "@react-navigation/native";
+import { Buffer } from "buffer";
 import {
   ChevronLeft,
   Lightbulb,
   Power,
   Settings,
   Wifi,
-  X
-} from 'lucide-react-native';
-import React, { useEffect, useState } from 'react';
+  X,
+} from "lucide-react-native";
+import React, { useEffect, useState } from "react";
 import {
   Alert,
   Modal,
@@ -23,10 +28,10 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View
-} from 'react-native';
-import { Device as BleDevice } from 'react-native-ble-plx';
-import CustomSlider from '../components/CustomSlider';
+  View,
+} from "react-native";
+import { Device as BleDevice } from "react-native-ble-plx";
+import CustomSlider from "../components/CustomSlider";
 
 interface Device {
   id: number;
@@ -41,20 +46,20 @@ interface Device {
 }
 
 const COLOR_PALETTE = [
-  'rgb(91, 141, 239)',
-  'rgb(124, 111, 216)',
-  'rgb(74, 222, 128)',
-  'rgb(251, 191, 36)',
-  'rgb(239, 68, 68)',
-  'rgb(236, 72, 153)',
-  'rgb(94, 234, 212)',
-  'rgb(251, 146, 60)',
+  "rgb(91, 141, 239)",
+  "rgb(124, 111, 216)",
+  "rgb(74, 222, 128)",
+  "rgb(251, 191, 36)",
+  "rgb(239, 68, 68)",
+  "rgb(236, 72, 153)",
+  "rgb(94, 234, 212)",
+  "rgb(251, 146, 60)",
 ];
 
 const FAN_SPEED_LEVELS = [30, 45, 60, 75, 90, 100];
 
 type Props = {
-  route: RouteProp<RootStackParamList, 'Switchboard'>;
+  route: RouteProp<RootStackParamList, "Switchboard">;
   navigation: any;
 };
 type Disposable = { remove?: () => void; unsubscribe?: () => void };
@@ -71,26 +76,28 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [loading, setLoading] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
-  const [tempColor, setTempColor] = useState('rgb(91, 141, 239)');
+  const [tempColor, setTempColor] = useState("rgb(91, 141, 239)");
   const [tempIntensity, setTempIntensity] = useState(80);
   const [showWifiModal, setShowWifiModal] = useState(false);
-  const [wifiSSID, setWifiSSID] = useState('');
-  const [wifiPassword, setWifiPassword] = useState('');
-  const [pins, setPins] = useState<any>({})
+  const [wifiSSID, setWifiSSID] = useState("");
+  const [wifiPassword, setWifiPassword] = useState("");
+  const [pins, setPins] = useState<any>({});
   const [isOnline, setIsOnline] = useState<boolean>(status);
+  const [isWifiOnline, setIsWifiOnline] = useState<boolean>(status);
   const [speed, setSpeed] = useState(0);
 
   const monitorRef = React.useRef<Disposable | null>(null);
   const disconnectRef = React.useRef<Disposable | null>(null);
   const mountedRef = React.useRef(true);
 
-  const IconComponent = ROOM_ICONS[roomIcon] ?? ROOM_ICONS['home'];
+  const IconComponent = ROOM_ICONS[roomIcon] ?? ROOM_ICONS["home"];
 
   const levelToPercent = (level: number) =>
-  FAN_SPEED_LEVELS[Math.max(0, Math.min(5, Math.round(level)))];
+    FAN_SPEED_LEVELS[Math.max(0, Math.min(5, Math.round(level)))];
 
   useEffect(() => {
-    return () => {               // on unmount
+    return () => {
+      // on unmount
       mountedRef.current = false;
       monitorRef.current?.remove?.();
       monitorRef.current?.unsubscribe?.();
@@ -110,7 +117,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   }, [status]);
 
   useEffect(() => {
-    loadSwitchboardData();
+    loadWifiStatusData();
   }, [deviceId]);
 
   useEffect(() => {
@@ -118,21 +125,21 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     teardownBle();
 
     const onReceived = (data: any) => {
-      console.log('data', data);
-      const pinDataArray = data.split(',');
-      const pinObj:any = {};
+      console.log("data", data);
+      const pinDataArray = data.split(",");
+      const pinObj: any = {};
       pinDataArray.forEach((pinData: string) => {
-        const statusData: string[] = pinData.split(':');
-        console.log(statusData)
-        const pin = Number(statusData[0])
+        const statusData: string[] = pinData.split(":");
+        console.log(statusData);
+        const pin = Number(statusData[0]);
         pinObj[pin] = statusData[1] === "1" ? true : false;
-      })
-      console.log("Pin Obj", pinObj)
+      });
+      console.log("Pin Obj", pinObj);
       setPins(pinObj);
     };
 
     const onError = (err: any) => {
-      console.warn('BLE monitor error', err?.message || err);
+      console.warn("BLE monitor error", err?.message || err);
       teardownBle();
       if (mountedRef.current) {
         setIsOnline(false);
@@ -141,7 +148,12 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       }
     };
 
-    monitorRef.current = bleManager.subscribeToData(activeDevice, services[0], onReceived, onError) as unknown as Disposable;
+    monitorRef.current = bleManager.subscribeToData(
+      activeDevice,
+      services[0],
+      onReceived,
+      onError
+    ) as unknown as Disposable;
     getCurrentState(activeDevice, services[0]);
 
     try {
@@ -167,21 +179,27 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       disconnectRef.current?.remove?.();
       disconnectRef.current?.unsubscribe?.();
       disconnectRef.current = null;
-    }
+    };
   }, [activeDevice, services, isOnline]);
 
+  const onReceivedOverWifi = (pins: any) => {
+    const pinsData = pins;
+    const pinObj: any = {};
+    Object.keys(pinsData).forEach((pin: string) => {
+      pinObj[Number(pin)] = pinsData[pin] == 1 ? true : false;
+    });
+    setPins(pinObj);
+  };
   useEffect(() => {
     if (!pins || Object.keys(pins).length === 0) return;
 
-    console.log("Updating devices")
-
-    setDevices(prev => {
+    setDevices((prev) => {
       let changed = false;
-      const next = prev.map(d => {
+      const next = prev.map((d) => {
         const p = pins[d.id];
         if (p === undefined) return d;
         const is_on = p;
-        
+
         if (d.is_on === is_on) return d;
         changed = true;
         return { ...d, is_on };
@@ -202,34 +220,45 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         device_type: button.type,
         is_on: false,
         position: idx,
-        command: button.command
-      }
+        command: button.command,
+      };
       buttons.push(obj);
-    })
+    });
     setDevices(buttons);
     setLoading(false);
     getBleConnection(deviceId);
   };
 
-  const getCurrentState = async (device: BleDevice, serviceId: string)  => {
-    if(!device) {
+  const loadWifiStatusData = async () => {
+    const wifiStatus = await getDeviceStatusOverWifi(deviceId);
+
+    if (wifiStatus) {
+      setIsWifiOnline(wifiStatus?.status?.online);
+      if (wifiStatus?.status?.online) {
+        onReceivedOverWifi(wifiStatus.status.pins);
+      }
+    }
+    loadSwitchboardData();
+  };
+  const getCurrentState = async (device: BleDevice, serviceId: string) => {
+    if (!device) {
       console.log("Device not connected");
       return;
     }
-     try {
+    try {
       const text = `REST:`;
       await bleManager.sendData(device, text, serviceId);
     } catch (e) {
-      console.error('Write failed', e);
+      console.error("Write failed", e);
     }
-  }
+  };
 
   const getBleConnection = async (macAddress: string) => {
     try {
       const already = await bleManager.getAlreadyConnected();
       let connected: BleDevice | null =
-        already.find(d => d.id === macAddress) || null;
-      console.log('is connected', connected);
+        already.find((d) => d.id === macAddress) || null;
+      console.log("is connected", connected);
 
       if (!connected) {
         console.debug("Not Connected. Retrying connection");
@@ -241,56 +270,59 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         console.log("Connection status", connected);
       }
 
-      if(connected) {
+      if (connected) {
         setIsOnline(true);
         setActiveDevice(connected);
         const serviceIds = await bleManager.getCustomServiceId(connected);
         setServices(serviceIds);
       }
-    } catch(err) {
-      console.log("err", err)
+    } catch (err) {
+      console.log("err", err);
     }
-  }
+  };
 
-  const sendDataToESP = async (pin: number, command: string): Promise<boolean> => {
+  const sendDataToESP = async (
+    pin: number,
+    command: string
+  ): Promise<boolean> => {
     if (!services.length || !activeDevice) {
-      console.log("Trying to send over wifi")
+      console.log("Trying to send over wifi");
       const payload: WifiPayload = {
         mac_address: deviceId,
         data: {
           cmd: command,
-          pin: pin
-        }
-      }
+          pin: pin,
+        },
+      };
       const status = await sendCommandOverWifi(payload);
       return status;
-    };
+    }
 
     try {
-      console.log('Send to ESP:', pin, command);
+      console.log("Send to ESP:", pin, command);
       const text = `PIN:${pin}:STATUS:${command}`;
       await bleManager.sendData(activeDevice, text, services[0]);
       return true;
     } catch (e) {
-      console.error('Write failed', e);
+      console.error("Write failed", e);
       return false;
     }
   };
 
   const toggleDevice = async (deviceId: number) => {
     try {
-      const dev = devices.find(d => d.id === deviceId);
+      const dev = devices.find((d) => d.id === deviceId);
       if (!dev) return;
       const status = await sendDataToESP(dev.id, dev.command);
-      if(status) {
-        setDevices(prev =>
-          prev.map(d => d.id === deviceId ? { ...d, is_on: !d.is_on } : d)
+      if (status) {
+        setDevices((prev) =>
+          prev.map((d) => (d.id === deviceId ? { ...d, is_on: !d.is_on } : d))
         );
       }
     } catch (e) {
       // revert on failure
-      setDevices(prev =>
-        prev.map(d => d.id === deviceId ? { ...d, is_on: !d.is_on } : d)
+      setDevices((prev) =>
+        prev.map((d) => (d.id === deviceId ? { ...d, is_on: !d.is_on } : d))
       );
     }
   };
@@ -304,23 +336,23 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   };
 
   const applySettings = async () => {
-    if(!tempColor) return;
+    if (!tempColor) return;
 
     // @ts-ignore
-    const selectedColor = tempColor?.match(/\d+/g).join(',')
+    const selectedColor = tempColor?.match(/\d+/g).join(",");
 
-    if (!services.length || !activeDevice){
-       // @ts-ignore
+    if (!services.length || !activeDevice) {
+      // @ts-ignore
       const arr = tempColor.match(/\d+/g).map(Number);
-      console.log("Trying to send settings over wifi")
+      console.log("Trying to send settings over wifi");
       const payload: WifiPayload = {
         mac_address: deviceId,
         data: {
           cmd: "color",
           color: arr,
-          brightness: tempIntensity
-        }
-      }
+          brightness: tempIntensity,
+        },
+      };
       const status = await sendCommandOverWifi(payload);
       return status;
     }
@@ -331,8 +363,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   };
 
   const openWifiModal = async () => {
-    const wifiCreds = await  loadWifi();
-    if(wifiCreds && wifiCreds.ssid) {
+    const wifiCreds = await loadWifi();
+    if (wifiCreds && wifiCreds.ssid) {
       setWifiSSID(wifiCreds.ssid);
       setWifiPassword(wifiCreds.pass);
     }
@@ -341,12 +373,12 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const saveWifiConfig = async () => {
     if (!wifiSSID.trim()) {
-      Alert.alert('Error', 'Please enter a WiFi network name');
+      Alert.alert("Error", "Please enter a WiFi network name");
       return;
     }
 
     if (!wifiPassword.trim() || wifiPassword.length < 8) {
-      Alert.alert('Error', 'Password must be at least 8 characters');
+      Alert.alert("Error", "Password must be at least 8 characters");
       return;
     }
 
@@ -355,18 +387,22 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     try {
       if (!services.length || !activeDevice) return;
       const text = `WIFI:${wifiSSID};${wifiPassword}`;
-      await bleManager.safeWrite({device: activeDevice, serviceUUID: services[0], charUUID: DATA_CHAR_UUID, base64Payload: Buffer.from(text).toString("base64")})
+      await bleManager.safeWrite({
+        device: activeDevice,
+        serviceUUID: services[0],
+        charUUID: DATA_CHAR_UUID,
+        base64Payload: Buffer.from(text).toString("base64"),
+      });
       //await bleManager.sendData(activeDevice, text, services[0]);
-    } catch(err) {
+    } catch (err) {
       console.log("Error sending wifi creds", err);
     } finally {
       setShowWifiModal(false);
-      Alert.alert('Success', 'WiFi credentials sent to device');
+      Alert.alert("Success", "WiFi credentials sent to device");
     }
   };
 
   const sendFanSpeed = async (speed: number, device: Device) => {
-
     const val = Math.max(30, Math.min(100, Math.round(speed)));
 
     if (!services.length || !activeDevice) {
@@ -382,42 +418,45 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     const text = `SPEED:${val};PIN:${device.id}`;
     console.log(text);
     await bleManager.sendData(activeDevice, text, services[0]);
-  }
+  };
 
-  const changeDeviceSpeed = React.useCallback((device: Device, speed: number) => {
-    const clamped = Math.max(0, Math.min(5, Math.round(speed)));
-    const percent = levelToPercent(clamped);
+  const changeDeviceSpeed = React.useCallback(
+    (device: Device, speed: number) => {
+      const clamped = Math.max(0, Math.min(5, Math.round(speed)));
+      const percent = levelToPercent(clamped);
 
-    setDevices(prev => {
-      const idx = prev.findIndex(d => d.id === device.id);
-      if (idx === -1) return prev;
+      setDevices((prev) => {
+        const idx = prev.findIndex((d) => d.id === device.id);
+        if (idx === -1) return prev;
 
-      const old = prev[idx].speed ?? 0;
-      const next = [...prev];
-      next[idx] = {
-        ...prev[idx],
-        speed: clamped,
-        is_on: clamped > 0 ? true : prev[idx].is_on,
-      };
+        const old = prev[idx].speed ?? 0;
+        const next = [...prev];
+        next[idx] = {
+          ...prev[idx],
+          speed: clamped,
+          is_on: clamped > 0 ? true : prev[idx].is_on,
+        };
 
-      (async () => {
-        try {
-          await sendFanSpeed(percent, device);
-        } catch {
-          // revert only that device
-          setDevices(curr => {
-            const j = curr.findIndex(d => d.id === device.id);
-            if (j === -1) return curr;
-            const copy = [...curr];
-            copy[j] = { ...copy[j], speed: old };
-            return copy;
-          });
-        }
-      })();
+        (async () => {
+          try {
+            await sendFanSpeed(percent, device);
+          } catch {
+            // revert only that device
+            setDevices((curr) => {
+              const j = curr.findIndex((d) => d.id === device.id);
+              if (j === -1) return curr;
+              const copy = [...curr];
+              copy[j] = { ...copy[j], speed: old };
+              return copy;
+            });
+          }
+        })();
 
-      return next;
-    });
-  }, [services.length, activeDevice]);
+        return next;
+      });
+    },
+    [services.length, activeDevice]
+  );
 
   const renderDeviceCard = (device: Device) => {
     const IconComponent = ROOM_ICONS[device.device_type] || Lightbulb;
@@ -425,39 +464,45 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     const speedValue = device.speed ?? 0;
 
     return (
-      <View style={[
-            styles.deviceCard,
-            isActive && styles.deviceCardActive,
-          ]}>
+      <View style={[styles.deviceCard, isActive && styles.deviceCardActive]}>
         <TouchableOpacity
           key={device.id}
           onPress={() => toggleDevice(device.id)}
         >
           <View style={isActive ? styles.glassOverlay : null} />
-          <View style={[styles.deviceIcon, isActive && styles.deviceIconActive]}>
+          <View
+            style={[styles.deviceIcon, isActive && styles.deviceIconActive]}
+          >
             <IconComponent
               size={26}
-              color={isActive ? '#fff' : '#64748b'}
+              color={isActive ? "#fff" : "#64748b"}
               strokeWidth={1.5}
             />
           </View>
           <View style={styles.deviceInfo}>
-            <Text style={[styles.deviceButton, isActive && styles.deviceButtonActive]}>
+            <Text
+              style={[
+                styles.deviceButton,
+                isActive && styles.deviceButtonActive,
+              ]}
+            >
               Button {device.position}
             </Text>
-            <Text style={[styles.deviceName, isActive && styles.deviceNameActive]}>
+            <Text
+              style={[styles.deviceName, isActive && styles.deviceNameActive]}
+            >
               {device.name}
             </Text>
           </View>
           <View
             style={[
               styles.deviceStatus,
-              { backgroundColor: isActive ? '#fff' : '#64748b' },
+              { backgroundColor: isActive ? "#fff" : "#64748b" },
             ]}
           />
         </TouchableOpacity>
 
-        {device.device_type === 'fan' && (
+        {device.device_type === "fan" && (
           <View style={styles.speedControllerBox}>
             <View style={styles.sliderRow}>
               <Text style={styles.label}>Speed</Text>
@@ -470,11 +515,17 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 // live UI update (no network)
                 onValueChange={(v: number) => {
                   const clamped = Math.max(0, Math.min(5, Math.round(v)));
-                  setDevices(prev => prev.map(d => d.id === device.id ? {
-                    ...d,
-                    speed: clamped,
-                    is_on: clamped > 0 ? true : d.is_on,
-                  } : d));
+                  setDevices((prev) =>
+                    prev.map((d) =>
+                      d.id === device.id
+                        ? {
+                            ...d,
+                            speed: clamped,
+                            is_on: clamped > 0 ? true : d.is_on,
+                          }
+                        : d
+                    )
+                  );
                 }}
                 // commit on release
                 onSlidingComplete={(v: number) => changeDeviceSpeed(device, v)}
@@ -523,7 +574,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             style={[styles.iconButton, showSettings && styles.iconButtonActive]}
             onPress={openSettings}
           >
-            <Settings size={20} color={showSettings ? '#5b8def' : '#cbd5e1'} />
+            <Settings size={20} color={showSettings ? "#5b8def" : "#cbd5e1"} />
           </TouchableOpacity>
         </View>
       </View>
@@ -531,30 +582,49 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       <ScrollView style={styles.content}>
         <View style={styles.boardHeader}>
           <View style={styles.boardInfo}>
-            <Text style={styles.boardName}>{switchboardName || 'Main Panel'}</Text>
+            <Text style={styles.boardName}>
+              {switchboardName || "Main Panel"}
+            </Text>
             <View style={styles.boardStatus}>
-              {
-                isOnline && <><View style={styles.onlineDot} />
-                <Text style={styles.onlineText}>Online</Text></>
-              }
+              {isOnline && (
+                <>
+                  <View style={styles.onlineDot} />
+                  <Text style={styles.onlineText}>Ble Online</Text>
+                </>
+              )}
 
-              {
-                !isOnline && <><View style={styles.offlineDot} />
-                <Text style={styles.offlineText}>Offline</Text></>
-              }
-              
+              {!isOnline && (
+                <>
+                  <View style={styles.offlineDot} />
+                  <Text style={styles.offlineText}>Ble Offline</Text>
+                </>
+              )}
+
               <Text style={styles.separator}>|</Text>
+              {isWifiOnline && (
+                <>
+                  <View style={styles.onlineDot} />
+                  <Text style={styles.onlineText}>Wifi Online</Text>
+                </>
+              )}
+              {!isWifiOnline && (
+                <>
+                  <View style={styles.offlineDot} />
+                  <Text style={styles.offlineText}>Wifi Offline</Text>
+                </>
+              )}
               <View style={styles.wifiContainer}>
                 <Wifi size={14} color="#5b8def" strokeWidth={2} />
-                <TouchableOpacity style={styles.configureButton} onPress={openWifiModal}>
+                <TouchableOpacity
+                  style={styles.configureButton}
+                  onPress={openWifiModal}
+                >
                   <Text style={styles.configureText}>Configure WiFi</Text>
                 </TouchableOpacity>
               </View>
             </View>
           </View>
-          <View
-            style={[styles.boardIcon]}
-          >
+          <View style={[styles.boardIcon]}>
             <IconComponent size={24} color="#5b8def" strokeWidth={2} />
           </View>
           {/* <View style={[styles.boardIcon, { backgroundColor: boardColor }]} /> */}
@@ -592,7 +662,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             </View>
 
             <View style={styles.intensitySection}>
-              <Text style={styles.sectionLabel}>Intensity: {tempIntensity}%</Text>
+              <Text style={styles.sectionLabel}>
+                Intensity: {tempIntensity}%
+              </Text>
               <CustomSlider
                 value={tempIntensity}
                 minimumValue={0}
@@ -609,7 +681,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 <Text style={styles.intensityLabel}>Bright</Text>
               </View>
 
-              <TouchableOpacity style={styles.applyButton} onPress={applySettings}>
+              <TouchableOpacity
+                style={styles.applyButton}
+                onPress={applySettings}
+              >
                 <Text style={styles.applyButtonText}>Apply</Text>
               </TouchableOpacity>
             </View>
@@ -661,7 +736,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
               />
             </View>
 
-            <TouchableOpacity style={styles.saveButton} onPress={saveWifiConfig}>
+            <TouchableOpacity
+              style={styles.saveButton}
+              onPress={saveWifiConfig}
+            >
               <Text style={styles.saveButtonText}>Save Configuration</Text>
             </TouchableOpacity>
           </View>
@@ -674,19 +752,19 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0f172a',
+    backgroundColor: "#0f172a",
   },
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     paddingHorizontal: 24,
     paddingTop: 48,
     paddingBottom: 16,
   },
   backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
   },
   speedControllerBox: {
@@ -695,61 +773,65 @@ const styles = StyleSheet.create({
   speedController: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: 'space-between'
+    justifyContent: "space-between",
   },
   speedInput: {
     height: 40,
     borderWidth: 1,
     padding: 10,
     marginBottom: 5,
-    borderColor: '#fff',
+    borderColor: "#fff",
     borderRadius: 5,
-    color: '#fff'
+    color: "#fff",
   },
   sliderRow: { marginTop: 6 },
-  label: { color: '#cbd5e1', fontSize: 13, marginBottom: 6 },
-  speedMarks: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
-  mark: { color: '#64748b', fontSize: 12 },
-  markActive: { color: '#fff', fontWeight: '700' },
+  label: { color: "#cbd5e1", fontSize: 13, marginBottom: 6 },
+  speedMarks: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 6,
+  },
+  mark: { color: "#64748b", fontSize: 12 },
+  markActive: { color: "#fff", fontWeight: "700" },
   backText: {
     fontSize: 16,
-    color: '#fff',
-    fontWeight: '500',
+    color: "#fff",
+    fontWeight: "500",
   },
   headerActions: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 12,
   },
   iconButton: {
     width: 44,
     height: 44,
     borderRadius: 12,
-    backgroundColor: '#1e293b',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "#1e293b",
+    alignItems: "center",
+    justifyContent: "center",
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: "#334155",
   },
   iconButtonActive: {
-    borderColor: '#5b8def',
+    borderColor: "#5b8def",
     borderWidth: 2,
   },
   content: {
     flex: 1,
   },
   boardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
     paddingHorizontal: 20,
     paddingVertical: 20,
-    backgroundColor: '#1e293b',
+    backgroundColor: "#1e293b",
     marginHorizontal: 24,
     marginTop: 16,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: '#334155',
-    shadowColor: '#000',
+    borderColor: "#334155",
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
@@ -760,52 +842,52 @@ const styles = StyleSheet.create({
   },
   boardName: {
     fontSize: 24,
-    fontWeight: 'bold',
-    color: '#fff',
+    fontWeight: "bold",
+    color: "#fff",
     marginBottom: 8,
   },
   boardStatus: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
-    flexWrap: 'wrap',
+    flexWrap: "wrap",
   },
   onlineDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: '#10b981',
+    backgroundColor: "#10b981",
   },
   onlineText: {
     fontSize: 14,
-    color: '#10b981',
-    fontWeight: '600',
+    color: "#10b981",
+    fontWeight: "600",
   },
   offlineDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: '#b91010ff',
+    backgroundColor: "#b91010ff",
   },
   offlineText: {
     fontSize: 14,
-    color: '#b91010ff',
+    color: "#b91010ff",
     fontWeight: 600,
   },
   separator: {
     fontSize: 14,
-    color: '#64748b',
+    color: "#64748b",
     marginHorizontal: 4,
   },
   wifiContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(91, 141, 239, 0.15)',
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(91, 141, 239, 0.15)",
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: 'rgba(91, 141, 239, 0.4)',
+    borderColor: "rgba(91, 141, 239, 0.4)",
     gap: 6,
   },
   configureButton: {
@@ -813,65 +895,65 @@ const styles = StyleSheet.create({
   },
   configureText: {
     fontSize: 13,
-    color: '#5b8def',
-    fontWeight: '600',
+    color: "#5b8def",
+    fontWeight: "600",
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    justifyContent: "center",
+    alignItems: "center",
     padding: 24,
   },
   modalContent: {
-    backgroundColor: '#1e293b',
+    backgroundColor: "#1e293b",
     borderRadius: 20,
     padding: 24,
-    width: '100%',
+    width: "100%",
     maxWidth: 400,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: "#334155",
   },
   modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     marginBottom: 24,
   },
   modalTitle: {
     fontSize: 22,
-    fontWeight: 'bold',
-    color: '#fff',
+    fontWeight: "bold",
+    color: "#fff",
   },
   inputGroup: {
     marginBottom: 20,
   },
   inputLabel: {
     fontSize: 14,
-    fontWeight: '600',
-    color: '#cbd5e1',
+    fontWeight: "600",
+    color: "#cbd5e1",
     marginBottom: 8,
   },
   input: {
-    backgroundColor: '#0f172a',
+    backgroundColor: "#0f172a",
     borderRadius: 12,
     padding: 14,
     fontSize: 15,
-    color: '#fff',
+    color: "#fff",
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: "#334155",
   },
   saveButton: {
-    backgroundColor: '#5b8def',
+    backgroundColor: "#5b8def",
     borderRadius: 14,
     paddingVertical: 14,
-    alignItems: 'center',
+    alignItems: "center",
     marginTop: 8,
   },
   saveButtonText: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#fff',
+    fontWeight: "600",
+    color: "#fff",
   },
   boardIcon: {
     width: 60,
@@ -879,19 +961,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 16,
     borderColor: "#fff",
-    backgroundColor: '#2d3b52',
-    alignItems: 'center',
-    justifyContent: 'center'
+    backgroundColor: "#2d3b52",
+    alignItems: "center",
+    justifyContent: "center",
   },
   settingsPanel: {
-    backgroundColor: '#1e293b',
+    backgroundColor: "#1e293b",
     marginHorizontal: 24,
     marginTop: 16,
     borderRadius: 20,
     padding: 20,
     borderWidth: 1,
-    borderColor: '#334155',
-    shadowColor: '#000',
+    borderColor: "#334155",
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
@@ -899,8 +981,8 @@ const styles = StyleSheet.create({
   },
   settingsTitle: {
     fontSize: 20,
-    fontWeight: 'bold',
-    color: '#fff',
+    fontWeight: "bold",
+    color: "#fff",
     marginBottom: 20,
   },
   colorSection: {
@@ -908,13 +990,13 @@ const styles = StyleSheet.create({
   },
   sectionLabel: {
     fontSize: 15,
-    fontWeight: '600',
-    color: '#fff',
+    fontWeight: "600",
+    color: "#fff",
     marginBottom: 12,
   },
   colorGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: "row",
+    flexWrap: "wrap",
     gap: 10,
     marginBottom: 16,
   },
@@ -923,18 +1005,18 @@ const styles = StyleSheet.create({
     height: 52,
     borderRadius: 14,
     borderWidth: 3,
-    borderColor: 'transparent',
+    borderColor: "transparent",
   },
   colorButtonSelected: {
-    borderColor: '#fff',
+    borderColor: "#fff",
   },
   selectedColorPreview: {
-    width: '100%',
+    width: "100%",
     height: 120,
     borderRadius: 16,
     borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-    shadowColor: '#000',
+    borderColor: "rgba(255, 255, 255, 0.2)",
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
     shadowRadius: 6,
@@ -944,21 +1026,21 @@ const styles = StyleSheet.create({
     marginBottom: 0,
   },
   intensityLabels: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    justifyContent: "space-between",
     marginTop: 8,
     marginBottom: 20,
   },
   intensityLabel: {
     fontSize: 13,
-    color: '#94a3b8',
+    color: "#94a3b8",
   },
   applyButton: {
-    backgroundColor: '#5b8def',
+    backgroundColor: "#5b8def",
     borderRadius: 14,
     paddingVertical: 14,
-    alignItems: 'center',
-    shadowColor: '#5b8def',
+    alignItems: "center",
+    shadowColor: "#5b8def",
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.4,
     shadowRadius: 8,
@@ -966,67 +1048,67 @@ const styles = StyleSheet.create({
   },
   applyButtonText: {
     fontSize: 15,
-    fontWeight: '600',
-    color: '#fff',
+    fontWeight: "600",
+    color: "#fff",
   },
   devicesGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: "row",
+    flexWrap: "wrap",
     paddingHorizontal: 16,
     paddingTop: 16,
     gap: 16,
     marginBottom: 32,
   },
   deviceCard: {
-    width: '47%',
-    backgroundColor: '#1e293b',
+    width: "47%",
+    backgroundColor: "#1e293b",
     borderRadius: 16,
     padding: 16,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: "#334155",
     minHeight: 140,
-    shadowColor: '#000',
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.25,
     shadowRadius: 6,
     elevation: 6,
-    overflow: 'hidden',
+    overflow: "hidden",
   },
   deviceCardActive: {
-    backgroundColor: 'rgb(70, 110, 190)',
-    borderColor: 'rgba(70, 110, 190, 0.6)',
+    backgroundColor: "rgb(70, 110, 190)",
+    borderColor: "rgba(70, 110, 190, 0.6)",
     borderWidth: 1.5,
-    shadowColor: 'rgb(70, 110, 190)',
+    shadowColor: "rgb(70, 110, 190)",
     shadowOpacity: 0.5,
     shadowRadius: 12,
   },
   glassOverlay: {
-    position: 'absolute',
+    position: "absolute",
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+    borderBottomColor: "rgba(255, 255, 255, 0.1)",
   },
   deviceIcon: {
     width: 48,
     height: 48,
     borderRadius: 14,
-    backgroundColor: '#334155',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "#334155",
+    alignItems: "center",
+    justifyContent: "center",
     marginBottom: 14,
     borderWidth: 1,
-    borderColor: 'rgba(100, 116, 139, 0.3)',
+    borderColor: "rgba(100, 116, 139, 0.3)",
   },
   deviceIconActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.25)',
-    borderColor: 'rgba(255, 255, 255, 0.4)',
-    shadowColor: '#fff',
+    backgroundColor: "rgba(255, 255, 255, 0.25)",
+    borderColor: "rgba(255, 255, 255, 0.4)",
+    shadowColor: "#fff",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
     shadowRadius: 4,
@@ -1037,25 +1119,25 @@ const styles = StyleSheet.create({
   },
   deviceButton: {
     fontSize: 11,
-    color: '#94a3b8',
+    color: "#94a3b8",
     marginBottom: 4,
   },
   deviceButtonActive: {
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: "rgba(255, 255, 255, 0.7)",
   },
   deviceName: {
     fontSize: 15,
-    fontWeight: '600',
-    color: '#fff',
+    fontWeight: "600",
+    color: "#fff",
   },
   deviceNameActive: {
-    color: '#fff',
+    color: "#fff",
   },
   deviceStatus: {
     width: 10,
     height: 10,
     borderRadius: 5,
-    position: 'absolute',
+    position: "absolute",
     top: 16,
     right: 16,
   },

@@ -47,13 +47,13 @@ export interface Layout {
 }
 
 export interface WifiPayload {
-  mac_address: string,
+  mac_address: string;
   data: {
-    cmd: string,
-    pin?: number,
-    color?: number[],
-    brightness?: number
-  }
+    cmd: string;
+    pin?: number;
+    color?: number[];
+    brightness?: number;
+  };
 }
 
 export async function fetchDevices(): Promise<DatabaseDevice[]> {
@@ -86,7 +86,9 @@ export async function getLayout(macAddress: string): Promise<Layout> {
     .then((res) => res.data);
 }
 
-export async function sendCommandOverWifi(payload: WifiPayload): Promise<boolean> {
+export async function sendCommandOverWifi(
+  payload: WifiPayload
+): Promise<boolean> {
   return client.post(`/presence`, payload).then((res) => res.data);
 }
 
@@ -99,5 +101,12 @@ export async function fetchDevicesByMac(
       paramsSerializer: (params) =>
         qs.stringify(params, { arrayFormat: "repeat" }),
     })
+    .then((res) => res.data)
+    .catch((e) => console.log(e.message));
+}
+
+export async function getDeviceStatusOverWifi(macAddress: string) {
+  return client
+    .get(`/devices/macaddress?mac_address=${macAddress}`)
     .then((res) => res.data);
 }
