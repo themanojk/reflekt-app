@@ -10,7 +10,7 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.littra.reflekt",
+      "bundleIdentifier": "com.littra.reflektapp",
       "infoPlist": {
         "NSBluetoothAlwaysUsageDescription": "Reflekt use Bluetooth to connect to nearby devices.",
         "NSBluetoothPeripheralUsageDescription": "Reflekt uses Bluetooth to communicate with nearby accessories."

@@ -52,6 +52,7 @@ class BLEManagerService {
   }
 
   mapServiceIds = async () => {
+    console.log("Mapping ESP Service IDs");
     this.ESP_SERVICE_UUID = await getESPServiceIds();
   };
 
@@ -168,7 +169,7 @@ class BLEManagerService {
           );
           this.seen.add(scanId);
           this.last.set(scanId, { ts: now, rssi });
-          onDeviceFound(device);
+          //onDeviceFound(device);
           return;
         }
       }

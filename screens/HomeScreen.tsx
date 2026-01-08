@@ -2,11 +2,12 @@ import { fetchDevicesByMac } from '@/api/devics';
 import { getRooms } from '@/api/room';
 import { useDebouncedCallback } from '@/callbacks/useDeboundcedCallback';
 import { ROOM_ICONS } from '@/constants';
+import { getCanonicalId } from '@/services/bleCanonicalId';
 import BLEManagerService from '@/services/bleManager';
-import { getBleDevice } from '@/utils/storage';
 import { Hop as Home, Plus, User } from 'lucide-react-native';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
+  Platform,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -41,11 +42,19 @@ const SWITCHBOARD_COLORS = [
   '#fb923c',
 ];
 
+type Row = {
+  id: string;           // transport id (device.id)
+  name: string | null;
+  rssi: number | null;
+  device: BleDevice;
+  canonicalId?: string; // <-- added directly on the row
+};
+
 export default function HomeScreen({ navigation }: any) {
   const bleManager = new BLEManagerService();
-  const [_scanning, setScanning] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [rooms, setRooms] = useState<Room[]>([]);
-  const [devices, setDevices] = useState<BleDevice[]>([]);
+  const [devices, setDevices] = useState<Row[]>([]);
   const [switchboards, setSwitchboards] = useState<Switchboard[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -58,51 +67,62 @@ export default function HomeScreen({ navigation }: any) {
       return [];
     }
   }, []);
-  
-  
-  const startScan = useCallback(async () => {
-    try {
-      const lastId = await getBleDevice();
-      let didReconnect = false;
 
-      if (lastId) {
-        try {
-          // try a direct connect (with autoConnect on Android)
-          const d = await bleManager.connectToDevice(lastId);
-          console.log('reconnected device', d);
-          if(d) {
-            await d.discoverAllServicesAndCharacteristics();
-            didReconnect = true;
-            setDevices([d]);
-          }
-        } catch (err) {
-          console.warn('Auto‐reconnect failed, falling back to scan', err);
+  const onDeviceFound = React.useCallback(async (device: BleDevice) => {
+    console.log('Discovered device:', device.id, device.name);
+    // Platform-aware canonical id (only iOS)
+    let canonicalId = device.id;
+    if (Platform.OS === 'ios') {
+      try {
+        canonicalId = await getCanonicalId(device);
+        console.log(`Canonical ID for device ${device.id} is ${canonicalId}`);
+      } catch (e) {
+          console.warn('canonicalId lookup failed; fallback to device.id', e);
+          canonicalId = device.id;
         }
-      }
-      const already = await fetchAlreadyConnected();
-      let seed = [...already];
-
-      if (lastId && !already.find(d => d.id === lastId)) {
-        console.log('Previously connected device not found:', lastId);
-      }
-      console.log("seed", seed)
-      setDevices(seed);
-      bleManager.startScan(device => {
-        setDevices(prev =>
-          prev.find(d => d.id === device.id) ? prev : [...prev, device],
-        );
-      });
-    } catch (err: any) {
-      console.log(err);
-      bleManager.stopScan();
-      return;
     }
 
-    setTimeout(() => {
-      bleManager.stopScan();
-      setScanning(false);
-    }, 30000);
+    setDevices(prev => {
+      const idx = prev.findIndex(r => r.canonicalId === canonicalId);
+      if (idx >= 0) {
+        const cur = prev[idx];
+        const next = [...prev];
+        next[idx] = {
+          ...cur,
+          device,
+          id: canonicalId,
+          name: device.name ?? cur.name,
+          rssi: device.rssi ?? cur.rssi,
+        };
+        return next;
+      }
+      return [...prev, { id: canonicalId, name: device.name ?? null, rssi: device.rssi ?? null, device, canonicalId }];
+    });
   }, []);
+  
+
+  const runScan = useCallback(async () => {
+    if (scanning) return;
+    setScanning(true);
+    try {
+      const { done } = bleManager.startScan_new(onDeviceFound, { stopAfterMs: 30000 });
+      await done;
+    } finally {
+      setScanning(false);
+    }
+  }, [bleManager, onDeviceFound, scanning]);
+
+  useEffect(() => {
+    console.log("Effect runScan called");
+    let cancelled = false;
+    (async () => {
+      await runScan();
+    })();
+    return () => {
+      cancelled = true;
+      bleManager.stopScan();
+    };
+  }, [runScan]);
 
   const loadRooms = async () => {
     setLoading(true);
@@ -138,15 +158,6 @@ export default function HomeScreen({ navigation }: any) {
   useEffect(() => {
     loadRooms();
   }, []);
-
-  useEffect(() => {
-    startScan();
-    return () => {
-      console.log("Moving to screen, Stopping the scan")
-      setScanning(false);
-      bleManager.stopScan();
-    };
-  }, [startScan]);
 
   useEffect(() => {
     if (!devices.length) return;
@@ -255,7 +266,8 @@ export default function HomeScreen({ navigation }: any) {
                       navigation.navigate("Switchboard", {
                         switchboardId: switchboard.id,
                         switchboardName: switchboard.name,
-                        deviceId: switchboard.id
+                        deviceId: switchboard.id,
+                        status: switchboard.is_online
                       })
                     }
                   >
