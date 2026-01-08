@@ -4,6 +4,7 @@ import { useDebouncedCallback } from '@/callbacks/useDeboundcedCallback';
 import { ROOM_ICONS } from '@/constants';
 import { getCanonicalId } from '@/services/bleCanonicalId';
 import BLEManagerService from '@/services/bleManager';
+import { useFocusEffect } from '@react-navigation/native';
 import { Hop as Home, Plus, User } from 'lucide-react-native';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
@@ -47,7 +48,8 @@ type Row = {
   name: string | null;
   rssi: number | null;
   device: BleDevice;
-  canonicalId?: string; // <-- added directly on the row
+  canonicalId?: string;
+  iosBleId?: string
 };
 
 export default function HomeScreen({ navigation }: any) {
@@ -93,6 +95,7 @@ export default function HomeScreen({ navigation }: any) {
           id: canonicalId,
           name: device.name ?? cur.name,
           rssi: device.rssi ?? cur.rssi,
+          iosBleId: Platform.OS === 'ios' ? device.id : cur.iosBleId
         };
         return next;
       }
@@ -112,17 +115,31 @@ export default function HomeScreen({ navigation }: any) {
     }
   }, [bleManager, onDeviceFound, scanning]);
 
-  useEffect(() => {
-    console.log("Effect runScan called");
-    let cancelled = false;
-    (async () => {
-      await runScan();
-    })();
-    return () => {
-      cancelled = true;
-      bleManager.stopScan();
-    };
-  }, [runScan]);
+  useFocusEffect(
+    useCallback(() => {
+      console.log('FocusEffect runScan called');
+
+      runScan();
+
+      return () => {
+        console.log('FocusEffect cleanup – stopping scan');
+        bleManager.stopScan();
+      };
+    }, [runScan])
+  );
+
+  // useEffect(() => {
+  //   console.log("Effect runScan called");
+  //   let cancelled = false;
+  //   (async () => {
+  //     await runScan();
+  //   })();
+  //   return () => {
+  //     console.log("Uneffect runScan cleanup called");
+  //     cancelled = true;
+  //     bleManager.stopScan();
+  //   };
+  // }, [runScan]);
 
   const loadRooms = async () => {
     setLoading(true);
@@ -267,7 +284,8 @@ export default function HomeScreen({ navigation }: any) {
                         switchboardId: switchboard.id,
                         switchboardName: switchboard.name,
                         deviceId: switchboard.id,
-                        status: switchboard.is_online
+                        status: switchboard.is_online,
+                        iosBleId: devices.find(d => d.canonicalId === switchboard.id)?.iosBleId
                       })
                     }
                   >

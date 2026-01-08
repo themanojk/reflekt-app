@@ -13,8 +13,10 @@
       "bundleIdentifier": "com.littra.reflektapp",
       "infoPlist": {
         "NSBluetoothAlwaysUsageDescription": "Reflekt use Bluetooth to connect to nearby devices.",
-        "NSBluetoothPeripheralUsageDescription": "Reflekt uses Bluetooth to communicate with nearby accessories."
+        "NSBluetoothPeripheralUsageDescription": "Reflekt uses Bluetooth to communicate with nearby accessories.",
+        "ITSAppUsesNonExemptEncryption": false
       },
+      "buildNumber": "1",
       "appleTeamId": "7A2483D2W6"
     },
     "android": {
@@ -86,6 +88,9 @@
     },
     "owner": "themanojk"
   },
+  "cli": {
+    "version": ">= 3.18.0"
+  },
   "build": {
     "development": {
       "developmentClient": true,
@@ -95,10 +100,30 @@
       "android": {
         "buildType": "apk"
       },
-      "distribution": "internal"
+      "distribution": "internal",
+      "ios": {
+        "resourceClass": "m-medium",
+        "simulator": false,
+        "autoIncrement": "buildNumber"
+      },
+      "channel": "preview"
     },
     "production": {
-      "autoincrement": true
+      "autoincrement": true,
+      "ios": {
+        "resourceClass": "m-medium",
+        "simulator": false,
+        "autoIncrement": "buildNumber"
+      },
+      "channel": "production"
+    }
+  },
+  "submit": {
+    "ios": {
+      "ascAppId": "6757523209",
+      "appleId": "themanojkum@gmail.com",
+      "sku": "reflekt-ios",
+      "companyName": "Littra Technologies Pvt Ltd"
     }
   }
 }

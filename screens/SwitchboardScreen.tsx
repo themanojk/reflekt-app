@@ -23,6 +23,7 @@ import React, { useEffect, useState } from "react";
 import {
   Alert,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -69,7 +70,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   if (!bleManagerRef.current) bleManagerRef.current = new BLEManagerService();
   const bleManager = bleManagerRef.current;
 
-  const { switchboardName, deviceId, roomIcon, status } = route.params;
+  const { switchboardName, deviceId, roomIcon, status, iosBleId } = route.params;
   const [devices, setDevices] = useState<Device[]>([]);
   const [activeDevice, setActiveDevice] = useState<BleDevice>();
   const [services, setServices] = useState<string[]>([]);
@@ -262,11 +263,19 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
       if (!connected) {
         console.debug("Not Connected. Retrying connection");
-        connected = await bleManager.connectSafely(deviceId, {
-          retries: 2,
-          connectTimeoutMs: 5000,
-          autoConnect: false,
-        });
+        if(Platform.OS === 'ios' && iosBleId) { 
+          connected = await bleManager.connectSafely(iosBleId, {
+            retries: 2,
+            connectTimeoutMs: 5000,
+            autoConnect: false,
+          });
+        } else {
+          connected = await bleManager.connectSafely(deviceId, {
+            retries: 2,
+            connectTimeoutMs: 5000,
+            autoConnect: false,
+          });
+        }
         console.log("Connection status", connected);
       }
 
