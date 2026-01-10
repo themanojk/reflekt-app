@@ -1,5 +1,5 @@
 import { Bluetooth } from 'lucide-react-native';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -19,7 +19,7 @@ import Toast from '@/components/Toast';
 import { DATA_CHAR_UUID } from '@/constants';
 import { getCanonicalId } from '@/services/bleCanonicalId';
 import BLEManagerService from '@/services/bleManager';
-import { getBleDevice, storeBleDevice } from '@/utils/storage';
+import { storeBleDevice } from '@/utils/storage';
 import { loadWifi, saveWifi } from '@/utils/wifiCreds';
 import { Buffer } from 'buffer';
 
@@ -34,7 +34,11 @@ type Row = {
 };
 
 export default function AddSwitchboardScreen({ navigation, route }: any) {
-  const bleManager = new BLEManagerService();
+  const bleManagerRef = React.useRef<BLEManagerService | null>(null);
+  if (!bleManagerRef.current) {
+    bleManagerRef.current = new BLEManagerService();
+  }
+  const bleManager = bleManagerRef.current;
   const { roomId } = route.params;
   const [_connectingId, setConnectingId] = useState<string | null>(null);
   const [step, setStep] = useState<Step>('scan');
@@ -55,183 +59,6 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
     setToast({ visible: true, message: msg });
   };
 
-
-  const fetchAlreadyConnected = useCallback(async () => {
-    try {
-      const already = await bleManager.connectedDevices();
-      return already;
-    } catch (e: any) {
-      console.warn('Error fetching connected devices', e);
-      return [];
-    }
-  }, []);
-
-
-  const startScan_1 = useCallback(async () => {
-    try {
-      const lastId = await getBleDevice();
-      let didReconnect = false;
-
-      if (lastId) {
-        try {
-          // try a direct connect (with autoConnect on Android)
-          const d = await bleManager.connectToDevice(lastId);
-          console.log('reconnected device', d);
-          if(d) {
-            await d.discoverAllServicesAndCharacteristics();
-            didReconnect = true;
-            //setDevices([d]);
-          }
-        } catch (err) {
-          console.warn('Auto‐reconnect failed, falling back to scan', err);
-        }
-      }
-      const already = await fetchAlreadyConnected();
-      let seed = [...already];
-
-      if (lastId && !already.find(d => d.id === lastId)) {
-        console.log('Previously connected device not found:', lastId);
-      }
-      //setDevices(seed);
-      bleManager.startScan(async (device: Device) => {
-        console.log("herrrerererre", device)
-        const cid = await getCanonicalId(device);
-        console.log("Cid", cid)
-        const row: Row = {
-          id: device.id,
-          name: device.name ?? null,
-          rssi: device.rssi ?? null,
-          device: device,
-          canonicalId: cid
-        };
-
-        setDevices(prev => {
-          const i = prev.findIndex(d => d.id === row.id);
-          if (i >= 0) {
-            const next = [...prev];
-            next[i] = { ...next[i], name: row.name ?? next[i].name, rssi: row.rssi, device: device, canonicalId: row.canonicalId };
-            return next;
-          }
-          return [...prev, row];
-        });
-
-        console.log(devices)
-      }, {stopAfterMs: 30000});
-    } catch (err: any) {
-      console.log("errooorrrrr",err);
-      bleManager.stopScan();
-      return;
-    }
-    
-    setTimeout(() => {
-      bleManager.stopScan();
-      setScanning(false);
-    }, 30000);
-  }, []);
-
-  const startScan = useCallback(async () => {
-    const mounted = { current: true };
-    let stopTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const seenCanonical = new Set<string>();          // de-dupe by canonical id
-    const canonicalCache = new Map<string, string>(); // cache per device.id
-
-    const safeStop = () => {
-      try { bleManager.stopScan(); } catch {}
-      if (stopTimer) clearTimeout(stopTimer);
-    };
-
-    try {
-      const already = await fetchAlreadyConnected();
-      if (already?.length) {
-        setDevices(prev => {
-          const next = [...prev];
-          for (const d of already) {
-            if (!next.find(x => x.id === d.id)) {
-              next.push({
-                id: d.id,
-                name: d.name ?? null,
-                rssi: d.rssi ?? null,
-                device: d,
-                canonicalId: Platform.OS === 'ios' ? d.id /* temporary */ : d.id,
-              });
-            }
-          }
-          return next;
-        });
-      }
-
-      bleManager.startScan(
-        async (device: Device) => {
-          if (!mounted.current || !device) return;
-
-          // ---- Platform-aware canonical id ----
-          let canonicalId = canonicalCache.get(device.id);
-          if (!canonicalId) {
-            if (Platform.OS === 'ios') {
-              try {
-                canonicalId = await getCanonicalId(device);
-              } catch (e) {
-                console.warn('canonicalId lookup failed; fallback to device.id', e);
-                canonicalId = device.id;
-              }
-            } else {
-              // Android: use device.id as-is
-              canonicalId = device.id;
-            }
-            canonicalCache.set(device.id, canonicalId);
-          }
-
-          // de-dupe across repeated advertisements / platforms
-          if (!seenCanonical.has(canonicalId)) {
-            seenCanonical.add(canonicalId);
-          }
-
-          setDevices(prev => {
-            const idx = prev.findIndex(r => r.canonicalId === canonicalId);
-            if (idx >= 0) {
-              const cur = prev[idx];
-              const next = [...prev];
-              next[idx] = {
-                ...cur,
-                device,
-                id: device.id,                     // keep latest platform id
-                name: device.name ?? cur.name,
-                rssi: device.rssi ?? cur.rssi,
-                canonicalId,
-              };
-              return next;
-            }
-            return [
-              ...prev,
-              {
-                id: device.id,
-                name: device.name ?? null,
-                rssi: device.rssi ?? null,
-                device,
-                canonicalId,
-              },
-            ];
-          });
-        },
-        { stopAfterMs: 30000 }
-      );
-
-      stopTimer = setTimeout(() => {
-        safeStop();
-        setScanning(false);
-      }, 30000);
-    } catch (err) {
-      console.log('scan error', err);
-      safeStop();
-    }
-
-    return () => {
-      mounted.current = false;
-      safeStop();
-    };
-  }, [bleManager, setDevices, setScanning]);
-
   const loadWifiCreds = async () => {
     const creds = await loadWifi();
     if(!creds || !creds.ssid) return
@@ -240,15 +67,68 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
     setWifiPassword(creds.pass);
   }
 
-  useEffect(() => {
-    if (step === 'scan') {
-      startScan();
+  const onDeviceFound = React.useCallback(async (device: Device) => {
+    let canonicalId = device.id;
+
+    if (Platform.OS === 'ios') {
+      try {
+        canonicalId = await getCanonicalId(device);
+      } catch {}
     }
+
+    setDevices(prev => {
+      const idx = prev.findIndex(d => d.canonicalId === canonicalId);
+
+      if (idx >= 0) return prev; // ❗ ignore repeated advertisements
+
+      return [
+        ...prev,
+        {
+          id: device.id,
+          name: device.name ?? null,
+          rssi: device.rssi ?? null,
+          device,
+          canonicalId,
+        },
+      ];
+    });
+  }, []);
+
+  const runScan = React.useCallback(async () => {
+    if (scanning) return;            // prevent double taps
+    setScanning(true);
+    try {
+      const { done } = bleManager.startScan_new(onDeviceFound, { stopAfterMs: 30000 });
+      await done;                    // await completion (auto-stop or manual)
+    } finally {
+      setScanning(false);
+    }
+  }, [bleManager, onDeviceFound, scanning]);
+
+  useEffect(() => {
+    if (step !== 'scan') return;
+
+    let cancelled = false;
+
+    const start = async () => {
+      setScanning(true);
+      try {
+        const { done } = bleManager.startScan_new(onDeviceFound, {
+          stopAfterMs: 30000,
+        });
+        await done;
+      } finally {
+        if (!cancelled) setScanning(false);
+      }
+    };
+
+    start();
+
     return () => {
-      setScanning(false)
+      cancelled = true;
       bleManager.stopScan();
     };
-  }, [startScan]);
+  }, [step]);
 
   useEffect(() => {
     loadWifiCreds();
@@ -387,7 +267,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
                   setScanning(true);
                   setStep('scan');
                   setDevices([]);
-                  startScan();
+                  runScan();
                 }}
               >
                 <Text style={styles.retryButtonText}>Scan Again</Text>
@@ -423,7 +303,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
             style={styles.manualButton}
             onPress={() => {
               setStep('scan');
-              startScan();
+              runScan();
             }}
           >
             <Text style={styles.manualButtonText}>Refresh</Text>
