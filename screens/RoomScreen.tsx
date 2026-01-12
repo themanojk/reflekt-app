@@ -1,9 +1,10 @@
-import { DatabaseDevice, fetchDevicesByRoom } from '@/api/devics';
-import { ROOM_ICONS } from '@/constants';
-import type { RootStackParamList } from '@/constants/types';
-import { RouteProp } from '@react-navigation/native';
-import { ChevronLeft, Plus } from 'lucide-react-native';
-import React, { useEffect, useState } from 'react';
+import { DatabaseDevice } from "@/api/devics";
+import { ROOM_ICONS } from "@/constants";
+import type { RootStackParamList } from "@/constants/types";
+import { getSwitchboardsByRoomId } from "@/db/switchboards.local";
+import { RouteProp } from "@react-navigation/native";
+import { ChevronLeft, Plus } from "lucide-react-native";
+import React, { useEffect, useState } from "react";
 import {
   Animated,
   RefreshControl,
@@ -12,10 +13,10 @@ import {
   Text,
   TouchableOpacity,
   View,
-} from 'react-native';
+} from "react-native";
 
 type Props = {
-  route: RouteProp<RootStackParamList, 'Room'>;
+  route: RouteProp<RootStackParamList, "Room">;
   navigation: any;
 };
 
@@ -23,10 +24,13 @@ export default function RoomScreen({ route, navigation }: Props) {
   const { roomId, roomName, roomIcon, devices } = route.params;
   const [switchboards, setSwitchboards] = useState<DatabaseDevice[]>([]);
   const [loading, setLoading] = useState(false);
-  const [toggleAnimations, setToggleAnimations] = useState<Map<string, Animated.Value>>(new Map());
+  const [toggleAnimations, setToggleAnimations] = useState<
+    Map<string, Animated.Value>
+  >(new Map());
   const IconComponent = ROOM_ICONS[roomIcon];
 
   useEffect(() => {
+    console.log(roomId);
     loadSwitchboards();
   }, [roomId]);
 
@@ -67,17 +71,22 @@ export default function RoomScreen({ route, navigation }: Props) {
 
   const loadSwitchboards = async () => {
     setLoading(true);
-    const data = await fetchDevicesByRoom(roomId);
-    const deviceObj: any = {};
-    devices.forEach(device => {
-      deviceObj[device.id] = true
-    })
+    try {
+      const boardData = await getSwitchboardsByRoomId(roomId);
+      console.log(boardData);
+      const deviceObj: any = {};
+      devices.forEach((device) => {
+        deviceObj[device.id] = true;
+      });
 
-    data.forEach(item => {
-      item.is_online = deviceObj[item.device_id] ?? false
-    })
-    setSwitchboards(data);
-    setLoading(false);
+      boardData.forEach((item) => {
+        item.is_online = deviceObj[item.device_id] ?? false;
+      });
+      setSwitchboards(boardData);
+      setLoading(false);
+    } catch (e) {
+      console.log(e.message);
+    }
   };
 
   return (
@@ -95,125 +104,153 @@ export default function RoomScreen({ route, navigation }: Props) {
       <ScrollView
         style={styles.content}
         refreshControl={
-          <RefreshControl refreshing={loading} onRefresh={loadSwitchboards} tintColor="#fff" />
+          <RefreshControl
+            refreshing={loading}
+            onRefresh={loadSwitchboards}
+            tintColor="#fff"
+          />
         }
       >
         <View style={styles.titleSection}>
           <Text style={styles.roomTitle}>{roomName}</Text>
           <Text style={styles.roomSubtitle}>
-            {switchboards.length} switchboard{switchboards.length !== 1 ? 's' : ''}
+            {switchboards.length} switchboard
+            {switchboards.length !== 1 ? "s" : ""}
           </Text>
         </View>
 
         <View style={styles.switchboardsList}>
-          {switchboards.map((switchboard) => 
-            {
-              return (
-                <TouchableOpacity
-                  key={switchboard._id}
-                  style={styles.switchboardCard}
-                  onPress={() =>
-                    navigation.navigate('Switchboard', {
-                      switchboardId: switchboard._id,
-                      switchboardName: switchboard.title,
-                      deviceId: switchboard.device_id,
-                      roomIcon: roomIcon,
-                      roomId: roomId,
-                      status: switchboard.is_online
-                    })
-                  }
-                >
-                  <View
-                    style={[styles.switchboardIcon]}
-                  >
-                    <IconComponent size={24} color="#5b8def" strokeWidth={2} />
-                  </View>
-                  <View style={styles.switchboardInfo}>
-                    <Text style={styles.switchboardName}>{switchboard.title}</Text>
-                    {switchboard.is_online && <View style={styles.statusRow}>
+          {switchboards.map((switchboard) => {
+            console.log(switchboard);
+            return (
+              <TouchableOpacity
+                key={switchboard.id}
+                style={styles.switchboardCard}
+                onPress={() =>
+                  navigation.navigate("Switchboard", {
+                    service_id: switchboard.service_id,
+                    switchboardName: switchboard.name,
+                    deviceId: switchboard.id,
+                    roomIcon: roomIcon,
+                    roomId: roomId,
+                    status: switchboard.is_online,
+                  })
+                }
+              >
+                <View style={[styles.switchboardIcon]}>
+                  <IconComponent size={24} color="#5b8def" strokeWidth={2} />
+                </View>
+                <View style={styles.switchboardInfo}>
+                  <Text style={styles.switchboardName}>{switchboard.name}</Text>
+                  {switchboard.is_online && (
+                    <View style={styles.statusRow}>
                       <View style={styles.onlineDot} />
                       <Text style={styles.onlineText}>Online</Text>
-                    </View>}
-                    {!switchboard.is_online && <View style={styles.statusRow}>
+                    </View>
+                  )}
+                  {!switchboard.is_online && (
+                    <View style={styles.statusRow}>
                       <View style={styles.offlineDot} />
                       <Text style={styles.offlineText}>Offline</Text>
-                    </View>}
-                  </View>
-                  <TouchableOpacity
-                    style={styles.toggleContainer}
-                    onPress={(e) => {
-                      e.stopPropagation();
-                      togglePower(switchboard._id);
-                    }}
-                    activeOpacity={0.8}
+                    </View>
+                  )}
+                </View>
+                <TouchableOpacity
+                  style={styles.toggleContainer}
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    togglePower(switchboard._id);
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Animated.View
+                    style={[
+                      styles.toggleButton,
+                      {
+                        backgroundColor: toggleAnimations
+                          .get(switchboard._id)
+                          ?.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [
+                              "rgba(51, 65, 85, 0.4)",
+                              "rgba(91, 141, 239, 0.35)",
+                            ],
+                          }),
+                        borderColor: toggleAnimations
+                          .get(switchboard._id)
+                          ?.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [
+                              "rgba(148, 163, 184, 0.2)",
+                              "rgba(91, 141, 239, 0.5)",
+                            ],
+                          }),
+                      },
+                    ]}
                   >
                     <Animated.View
                       style={[
-                        styles.toggleButton,
+                        styles.toggleThumb,
                         {
-                          backgroundColor: toggleAnimations.get(switchboard._id)?.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: ['rgba(51, 65, 85, 0.4)', 'rgba(91, 141, 239, 0.35)'],
-                          }),
-                          borderColor: toggleAnimations.get(switchboard._id)?.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: ['rgba(148, 163, 184, 0.2)', 'rgba(91, 141, 239, 0.5)'],
-                          }),
+                          transform: [
+                            {
+                              translateX:
+                                toggleAnimations
+                                  .get(switchboard._id)
+                                  ?.interpolate({
+                                    inputRange: [0, 1],
+                                    outputRange: [0, 22],
+                                  }) || 0,
+                            },
+                          ],
+                          backgroundColor: toggleAnimations
+                            .get(switchboard._id)
+                            ?.interpolate({
+                              inputRange: [0, 1],
+                              outputRange: [
+                                "rgba(148, 163, 184, 0.9)",
+                                "#5b8def",
+                              ],
+                            }),
                         },
                       ]}
                     >
                       <Animated.View
                         style={[
-                          styles.toggleThumb,
+                          styles.thumbGloss,
                           {
-                            transform: [
-                              {
-                                translateX: toggleAnimations.get(switchboard._id)?.interpolate({
-                                  inputRange: [0, 1],
-                                  outputRange: [0, 22],
-                                }) || 0,
-                              },
-                            ],
-                            backgroundColor: toggleAnimations.get(switchboard._id)?.interpolate({
-                              inputRange: [0, 1],
-                              outputRange: ['rgba(148, 163, 184, 0.9)', '#5b8def'],
-                            }),
-                          },
-                        ]}
-                      >
-                        <Animated.View
-                          style={[
-                            styles.thumbGloss,
-                            {
-                              opacity: toggleAnimations.get(switchboard._id)?.interpolate({
+                            opacity: toggleAnimations
+                              .get(switchboard._id)
+                              ?.interpolate({
                                 inputRange: [0, 1],
                                 outputRange: [0.3, 0.6],
                               }),
-                            },
-                          ]}
-                        />
-                      </Animated.View>
-                      <Animated.View
-                        style={[
-                          styles.toggleGlow,
-                          {
-                            opacity: toggleAnimations.get(switchboard._id)?.interpolate({
-                              inputRange: [0, 1],
-                              outputRange: [0, 0.6],
-                            }),
                           },
                         ]}
                       />
                     </Animated.View>
-                  </TouchableOpacity>
+                    <Animated.View
+                      style={[
+                        styles.toggleGlow,
+                        {
+                          opacity: toggleAnimations
+                            .get(switchboard._id)
+                            ?.interpolate({
+                              inputRange: [0, 1],
+                              outputRange: [0, 0.6],
+                            }),
+                        },
+                      ]}
+                    />
+                  </Animated.View>
                 </TouchableOpacity>
-              )
-            }
-          )}
+              </TouchableOpacity>
+            );
+          })}
 
           <TouchableOpacity
             style={styles.addButton}
-            onPress={() => navigation.navigate('AddSwitchboard', { roomId })}
+            onPress={() => navigation.navigate("AddSwitchboard", { roomId })}
           >
             <Plus size={20} color="#fff" strokeWidth={2.5} />
             <Text style={styles.addButtonText}>Add Switchboard</Text>
@@ -227,25 +264,25 @@ export default function RoomScreen({ route, navigation }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0f172a',
+    backgroundColor: "#0f172a",
   },
   header: {
-    flexDirection: 'row',
-    justifyContent: 'flex-start',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "flex-start",
+    alignItems: "center",
     paddingHorizontal: 24,
     paddingTop: 48,
     paddingBottom: 16,
   },
   backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
   },
   backText: {
     fontSize: 16,
-    color: '#fff',
-    fontWeight: '500',
+    color: "#fff",
+    fontWeight: "500",
   },
   content: {
     flex: 1,
@@ -256,28 +293,28 @@ const styles = StyleSheet.create({
   },
   roomTitle: {
     fontSize: 32,
-    fontWeight: 'bold',
-    color: '#fff',
+    fontWeight: "bold",
+    color: "#fff",
     marginBottom: 6,
   },
   roomSubtitle: {
     fontSize: 15,
-    color: '#94a3b8',
+    color: "#94a3b8",
   },
   switchboardsList: {
     paddingHorizontal: 24,
     gap: 16,
   },
   switchboardCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#1e293b',
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#1e293b",
     borderRadius: 16,
     padding: 16,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: '#334155',
-    shadowColor: '#000',
+    borderColor: "#334155",
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
@@ -288,56 +325,56 @@ const styles = StyleSheet.create({
     height: 52,
     borderRadius: 16,
     marginRight: 14,
-    backgroundColor: '#2d3b52',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "#2d3b52",
+    alignItems: "center",
+    justifyContent: "center",
   },
   switchboardInfo: {
     flex: 1,
   },
   switchboardName: {
     fontSize: 17,
-    fontWeight: '600',
-    color: '#fff',
+    fontWeight: "600",
+    color: "#fff",
     marginBottom: 5,
   },
   statusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 6,
   },
   onlineDot: {
     width: 7,
     height: 7,
     borderRadius: 4,
-    backgroundColor: '#10b981',
+    backgroundColor: "#10b981",
   },
   onlineText: {
     fontSize: 13,
-    color: '#10b981',
-    fontWeight: '500',
+    color: "#10b981",
+    fontWeight: "500",
   },
   offlineDot: {
     width: 7,
     height: 7,
     borderRadius: 4,
-    backgroundColor: '#b91010ff',
+    backgroundColor: "#b91010ff",
   },
   offlineText: {
     fontSize: 13,
-    color: '#b91010ff',
-    fontWeight: '500',
+    color: "#b91010ff",
+    fontWeight: "500",
   },
   addButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#5b8def',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#5b8def",
     borderRadius: 16,
     paddingVertical: 16,
     gap: 8,
     marginBottom: 32,
-    shadowColor: '#5b8def',
+    shadowColor: "#5b8def",
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.4,
     shadowRadius: 10,
@@ -345,12 +382,12 @@ const styles = StyleSheet.create({
   },
   addButtonText: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#fff',
+    fontWeight: "600",
+    color: "#fff",
   },
   toggleContainer: {
     marginLeft: 12,
-    shadowColor: '#000',
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 6,
@@ -361,41 +398,41 @@ const styles = StyleSheet.create({
     height: 28,
     borderRadius: 14,
     padding: 3,
-    justifyContent: 'center',
+    justifyContent: "center",
     borderWidth: 1.5,
-    overflow: 'hidden',
+    overflow: "hidden",
   },
   toggleThumb: {
     width: 22,
     height: 22,
     borderRadius: 11,
-    shadowColor: '#000',
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
     shadowRadius: 4,
     elevation: 4,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-    overflow: 'hidden',
+    borderColor: "rgba(255, 255, 255, 0.3)",
+    overflow: "hidden",
   },
   thumbGloss: {
-    position: 'absolute',
+    position: "absolute",
     top: 0,
     left: 0,
     right: 0,
-    height: '50%',
+    height: "50%",
     borderTopLeftRadius: 11,
     borderTopRightRadius: 11,
-    backgroundColor: 'rgba(255, 255, 255, 0.4)',
+    backgroundColor: "rgba(255, 255, 255, 0.4)",
   },
   toggleGlow: {
-    position: 'absolute',
+    position: "absolute",
     top: -2,
     left: -2,
     right: -2,
     bottom: -2,
     borderRadius: 16,
-    backgroundColor: '#5b8def',
+    backgroundColor: "#5b8def",
     opacity: 0,
   },
 });

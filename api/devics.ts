@@ -1,9 +1,10 @@
+import { upsertLayoutButtonsFromServer } from "@/db/layout_buttons";
 import qs from "qs";
 import client from "./client";
 
 export interface DatabaseDevice {
   _id: string;
-  title: string;
+  name: string;
   device_id: string;
   room_id: string;
   user_id: string;
@@ -80,10 +81,21 @@ export async function addLayout(serviceId: string, body: any): Promise<any> {
     .then((res) => res.data);
 }
 
-export async function getLayout(macAddress: string): Promise<Layout> {
-  return client
-    .get(`/v2/boards/macAddress/${macAddress}/layout`)
-    .then((res) => res.data);
+export interface GetLayoutResult {
+  hasChanged: boolean;
+}
+
+export async function getLayout(macAddress: string): Promise<GetLayoutResult> {
+  // 1️⃣ Call API
+  const res = await client.get(`/v2/boards/macAddress/${macAddress}/layout`);
+
+  const layoutResponse = res.data;
+
+  // 2️⃣ Upsert into local DB + detect changes
+  const hasChanged = await upsertLayoutButtonsFromServer(layoutResponse);
+
+  // 3️⃣ Return only change signal
+  return { hasChanged };
 }
 
 export async function sendCommandOverWifi(

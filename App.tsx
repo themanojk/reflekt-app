@@ -1,21 +1,24 @@
-import { NavigationContainer } from '@react-navigation/native';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { StatusBar } from 'expo-status-bar';
-import React from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
-import type { RootStackParamList } from './constants/types';
-import { ROLES } from './constants/types';
-import { AuthProvider, useAuth } from './contexts/AuthContext';
-import AddRoomScreen from './screens/AddRoomScreen';
-import AddSwitchboardAdminScreen from './screens/AddSwitchBoardAdminScreen';
-import AddSwitchboardScreen from './screens/AddSwitchboardScreen';
-import HomeScreen from './screens/HomeScreen';
-import LoginScreen from './screens/LoginScreen';
-import ProfileScreen from './screens/ProfileScreen';
-import RoomScreen from './screens/RoomScreen';
-import SwitchboardScreen from './screens/SwitchboardScreen';
+import { NavigationContainer } from "@react-navigation/native";
+import { createNativeStackNavigator } from "@react-navigation/native-stack";
+import { StatusBar } from "expo-status-bar";
+import React from "react";
+import { ActivityIndicator, StyleSheet, View } from "react-native";
+import type { RootStackParamList } from "./constants/types";
+import { ROLES } from "./constants/types";
+import { AuthProvider, useAuth } from "./contexts/AuthContext";
+import { initDB } from "./db";
+import AddRoomScreen from "./screens/AddRoomScreen";
+import AddSwitchboardAdminScreen from "./screens/AddSwitchBoardAdminScreen";
+import AddSwitchboardScreen from "./screens/AddSwitchboardScreen";
+import HomeScreen from "./screens/HomeScreen";
+import LoginScreen from "./screens/LoginScreen";
+import ProfileScreen from "./screens/ProfileScreen";
+import RoomScreen from "./screens/RoomScreen";
+import SwitchboardScreen from "./screens/SwitchboardScreen";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
+// dropTables();
+initDB();
 
 function AuthStack() {
   return (
@@ -28,7 +31,10 @@ function AuthStack() {
 function AdminStack() {
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="AddSwitchboardAdmin" component={AddSwitchboardAdminScreen} />
+      <Stack.Screen
+        name="AddSwitchboardAdmin"
+        component={AddSwitchboardAdminScreen}
+      />
       <Stack.Screen name="Switchboard" component={SwitchboardScreen} />
       <Stack.Screen name="Profile" component={ProfileScreen} />
     </Stack.Navigator>
@@ -59,13 +65,14 @@ function Navigation() {
     );
   }
 
-  if(!user) return (
-    <NavigationContainer>
-      <AuthStack />
-    </NavigationContainer>
-  )
+  if (!user)
+    return (
+      <NavigationContainer>
+        <AuthStack />
+      </NavigationContainer>
+    );
 
-  switch(user?.role) {
+  switch (user?.role) {
     case ROLES.ADMIN:
       return (
         <NavigationContainer>
@@ -94,8 +101,8 @@ export default function App() {
 const styles = StyleSheet.create({
   loadingContainer: {
     flex: 1,
-    backgroundColor: '#0f172a',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "#0f172a",
+    alignItems: "center",
+    justifyContent: "center",
   },
 });

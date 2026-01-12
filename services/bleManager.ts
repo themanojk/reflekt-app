@@ -1,6 +1,11 @@
-import { sleep } from '@/utils/general';
-import { getESPServiceIds } from '@/utils/storage';
-import { AppState, AppStateStatus, PermissionsAndroid, Platform } from 'react-native';
+import { sleep } from "@/utils/general";
+import { getESPServiceIds } from "@/utils/storage";
+import {
+  AppState,
+  AppStateStatus,
+  PermissionsAndroid,
+  Platform,
+} from "react-native";
 import {
   BleManager,
   Characteristic,
@@ -9,20 +14,19 @@ import {
   ScanCallbackType,
   ScanMode,
   State,
-  Subscription
-} from 'react-native-ble-plx';
-import { DATA_CHAR_UUID, STANDARD_SERVICE_UUIDS } from '../constants';
-import { getScanId } from './bleIds';
+  Subscription,
+} from "react-native-ble-plx";
+import { DATA_CHAR_UUID, STANDARD_SERVICE_UUIDS } from "../constants";
+import { getScanId } from "./bleIds";
 
-
-const Buffer = require('buffer').Buffer;
+const Buffer = require("buffer").Buffer;
 
 type ConnectOpts = {
   serviceUUIDs?: string[]; // for scan filtering (better than id on iOS)
   connectTimeoutMs?: number; // per-attempt
-  scanTimeoutMs?: number;    // pre-scan budget
-  retries?: number;          // retry count on transient errors (e.g., 133)
-  autoConnect?: boolean;     // default false; true only if you know why
+  scanTimeoutMs?: number; // pre-scan budget
+  retries?: number; // retry count on transient errors (e.g., 133)
+  autoConnect?: boolean; // default false; true only if you know why
   refreshGatt?: "OnConnected" | "Never";
 };
 export type Disposer = { remove: () => void };
@@ -63,24 +67,34 @@ class BLEManagerService {
 
   async ensureRestartableCoolDown(ms = 150) {
     // brief cool-down to avoid "Cannot start scanning operation"
-    await new Promise(r => setTimeout(r, ms));
+    await new Promise((r) => setTimeout(r, ms));
   }
 
   /** Call once at app startup (or before scanning) */
   async initialize() {
-    if (Platform.OS !== 'android') return true;
+    if (Platform.OS !== "android") return true;
 
     if (Platform.Version >= 31) {
       const scan = await PermissionsAndroid.request(
-        'android.permission.BLUETOOTH_SCAN',
-        { title: 'Bluetooth permission', message: 'Needed to scan for devices', buttonPositive: 'OK' }
+        "android.permission.BLUETOOTH_SCAN",
+        {
+          title: "Bluetooth permission",
+          message: "Needed to scan for devices",
+          buttonPositive: "OK",
+        }
       );
       const connect = await PermissionsAndroid.request(
-        'android.permission.BLUETOOTH_CONNECT',
-        { title: 'Bluetooth permission', message: 'Needed to connect to devices', buttonPositive: 'OK' }
+        "android.permission.BLUETOOTH_CONNECT",
+        {
+          title: "Bluetooth permission",
+          message: "Needed to connect to devices",
+          buttonPositive: "OK",
+        }
       );
-      return scan === PermissionsAndroid.RESULTS.GRANTED &&
-            connect === PermissionsAndroid.RESULTS.GRANTED;
+      return (
+        scan === PermissionsAndroid.RESULTS.GRANTED &&
+        connect === PermissionsAndroid.RESULTS.GRANTED
+      );
     } else {
       const loc = await PermissionsAndroid.request(
         PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
@@ -100,7 +114,7 @@ class BLEManagerService {
     await new Promise<void>((resolve, reject) => {
       const tid = setTimeout(() => {
         sub.remove();
-        reject(new Error('Bluetooth not PoweredOn'));
+        reject(new Error("Bluetooth not PoweredOn"));
       }, timeoutMs);
 
       const sub = this.manager.onStateChange((state) => {
@@ -119,9 +133,11 @@ class BLEManagerService {
   ) {
     if (this.isScanning) {
       // stop previous scan before starting a new one
-      try { this.manager.stopDeviceScan(); } catch {}
+      try {
+        this.manager.stopDeviceScan();
+      } catch {}
       this.isScanning = false;
-      await new Promise(r => setTimeout(r, 200)); // small cool-down
+      await new Promise((r) => setTimeout(r, 200)); // small cool-down
     }
 
     await this.initialize();
@@ -153,9 +169,9 @@ class BLEManagerService {
         }
         if (!device) return;
         const scanId = getScanId(device);
-        if(!scanId) return;
+        if (!scanId) return;
 
-        const now  = Date.now();
+        const now = Date.now();
         const rssi = device.rssi ?? null;
 
         if (!this.seen.has(scanId)) {
@@ -169,7 +185,7 @@ class BLEManagerService {
           );
           this.seen.add(scanId);
           this.last.set(scanId, { ts: now, rssi });
-          //onDeviceFound(device);
+          onDeviceFound(device);
           return;
         }
       }
@@ -185,7 +201,9 @@ class BLEManagerService {
   ): StartScanHandle {
     // If already scanning, stop the previous one first (callable safety)
     if (this.isScanning) {
-      try { this.stopScan(); } catch {}
+      try {
+        this.stopScan();
+      } catch {}
     }
 
     const mySession = ++this.session;
@@ -193,7 +211,7 @@ class BLEManagerService {
     this.seen.clear();
 
     // Promise that resolves when this scan ends
-    const done = new Promise<void>(resolve => {
+    const done = new Promise<void>((resolve) => {
       this.currentDoneResolve = () => {
         if (this.session === mySession) resolve();
       };
@@ -201,7 +219,9 @@ class BLEManagerService {
 
     const stop = () => {
       if (this.session !== mySession) return; // only stop if this session is current
-      try { this.manager.stopDeviceScan(); } catch {}
+      try {
+        this.manager.stopDeviceScan();
+      } catch {}
       this.isScanning = false;
       this.currentStop = null;
       this.currentDoneResolve?.();
@@ -215,12 +235,12 @@ class BLEManagerService {
         await this.waitForPoweredOn();
         await this.ensureRestartableCoolDown(120); // tiny delay helps some Android stacks
       } catch (e) {
-        console.warn('BLE init/poweredOn failed', e);
+        console.warn("BLE init/poweredOn failed", e);
         stop();
         return;
       }
 
-      console.log('Starting Scan with', this.ESP_SERVICE_UUID);
+      console.log("Starting Scan with", this.ESP_SERVICE_UUID);
 
       this.manager.startDeviceScan(
         this.ESP_SERVICE_UUID,
@@ -237,7 +257,7 @@ class BLEManagerService {
           if (this.session !== mySession) return;
 
           if (error) {
-            console.warn('BLE scan error', error);
+            console.warn("BLE scan error", error);
             stop();
             return;
           }
@@ -259,7 +279,6 @@ class BLEManagerService {
 
     return { stop, done };
   }
-
 
   /**
    * Start scanning for ESP devices.
@@ -641,6 +660,7 @@ class BLEManagerService {
         (_err, dev) => {
           if (done) return;
           // On Android, dev.id is the MAC; on iOS it's a UUID—service filter helps.
+          console.log(dev?.id, deviceId);
           if (dev && (dev.id === deviceId || !deviceId)) {
             stop();
             resolve(true);

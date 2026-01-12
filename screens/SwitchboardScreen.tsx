@@ -7,6 +7,7 @@ import {
 import HingeSlider from "@/components/HingeSlider";
 import { DATA_CHAR_UUID, ROOM_ICONS } from "@/constants";
 import { RootStackParamList } from "@/constants/types";
+import { getLayoutButtonsByServiceId } from "@/db/layout_buttons";
 import BLEManagerService from "@/services/bleManager";
 import { loadWifi, saveWifi } from "@/utils/wifiCreds";
 import { RouteProp } from "@react-navigation/native";
@@ -70,7 +71,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   if (!bleManagerRef.current) bleManagerRef.current = new BLEManagerService();
   const bleManager = bleManagerRef.current;
 
-  const { switchboardName, deviceId, roomIcon, status, iosBleId } = route.params;
+  const { switchboardName, service_id, deviceId, roomIcon, status, iosBleId } =
+    route.params;
   const [devices, setDevices] = useState<Device[]>([]);
   const [activeDevice, setActiveDevice] = useState<BleDevice>();
   const [services, setServices] = useState<string[]>([]);
@@ -118,6 +120,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   }, [status]);
 
   useEffect(() => {
+    console.log("Calling board data");
+    console.log(route.params);
     loadSwitchboardData();
   }, [deviceId]);
 
@@ -189,6 +193,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     Object.keys(pinsData).forEach((pin: string) => {
       pinObj[Number(pin)] = pinsData[pin] == 1 ? true : false;
     });
+    console.log("WEifi state", pinObj);
     setPins(pinObj);
   };
   useEffect(() => {
@@ -212,23 +217,60 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const loadSwitchboardData = async () => {
     setLoading(true);
-    const layout = await getLayout(deviceId);
-    const buttons: Device[] = [];
-    layout.buttons.forEach((button, idx) => {
-      const obj: Device = {
-        id: button.pin,
-        name: button.label,
-        device_type: button.type,
-        is_on: false,
-        position: idx,
-        command: button.command,
-      };
-      buttons.push(obj);
-    });
-    setDevices(buttons);
-    setLoading(false);
-    await loadWifiStatusData();
-    getBleConnection(deviceId);
+
+    try {
+      // 1️⃣ service_id is ALWAYS available
+
+      // 2️⃣ LOAD FROM LOCAL (always)
+      let localButtons = await getLayoutButtonsByServiceId(service_id);
+
+      // 3️⃣ Render immediately if available
+      if (localButtons.length > 0) {
+        setDevices(
+          localButtons.map((button, idx) => ({
+            id: button.pin,
+            name: button.label,
+            device_type: button.type,
+            is_on: false,
+            position: idx,
+            command: button.command,
+          }))
+        );
+      }
+
+      // 4️⃣ BACKGROUND API SYNC (always)
+      getLayout(deviceId)
+        .then(async ({ hasChanged }) => {
+          if (hasChanged) {
+            // Re-read LOCAL DB only if layout changed
+            const updatedButtons = await getLayoutButtonsByServiceId(
+              service_id
+            );
+
+            setDevices(
+              updatedButtons.map((button, idx) => ({
+                id: button.pin,
+                name: button.label,
+                device_type: button.type,
+                is_on: false,
+                position: idx,
+                command: button.command,
+              }))
+            );
+          }
+        })
+        .catch((err) => {
+          console.warn("Layout sync failed:", err);
+        });
+
+      // 5️⃣ Non-blocking side calls
+      loadWifiStatusData();
+      getBleConnection(deviceId);
+    } catch (err) {
+      console.error("Failed to load switchboard data:", err);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const loadWifiStatusData = async () => {
@@ -262,7 +304,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
       if (!connected) {
         console.debug("Not Connected. Retrying connection");
-        if(Platform.OS === 'ios' && iosBleId) { 
+        if (Platform.OS === "ios" && iosBleId) {
           connected = await bleManager.connectSafely(iosBleId, {
             retries: 2,
             connectTimeoutMs: 5000,
@@ -424,7 +466,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     }
 
     const text = `SPEED:${val};PIN:${device.id}`;
-    console.log(text);
+
     await bleManager.sendData(activeDevice, text, services[0]);
   };
 

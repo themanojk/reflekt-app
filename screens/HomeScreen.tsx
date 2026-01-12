@@ -1,12 +1,14 @@
-import { fetchDevicesByMac } from '@/api/devics';
-import { getRooms } from '@/api/room';
-import { useDebouncedCallback } from '@/callbacks/useDeboundcedCallback';
-import { ROOM_ICONS } from '@/constants';
-import { getCanonicalId } from '@/services/bleCanonicalId';
-import BLEManagerService from '@/services/bleManager';
-import { useFocusEffect } from '@react-navigation/native';
-import { Hop as Home, Plus, User } from 'lucide-react-native';
-import React, { useCallback, useEffect, useState } from 'react';
+import { fetchDevicesByMac } from "@/api/devics";
+import { getRooms } from "@/api/room";
+import { useDebouncedCallback } from "@/callbacks/useDeboundcedCallback";
+import { ROOM_ICONS } from "@/constants";
+import { getRoomsLocal } from "@/db/rooms.local";
+import { syncAppData } from "@/db_sync/app_sync";
+import { getCanonicalId } from "@/services/bleCanonicalId";
+import BLEManagerService from "@/services/bleManager";
+import { useFocusEffect } from "@react-navigation/native";
+import { Hop as Home, Plus, User } from "lucide-react-native";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   Platform,
   RefreshControl,
@@ -15,11 +17,11 @@ import {
   Text,
   TouchableOpacity,
   View,
-} from 'react-native';
-import { Device as BleDevice } from 'react-native-ble-plx';
+} from "react-native";
+import { Device as BleDevice } from "react-native-ble-plx";
 
 interface Room {
-  _id: string;
+  id: string;
   name: string;
   icon: string;
   switchboardCount: number;
@@ -35,21 +37,21 @@ interface Switchboard {
 }
 
 const SWITCHBOARD_COLORS = [
-  '#5b8def',
-  '#7c6fd8',
-  '#4ade80',
-  '#5eead4',
-  '#fbbf24',
-  '#fb923c',
+  "#5b8def",
+  "#7c6fd8",
+  "#4ade80",
+  "#5eead4",
+  "#fbbf24",
+  "#fb923c",
 ];
 
 type Row = {
-  id: string;           // transport id (device.id)
+  id: string; // transport id (device.id)
   name: string | null;
   rssi: number | null;
   device: BleDevice;
   canonicalId?: string;
-  iosBleId?: string
+  iosBleId?: string;
 };
 
 export default function HomeScreen({ navigation }: any) {
@@ -65,27 +67,27 @@ export default function HomeScreen({ navigation }: any) {
       const already = await bleManager.connectedDevices();
       return already;
     } catch (e: any) {
-      console.warn('Error fetching connected devices', e);
+      console.warn("Error fetching connected devices", e);
       return [];
     }
   }, []);
 
   const onDeviceFound = React.useCallback(async (device: BleDevice) => {
-    console.log('Discovered device:', device.id, device.name);
+    console.log("Discovered device:", device.id, device.name);
     // Platform-aware canonical id (only iOS)
     let canonicalId = device.id;
-    if (Platform.OS === 'ios') {
+    if (Platform.OS === "ios") {
       try {
         canonicalId = await getCanonicalId(device);
         console.log(`Canonical ID for device ${device.id} is ${canonicalId}`);
       } catch (e) {
-          console.warn('canonicalId lookup failed; fallback to device.id', e);
-          canonicalId = device.id;
-        }
+        console.warn("canonicalId lookup failed; fallback to device.id", e);
+        canonicalId = device.id;
+      }
     }
 
-    setDevices(prev => {
-      const idx = prev.findIndex(r => r.canonicalId === canonicalId);
+    setDevices((prev) => {
+      const idx = prev.findIndex((r) => r.canonicalId === canonicalId);
       if (idx >= 0) {
         const cur = prev[idx];
         const next = [...prev];
@@ -95,20 +97,30 @@ export default function HomeScreen({ navigation }: any) {
           id: canonicalId,
           name: device.name ?? cur.name,
           rssi: device.rssi ?? cur.rssi,
-          iosBleId: Platform.OS === 'ios' ? device.id : cur.iosBleId
+          iosBleId: Platform.OS === "ios" ? device.id : cur.iosBleId,
         };
         return next;
       }
-      return [...prev, { id: canonicalId, name: device.name ?? null, rssi: device.rssi ?? null, device, canonicalId }];
+      return [
+        ...prev,
+        {
+          id: canonicalId,
+          name: device.name ?? null,
+          rssi: device.rssi ?? null,
+          device,
+          canonicalId,
+        },
+      ];
     });
   }, []);
-  
 
   const runScan = useCallback(async () => {
     if (scanning) return;
     setScanning(true);
     try {
-      const { done } = bleManager.startScan_new(onDeviceFound, { stopAfterMs: 30000 });
+      const { done } = bleManager.startScan_new(onDeviceFound, {
+        stopAfterMs: 30000,
+      });
       await done;
     } finally {
       setScanning(false);
@@ -117,12 +129,12 @@ export default function HomeScreen({ navigation }: any) {
 
   useFocusEffect(
     useCallback(() => {
-      console.log('FocusEffect runScan called');
+      console.log("FocusEffect runScan called");
 
       runScan();
 
       return () => {
-        console.log('FocusEffect cleanup – stopping scan');
+        console.log("FocusEffect cleanup – stopping scan");
         bleManager.stopScan();
       };
     }, [runScan])
@@ -143,25 +155,49 @@ export default function HomeScreen({ navigation }: any) {
 
   const loadRooms = async () => {
     setLoading(true);
-    const roomData = await getRooms();
-    setRooms(roomData);
-    setLoading(false);
+
+    try {
+      // 1️⃣ Always load from LOCAL first
+      let localRooms = await getRoomsLocal();
+
+      if (localRooms.length > 0) {
+        setRooms(localRooms);
+      }
+
+      let serverRooms = await getRooms();
+      console.log(serverRooms);
+      let roomsData = serverRooms.map((r) => {
+        return {
+          id: r._id,
+          name: r.name,
+          icon: r.icon,
+          switchboardCount: r.switchboardCount,
+        };
+      });
+      console.log(roomsData, "from server after convert");
+      setRooms(roomsData);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const fetchDevicesDebounced = useDebouncedCallback(
     async (ids: string[]) => {
       const foundDevices = await fetchDevicesByMac(ids);
-      const nearByDevices: Switchboard[] = []
-      foundDevices.forEach(device => {
-        
+
+      const nearByDevices: Switchboard[] = [];
+      foundDevices.forEach((device) => {
         const obj: Switchboard = {
           id: device.device_id,
           name: device.title,
           room_name: device.room_name,
-          color: SWITCHBOARD_COLORS[Math.floor(Math.random() * SWITCHBOARD_COLORS.length)],
+          color:
+            SWITCHBOARD_COLORS[
+              Math.floor(Math.random() * SWITCHBOARD_COLORS.length)
+            ],
           is_online: true,
-          icon: device.room_icon
-        }
+          icon: device.room_icon,
+        };
         nearByDevices.push(obj);
       });
 
@@ -173,21 +209,23 @@ export default function HomeScreen({ navigation }: any) {
   );
 
   useEffect(() => {
+    syncAppData();
     loadRooms();
   }, []);
 
   useEffect(() => {
     if (!devices.length) return;
-    const deviceIds = devices.map(d => d.id);
+    const deviceIds = devices.map((d) => d.id);
     fetchDevicesDebounced(deviceIds);
+
     return () => fetchDevicesDebounced.cancel();
   }, [devices, fetchDevicesDebounced]);
 
   const getTimeGreeting = () => {
     const hour = new Date().getHours();
-    if (hour < 12) return 'Good Morning';
-    if (hour < 18) return 'Good Afternoon';
-    return 'Good Evening';
+    if (hour < 12) return "Good Morning";
+    if (hour < 18) return "Good Afternoon";
+    return "Good Evening";
   };
 
   const onlineCount = switchboards.filter((sb) => sb.is_online).length;
@@ -233,15 +271,15 @@ export default function HomeScreen({ navigation }: any) {
                 const IconComponent = ROOM_ICONS[room.icon] || Home;
                 return (
                   <TouchableOpacity
-                    key={room._id}
+                    key={room.id}
                     style={styles.roomCard}
                     onPress={() =>
                       navigation.navigate("Room", {
-                        roomId: room._id,
+                        roomId: room.id,
                         roomName: room.name,
                         roomIcon: room.icon,
                         devices: devices,
-                        status: true
+                        status: true,
                       })
                     }
                   >
@@ -276,53 +314,55 @@ export default function HomeScreen({ navigation }: any) {
             {switchboards.map((switchboard) => {
               // const IconComponent = ROOM_ICONS[switchboard.room_icon] || Lightbulb;
               return (
-                  <TouchableOpacity
-                    key={switchboard.id}
-                    style={styles.switchboardCard}
-                    onPress={() =>
-                      navigation.navigate("Switchboard", {
-                        switchboardId: switchboard.id,
-                        switchboardName: switchboard.name,
-                        deviceId: switchboard.id,
-                        status: switchboard.is_online,
-                        iosBleId: devices.find(d => d.canonicalId === switchboard.id)?.iosBleId
-                      })
-                    }
-                  >
-                   {/* <View style={styles.switchboardIcon}>
+                <TouchableOpacity
+                  key={switchboard.id}
+                  style={styles.switchboardCard}
+                  onPress={() =>
+                    navigation.navigate("Switchboard", {
+                      switchboardId: switchboard.id,
+                      switchboardName: switchboard.name,
+                      deviceId: switchboard.id,
+                      status: switchboard.is_online,
+                      iosBleId: devices.find(
+                        (d) => d.canonicalId === switchboard.id
+                      )?.iosBleId,
+                    })
+                  }
+                >
+                  {/* <View style={styles.switchboardIcon}>
                       <IconComponent
                         size={24}
                         color="#5b8def"
                         strokeWidth={2}
                       />
                     </View> */}
-                    <View
-                      style={[
-                        styles.switchboardIcon,
-                        { backgroundColor: switchboard.color },
-                      ]}
-                    />
-                    <View style={styles.switchboardInfo}>
-                      <Text style={styles.switchboardName}>{switchboard.name}</Text>
-                      <Text style={styles.switchboardRoom}>
-                        {switchboard.room_name}
-                      </Text>
-                    </View>
-                    <View
-                      style={[
-                        styles.statusDot,
-                        {
-                          backgroundColor: switchboard.is_online
-                            ? "#10b981"
-                            : "#64748b",
-                        },
-                      ]}
-                    />
-                  </TouchableOpacity>
-              )
-            }
-              
-            )}
+                  <View
+                    style={[
+                      styles.switchboardIcon,
+                      { backgroundColor: switchboard.color },
+                    ]}
+                  />
+                  <View style={styles.switchboardInfo}>
+                    <Text style={styles.switchboardName}>
+                      {switchboard.name}
+                    </Text>
+                    <Text style={styles.switchboardRoom}>
+                      {switchboard.room_name}
+                    </Text>
+                  </View>
+                  <View
+                    style={[
+                      styles.statusDot,
+                      {
+                        backgroundColor: switchboard.is_online
+                          ? "#10b981"
+                          : "#64748b",
+                      },
+                    ]}
+                  />
+                </TouchableOpacity>
+              );
+            })}
           </View>
         </View>
       </ScrollView>
@@ -333,15 +373,15 @@ export default function HomeScreen({ navigation }: any) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0f172a',
+    backgroundColor: "#0f172a",
   },
   content: {
     flex: 1,
   },
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
     paddingHorizontal: 24,
     paddingTop: 48,
     paddingBottom: 20,
@@ -351,159 +391,159 @@ const styles = StyleSheet.create({
   },
   greeting: {
     fontSize: 32,
-    fontWeight: 'bold',
-    color: '#fff',
+    fontWeight: "bold",
+    color: "#fff",
     marginBottom: 4,
   },
   subtitle: {
     fontSize: 16,
-    color: '#94a3b8',
+    color: "#94a3b8",
   },
   profileButton: {
     width: 48,
     height: 48,
     borderRadius: 16,
-    backgroundColor: '#1e293b',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "#1e293b",
+    alignItems: "center",
+    justifyContent: "center",
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: "#334155",
   },
   section: {
     paddingHorizontal: 24,
     marginBottom: 24,
   },
   sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     marginBottom: 20,
   },
   sectionTitle: {
     fontSize: 13,
-    fontWeight: '700',
-    color: '#64748b',
+    fontWeight: "700",
+    color: "#64748b",
     letterSpacing: 1.5,
   },
   addButton: {
     width: 32,
     height: 32,
     borderRadius: 10,
-    backgroundColor: 'rgba(91, 141, 239, 0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "rgba(91, 141, 239, 0.15)",
+    alignItems: "center",
+    justifyContent: "center",
     borderWidth: 1,
-    borderColor: 'rgba(91, 141, 239, 0.3)',
+    borderColor: "rgba(91, 141, 239, 0.3)",
   },
   roomGrid: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 16,
     paddingRight: 24,
   },
   roomCard: {
     width: 110,
-    backgroundColor: '#1e293b',
+    backgroundColor: "#1e293b",
     borderRadius: 24,
     padding: 16,
-    alignItems: 'center',
+    alignItems: "center",
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: "#334155",
   },
   roomIconContainer: {
     width: 52,
     height: 52,
     borderRadius: 16,
-    backgroundColor: '#2d3b52',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "#2d3b52",
+    alignItems: "center",
+    justifyContent: "center",
     marginBottom: 12,
   },
   roomName: {
     fontSize: 15,
-    fontWeight: '600',
-    color: '#fff',
+    fontWeight: "600",
+    color: "#fff",
     marginBottom: 8,
-    textAlign: 'center',
+    textAlign: "center",
   },
   roomFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
   },
   onlineIndicator: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: '#10b981',
+    backgroundColor: "#10b981",
   },
   roomCount: {
     fontSize: 14,
-    color: '#fff',
-    fontWeight: '500',
+    color: "#fff",
+    fontWeight: "500",
   },
   nearbyContainer: {
-    backgroundColor: '#1e293b',
+    backgroundColor: "#1e293b",
     marginHorizontal: 24,
     marginBottom: 32,
     borderRadius: 24,
     padding: 20,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: "#334155",
   },
   nearbyHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     marginBottom: 16,
   },
   nearbyTitle: {
     fontSize: 20,
-    fontWeight: 'bold',
-    color: '#fff',
+    fontWeight: "bold",
+    color: "#fff",
   },
   nearbyCount: {
     fontSize: 14,
-    color: '#64748b',
+    color: "#64748b",
   },
   switchboardsList: {
     gap: 12,
   },
   switchboardCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#2d3b52',
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#2d3b52",
     borderRadius: 16,
     padding: 14,
     borderWidth: 1,
-    borderColor: '#3d4b62',
+    borderColor: "#3d4b62",
   },
   switchboardIcon: {
     width: 52,
     height: 52,
     borderRadius: 16,
-    backgroundColor: '#2d3b52',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "#2d3b52",
+    alignItems: "center",
+    justifyContent: "center",
     marginRight: 12,
     borderWidth: 1,
-    borderColor: 'rgba(100, 116, 139, 0.3)',
+    borderColor: "rgba(100, 116, 139, 0.3)",
   },
   switchboardInfo: {
     flex: 1,
   },
   switchboardName: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#fff',
+    fontWeight: "600",
+    color: "#fff",
     marginBottom: 2,
   },
   switchboardRoom: {
     fontSize: 13,
-    color: '#94a3b8',
+    color: "#94a3b8",
   },
   statusDot: {
     width: 10,
     height: 10,
     borderRadius: 5,
-  }
+  },
 });
