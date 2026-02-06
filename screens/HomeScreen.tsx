@@ -1,6 +1,12 @@
 import { fetchDevicesByMac, fetchDevicesByRoomForUser } from "@/api/devics";
 import { useDebouncedCallback } from "@/callbacks/useDeboundcedCallback";
 import { getRoomsLocal } from "@/db/rooms.local";
+import {
+  getNearbyDevicesCache,
+  getRoomsByRoomCache,
+  setNearbyDevicesCache,
+  setRoomsByRoomCache,
+} from "@/utils/storage";
 import { syncAppData } from "@/db_sync/app_sync";
 import { getCanonicalId } from "@/services/bleCanonicalId";
 import BLEManagerService from "@/services/bleManager";
@@ -162,29 +168,57 @@ export default function HomeScreen({ navigation }: any) {
       const localRooms = await getRoomsLocal();
       if (localRooms.length > 0) setRooms(localRooms);
 
-      const byRoom = await fetchDevicesByRoomForUser();
-      if (Array.isArray(byRoom)) {
-        const mapped = byRoom.map((r) => ({
-          room: {
-            id: r.room?.id,
-            name: r.room?.name,
-            icon: r.room?.icon,
-            switchboardCount: r.devices?.length || 0,
-          },
-          devices: (r.devices || []).map((d) => ({
-            id: d.device_id,
-            name: d.title,
-            room_name: r.room?.name || d.room_name,
-            color:
-              SWITCHBOARD_COLORS[
-                Math.floor(Math.random() * SWITCHBOARD_COLORS.length)
-              ],
-            is_online: !!d.online,
-            icon: r.room?.icon || d.room_icon,
-          })),
-        }));
-        setRoomsWithBoards(mapped);
-        setRooms(mapped.map((m) => m.room));
+      try {
+        const byRoom = await fetchDevicesByRoomForUser();
+        if (Array.isArray(byRoom)) {
+          await setRoomsByRoomCache(byRoom);
+          const mapped = byRoom.map((r) => ({
+            room: {
+              id: r.room?.id,
+              name: r.room?.name,
+              icon: r.room?.icon,
+              switchboardCount: r.devices?.length || 0,
+            },
+            devices: (r.devices || []).map((d) => ({
+              id: d.device_id,
+              name: d.title,
+              room_name: r.room?.name || d.room_name,
+              color:
+                SWITCHBOARD_COLORS[
+                  Math.floor(Math.random() * SWITCHBOARD_COLORS.length)
+                ],
+              is_online: !!d.online,
+              icon: r.room?.icon || d.room_icon,
+            })),
+          }));
+          setRoomsWithBoards(mapped);
+          setRooms(mapped.map((m) => m.room));
+        }
+      } catch {
+        const cached = await getRoomsByRoomCache();
+        if (cached && Array.isArray(cached)) {
+          const mapped = cached.map((r) => ({
+            room: {
+              id: r.room?.id,
+              name: r.room?.name,
+              icon: r.room?.icon,
+              switchboardCount: r.devices?.length || 0,
+            },
+            devices: (r.devices || []).map((d) => ({
+              id: d.device_id,
+              name: d.title,
+              room_name: r.room?.name || d.room_name,
+              color:
+                SWITCHBOARD_COLORS[
+                  Math.floor(Math.random() * SWITCHBOARD_COLORS.length)
+                ],
+              is_online: !!d.online,
+              icon: r.room?.icon || d.room_icon,
+            })),
+          }));
+          setRoomsWithBoards(mapped);
+          setRooms(mapped.map((m) => m.room));
+        }
       }
     } finally {
       setLoading(false);
@@ -193,25 +227,33 @@ export default function HomeScreen({ navigation }: any) {
 
   const fetchDevicesDebounced = useDebouncedCallback(
     async (ids: string[]) => {
-      const foundDevices = await fetchDevicesByMac(ids);
+      try {
+        const foundDevices = await fetchDevicesByMac(ids);
 
-      const nearByDevices: Switchboard[] = [];
-      foundDevices.forEach((device) => {
-        const obj: Switchboard = {
-          id: device.device_id,
-          name: device.title,
-          room_name: device.room_name,
-          color:
-            SWITCHBOARD_COLORS[
-              Math.floor(Math.random() * SWITCHBOARD_COLORS.length)
-            ],
-          is_online: true,
-          icon: device.room_icon,
-        };
-        nearByDevices.push(obj);
-      });
+        const nearByDevices: Switchboard[] = [];
+        foundDevices.forEach((device) => {
+          const obj: Switchboard = {
+            id: device.device_id,
+            name: device.title,
+            room_name: device.room_name,
+            color:
+              SWITCHBOARD_COLORS[
+                Math.floor(Math.random() * SWITCHBOARD_COLORS.length)
+              ],
+            is_online: true,
+            icon: device.room_icon,
+          };
+          nearByDevices.push(obj);
+        });
 
-      setSwitchboards(nearByDevices);
+        setSwitchboards(nearByDevices);
+        await setNearbyDevicesCache(nearByDevices);
+      } catch {
+        const cached = await getNearbyDevicesCache();
+        if (cached && Array.isArray(cached)) {
+          setSwitchboards(cached);
+        }
+      }
     },
     500,
     { leading: false, trailing: true },

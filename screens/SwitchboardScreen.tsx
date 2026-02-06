@@ -56,6 +56,10 @@ import {
   addIgnoredSensor,
   clearIgnoredSensors,
   getIgnoredSensors,
+  getLastLayout,
+  getLastPins,
+  setLastLayout,
+  setLastPins,
 } from "@/utils/storage";
 import {
   getPinConfigsByDevice,
@@ -248,6 +252,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         pinObj[pin] = statusData[1] === "1" ? true : false;
       });
       setPins(pinObj);
+      setLastPins(deviceId, pinObj);
     };
 
     const onError = (err: any) => {
@@ -300,7 +305,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     Object.keys(pinsData).forEach((pin: string) => {
       pinObj[Number(pin)] = pinsData[pin] == 1 ? true : false;
     });
-    setPins(pinObj);
+    if (!services.length || !activeDevice || !isOnline) {
+      setPins(pinObj);
+      setLastPins(deviceId, pinObj);
+    }
   };
   useEffect(() => {
     if (!pins || Object.keys(pins).length === 0) return;
@@ -343,6 +351,26 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             command: button.command,
           }))
         );
+      } else {
+        const cachedLayout = await getLastLayout(deviceId);
+        if (cachedLayout?.length) {
+          setDevices(
+            cachedLayout.map((button: any, idx: number) => ({
+              id: button.pin,
+              name: button.label,
+              device_type: button.type,
+              is_on: false,
+              position: idx,
+              command: button.command,
+            }))
+          );
+        }
+      }
+
+      // 3.1️⃣ Load cached pin states for offline mode
+      const cachedPins = await getLastPins(deviceId);
+      if (cachedPins) {
+        setPins(cachedPins);
       }
 
       // 4️⃣ BACKGROUND API SYNC (always)
@@ -354,6 +382,15 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           const sid = updatedServiceId || serviceId || service_id || "";
           const updatedButtons = await getLayoutButtonsByServiceId(sid);
           if (updatedButtons.length) {
+            await setLastLayout(
+              deviceId,
+              updatedButtons.map((b) => ({
+                pin: b.pin,
+                label: b.label,
+                type: b.type,
+                command: b.command,
+              }))
+            );
             setDevices(
               updatedButtons.map((button, idx) => ({
                 id: button.pin,
@@ -367,7 +404,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           }
         })
         .catch((err) => {
-      console.warn("Layout sync failed:", err);
+          console.warn("Layout sync failed:", err);
         });
 
       // 5️⃣ Non-blocking side calls
@@ -381,12 +418,16 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   };
 
   const loadWifiStatusData = async () => {
-    const wifiStatus = await getDeviceStatusOverWifi(deviceId);
-    if (wifiStatus) {
-      setIsWifiOnline(wifiStatus?.status?.online);
-      if (wifiStatus?.status?.online) {
-        onReceivedOverWifi(wifiStatus.status.pins);
+    try {
+      const wifiStatus = await getDeviceStatusOverWifi(deviceId);
+      if (wifiStatus) {
+        setIsWifiOnline(wifiStatus?.status?.online);
+        if (wifiStatus?.status?.online) {
+          onReceivedOverWifi(wifiStatus.status.pins);
+        }
       }
+    } catch {
+      // offline: keep cached pins
     }
   };
   const getCurrentState = async (device: BleDevice, serviceId: string) => {
