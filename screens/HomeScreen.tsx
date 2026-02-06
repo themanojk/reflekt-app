@@ -1,13 +1,11 @@
-import { fetchDevicesByMac } from "@/api/devics";
-import { getRooms } from "@/api/room";
+import { fetchDevicesByMac, fetchDevicesByRoomForUser } from "@/api/devics";
 import { useDebouncedCallback } from "@/callbacks/useDeboundcedCallback";
-import { ROOM_ICONS } from "@/constants";
 import { getRoomsLocal } from "@/db/rooms.local";
 import { syncAppData } from "@/db_sync/app_sync";
 import { getCanonicalId } from "@/services/bleCanonicalId";
 import BLEManagerService from "@/services/bleManager";
 import { useFocusEffect } from "@react-navigation/native";
-import { Hop as Home, Plus, User } from "lucide-react-native";
+import { Plus, User } from "lucide-react-native";
 import React, { useCallback, useEffect, useState } from "react";
 import {
   Platform,
@@ -58,6 +56,9 @@ export default function HomeScreen({ navigation }: any) {
   const bleManager = new BLEManagerService();
   const [scanning, setScanning] = useState(false);
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [roomsWithBoards, setRoomsWithBoards] = useState<
+    { room: Room; devices: Switchboard[] }[]
+  >([]);
   const [devices, setDevices] = useState<Row[]>([]);
   const [switchboards, setSwitchboards] = useState<Switchboard[]>([]);
   const [loading, setLoading] = useState(false);
@@ -158,24 +159,33 @@ export default function HomeScreen({ navigation }: any) {
 
     try {
       // 1️⃣ Always load from LOCAL first
-      let localRooms = await getRoomsLocal();
+      const localRooms = await getRoomsLocal();
+      if (localRooms.length > 0) setRooms(localRooms);
 
-      if (localRooms.length > 0) {
-        setRooms(localRooms);
+      const byRoom = await fetchDevicesByRoomForUser();
+      if (Array.isArray(byRoom)) {
+        const mapped = byRoom.map((r) => ({
+          room: {
+            id: r.room?.id,
+            name: r.room?.name,
+            icon: r.room?.icon,
+            switchboardCount: r.devices?.length || 0,
+          },
+          devices: (r.devices || []).map((d) => ({
+            id: d.device_id,
+            name: d.title,
+            room_name: r.room?.name || d.room_name,
+            color:
+              SWITCHBOARD_COLORS[
+                Math.floor(Math.random() * SWITCHBOARD_COLORS.length)
+              ],
+            is_online: !!d.online,
+            icon: r.room?.icon || d.room_icon,
+          })),
+        }));
+        setRoomsWithBoards(mapped);
+        setRooms(mapped.map((m) => m.room));
       }
-
-      let serverRooms = await getRooms();
-      console.log(serverRooms);
-      let roomsData = serverRooms.map((r) => {
-        return {
-          id: r._id,
-          name: r.name,
-          icon: r.icon,
-          switchboardCount: r.switchboardCount,
-        };
-      });
-      console.log(roomsData, "from server after convert");
-      setRooms(roomsData);
     } finally {
       setLoading(false);
     }
@@ -221,13 +231,6 @@ export default function HomeScreen({ navigation }: any) {
     return () => fetchDevicesDebounced.cancel();
   }, [devices, fetchDevicesDebounced]);
 
-  const getTimeGreeting = () => {
-    const hour = new Date().getHours();
-    if (hour < 12) return "Good Morning";
-    if (hour < 18) return "Good Afternoon";
-    return "Good Evening";
-  };
-
   const onlineCount = switchboards.filter((sb) => sb.is_online).length;
 
   return (
@@ -244,7 +247,13 @@ export default function HomeScreen({ navigation }: any) {
       >
         <View style={styles.header}>
           <View style={styles.headerText}>
-            <Text style={styles.greeting}>{getTimeGreeting()}</Text>
+            <Text style={styles.greeting}>
+              {new Date().getHours() < 12
+                ? "Good Morning"
+                : new Date().getHours() < 18
+                ? "Good Afternoon"
+                : "Good Evening"}
+            </Text>
             <Text style={styles.subtitle}>Welcome back to your smart home</Text>
           </View>
           <TouchableOpacity
@@ -257,66 +266,24 @@ export default function HomeScreen({ navigation }: any) {
 
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>ROOMS</Text>
-            <TouchableOpacity
-              style={styles.addButton}
-              onPress={() => navigation.navigate("AddRoom")}
-            >
-              <Plus size={18} color="#5b8def" strokeWidth={2.5} />
-            </TouchableOpacity>
+            <Text style={styles.sectionTitleSmall}>
+              Nearby Devices · {onlineCount} online
+            </Text>
           </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            <View style={styles.roomGrid}>
-              {rooms.map((room) => {
-                const IconComponent = ROOM_ICONS[room.icon] || Home;
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.edgeScroll}
+          >
+            <View style={[styles.switchboardRow, styles.switchboardRowPadded]}>
+              {switchboards.map((switchboard) => {
+                const isOnline =
+                  switchboard.is_online ||
+                  devices.some((d) => d.canonicalId === switchboard.id);
                 return (
-                  <TouchableOpacity
-                    key={room.id}
-                    style={styles.roomCard}
-                    onPress={() =>
-                      navigation.navigate("Room", {
-                        roomId: room.id,
-                        roomName: room.name,
-                        roomIcon: room.icon,
-                        devices: devices,
-                        status: true,
-                      })
-                    }
-                  >
-                    <View style={styles.roomIconContainer}>
-                      <IconComponent
-                        size={24}
-                        color="#5b8def"
-                        strokeWidth={2}
-                      />
-                    </View>
-                    <Text style={styles.roomName}>{room.name}</Text>
-                    <View style={styles.roomFooter}>
-                      <View style={styles.onlineIndicator} />
-                      <Text style={styles.roomCount}>
-                        {room.switchboardCount}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          </ScrollView>
-        </View>
-
-        <View style={styles.nearbyContainer}>
-          <View style={styles.nearbyHeader}>
-            <Text style={styles.nearbyTitle}>Nearby Boards</Text>
-            <Text style={styles.nearbyCount}>{onlineCount} online</Text>
-          </View>
-
-          <View style={styles.switchboardsList}>
-            {switchboards.map((switchboard) => {
-              // const IconComponent = ROOM_ICONS[switchboard.room_icon] || Lightbulb;
-              return (
                 <TouchableOpacity
                   key={switchboard.id}
-                  style={styles.switchboardCard}
+                  style={styles.switchboardCardHorizontal}
                   onPress={() =>
                     navigation.navigate("Switchboard", {
                       switchboardId: switchboard.id,
@@ -329,42 +296,105 @@ export default function HomeScreen({ navigation }: any) {
                     })
                   }
                 >
-                  {/* <View style={styles.switchboardIcon}>
-                      <IconComponent
-                        size={24}
-                        color="#5b8def"
-                        strokeWidth={2}
-                      />
-                    </View> */}
                   <View
                     style={[
                       styles.switchboardIcon,
                       { backgroundColor: switchboard.color },
                     ]}
                   />
-                  <View style={styles.switchboardInfo}>
-                    <Text style={styles.switchboardName}>
-                      {switchboard.name}
-                    </Text>
-                    <Text style={styles.switchboardRoom}>
-                      {switchboard.room_name}
-                    </Text>
-                  </View>
                   <View
                     style={[
                       styles.statusDot,
-                      {
-                        backgroundColor: switchboard.is_online
-                          ? "#10b981"
-                          : "#64748b",
-                      },
+                      { backgroundColor: isOnline ? "#10b981" : "#64748b" },
                     ]}
                   />
+                  <Text style={styles.switchboardName} numberOfLines={1}>
+                    {switchboard.name}
+                  </Text>
+                  <Text style={styles.switchboardRoom}>
+                    {switchboard.room_name}
+                  </Text>
                 </TouchableOpacity>
-              );
-            })}
-          </View>
+              )})}
+            </View>
+          </ScrollView>
         </View>
+
+        {roomsWithBoards.map((item) => {
+          const room = item.room;
+          const roomSwitchboards = item.devices;
+          return (
+            <View key={room.id} style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitleSmall}>
+                  {room.name} · {room.switchboardCount || roomSwitchboards.length}
+                </Text>
+              </View>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.edgeScroll}
+              >
+                <View style={[styles.switchboardRow, styles.switchboardRowPadded]}>
+                  {roomSwitchboards.map((switchboard) => {
+                    const isOnline =
+                      switchboard.is_online ||
+                      devices.some((d) => d.canonicalId === switchboard.id);
+                    return (
+                    <TouchableOpacity
+                      key={switchboard.id}
+                      style={styles.switchboardCardHorizontal}
+                      onPress={() =>
+                        navigation.navigate("Switchboard", {
+                          switchboardId: switchboard.id,
+                          switchboardName: switchboard.name,
+                          deviceId: switchboard.id,
+                          status: switchboard.is_online,
+                          iosBleId: devices.find(
+                            (d) => d.canonicalId === switchboard.id
+                          )?.iosBleId,
+                        })
+                      }
+                    >
+                      <View
+                        style={[
+                          styles.switchboardIcon,
+                          { backgroundColor: switchboard.color },
+                        ]}
+                      />
+                      <View
+                        style={[
+                          styles.statusDot,
+                          { backgroundColor: isOnline ? "#10b981" : "#64748b" },
+                        ]}
+                      />
+                      <Text style={styles.switchboardName} numberOfLines={1}>
+                        {switchboard.name}
+                      </Text>
+                    </TouchableOpacity>
+                  )})}
+                  <TouchableOpacity
+                    style={styles.addSwitchboardCard}
+                    onPress={() =>
+                      navigation.navigate("AddSwitchboard", { roomId: room.id })
+                    }
+                  >
+                    <Plus size={20} color="#5b8def" strokeWidth={2.5} />
+                    <Text style={styles.addSwitchboardText}>Add Board</Text>
+                  </TouchableOpacity>
+                </View>
+              </ScrollView>
+            </View>
+          );
+        })}
+
+        <TouchableOpacity
+          style={styles.createRoomFooter}
+          onPress={() => navigation.navigate("AddRoom")}
+        >
+          <Plus size={18} color="#5b8def" strokeWidth={2.5} />
+          <Text style={styles.createRoomText}>Create New Room</Text>
+        </TouchableOpacity>
       </ScrollView>
     </View>
   );
@@ -390,7 +420,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   greeting: {
-    fontSize: 32,
+    fontSize: 24,
     fontWeight: "bold",
     color: "#fff",
     marginBottom: 4,
@@ -410,20 +440,22 @@ const styles = StyleSheet.create({
     borderColor: "#334155",
   },
   section: {
-    paddingHorizontal: 24,
-    marginBottom: 24,
+    paddingHorizontal: 0,
+    marginBottom: 14,
   },
   sectionHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 20,
+    marginBottom: 6,
+    paddingHorizontal: 24,
   },
-  sectionTitle: {
-    fontSize: 13,
+  sectionTitleSmall: {
+    fontSize: 12,
     fontWeight: "700",
-    color: "#64748b",
-    letterSpacing: 1.5,
+    color: "#94a3b8",
+    letterSpacing: 1,
+    marginBottom: 8,
   },
   addButton: {
     width: 32,
@@ -435,115 +467,90 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(91, 141, 239, 0.3)",
   },
-  roomGrid: {
+  switchboardRow: {
     flexDirection: "row",
-    gap: 16,
-    paddingRight: 24,
+    gap: 10,
+    paddingHorizontal: 0,
+    paddingBottom: 4,
   },
-  roomCard: {
-    width: 110,
+  switchboardRowPadded: {
+    paddingLeft: 24,
+    paddingRight: 12,
+  },
+  edgeScroll: {
+    paddingHorizontal: 0,
+  },
+  switchboardCardHorizontal: {
+    width: 120,
     backgroundColor: "#1e293b",
-    borderRadius: 24,
-    padding: 16,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#334155",
-  },
-  roomIconContainer: {
-    width: 52,
-    height: 52,
-    borderRadius: 16,
-    backgroundColor: "#2d3b52",
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 12,
-  },
-  roomName: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#fff",
-    marginBottom: 8,
-    textAlign: "center",
-  },
-  roomFooter: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  onlineIndicator: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: "#10b981",
-  },
-  roomCount: {
-    fontSize: 14,
-    color: "#fff",
-    fontWeight: "500",
-  },
-  nearbyContainer: {
-    backgroundColor: "#1e293b",
-    marginHorizontal: 24,
-    marginBottom: 32,
-    borderRadius: 24,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: "#334155",
-  },
-  nearbyHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 16,
-  },
-  nearbyTitle: {
-    fontSize: 20,
-    fontWeight: "bold",
-    color: "#fff",
-  },
-  nearbyCount: {
-    fontSize: 14,
-    color: "#64748b",
-  },
-  switchboardsList: {
-    gap: 12,
-  },
-  switchboardCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#2d3b52",
-    borderRadius: 16,
+    borderRadius: 18,
     padding: 14,
     borderWidth: 1,
-    borderColor: "#3d4b62",
+    borderColor: "#334155",
+    position: "relative",
+  },
+  addSwitchboardCard: {
+    width: 120,
+    backgroundColor: "rgba(91, 141, 239, 0.08)",
+    borderRadius: 18,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: "rgba(91, 141, 239, 0.4)",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  addSwitchboardText: {
+    fontSize: 11,
+    color: "#94a3b8",
+    fontWeight: "600",
   },
   switchboardIcon: {
-    width: 52,
-    height: 52,
-    borderRadius: 16,
+    width: 44,
+    height: 44,
+    borderRadius: 12,
     backgroundColor: "#2d3b52",
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 12,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: "rgba(100, 116, 139, 0.3)",
   },
-  switchboardInfo: {
-    flex: 1,
-  },
   switchboardName: {
-    fontSize: 16,
+    fontSize: 12,
     fontWeight: "600",
     color: "#fff",
     marginBottom: 2,
   },
   switchboardRoom: {
-    fontSize: 13,
+    fontSize: 11,
     color: "#94a3b8",
   },
   statusDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    position: "absolute",
+    top: 10,
+    right: 10,
+  },
+  createRoomFooter: {
+    marginTop: 12,
+    marginBottom: 48,
+    marginHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#0b1220",
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 8,
+  },
+  createRoomText: {
+    color: "#e2e8f0",
+    fontWeight: "700",
+    fontSize: 14,
   },
 });

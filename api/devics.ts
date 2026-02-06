@@ -118,6 +118,10 @@ export async function fetchDevicesByMac(
     .catch((e) => console.log(e.message));
 }
 
+export async function fetchDevicesByRoomForUser() {
+  return client.get(`/devices/by-room`).then((res) => res.data);
+}
+
 export async function getDeviceStatusOverWifi(macAddress: string) {
   return client
     .get(`/devices/macaddress?mac_address=${macAddress}`)
