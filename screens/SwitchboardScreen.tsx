@@ -3,6 +3,12 @@ import {
   getLayout,
   sendCommandOverWifi,
   WifiPayload,
+  checkSensorAttachment,
+  attachSensorToDevice,
+  detachSensorFromDevice,
+  createSensorRule,
+  fetchPinConfigs,
+  savePinConfig,
 } from "@/api/devics";
 import HingeSlider from "@/components/HingeSlider";
 import { DATA_CHAR_UUID, ROOM_ICONS } from "@/constants";
@@ -17,13 +23,17 @@ import {
   Lightbulb,
   Power,
   Settings,
+  SlidersHorizontal,
   Wifi,
   X,
 } from "lucide-react-native";
 import React, { useEffect, useState } from "react";
 import {
   Alert,
+  Animated,
+  Easing,
   Modal,
+  PanResponder,
   Platform,
   ScrollView,
   StyleSheet,
@@ -32,8 +42,27 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import Svg, {
+  Circle,
+  Defs,
+  LinearGradient,
+  Polygon,
+  Rect,
+  Stop,
+} from "react-native-svg";
 import { Device as BleDevice } from "react-native-ble-plx";
 import CustomSlider from "../components/CustomSlider";
+import {
+  addIgnoredSensor,
+  clearIgnoredSensors,
+  getIgnoredSensors,
+} from "@/utils/storage";
+import {
+  getPinConfigsByDevice,
+  upsertPinConfigLocal,
+  getPendingPinConfigs,
+  markPinConfigSynced,
+} from "@/db/pin_configs";
 
 interface Device {
   id: number;
@@ -82,12 +111,24 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [tempColor, setTempColor] = useState("rgb(91, 141, 239)");
   const [tempIntensity, setTempIntensity] = useState(80);
   const [showWifiModal, setShowWifiModal] = useState(false);
+  const [showSensorConfigModal, setShowSensorConfigModal] = useState(false);
+  const [showPinConfigModal, setShowPinConfigModal] = useState(false);
   const [wifiSSID, setWifiSSID] = useState("");
   const [wifiPassword, setWifiPassword] = useState("");
   const [pins, setPins] = useState<any>({});
   const [isOnline, setIsOnline] = useState<boolean>(status);
   const [isWifiOnline, setIsWifiOnline] = useState<boolean>(status);
   const [speed, setSpeed] = useState(0);
+  const [availableSensors, setAvailableSensors] = useState<string[]>([]);
+  const [showSensorModal, setShowSensorModal] = useState(false);
+  const [pendingSensor, setPendingSensor] = useState<string | null>(null);
+  const [sensorStep, setSensorStep] = useState<"prompt" | "attached">("prompt");
+  const [ignoredSensors, setIgnoredSensors] = useState<string[]>([]);
+  const [attachedSensors, setAttachedSensors] = useState<string[]>([]);
+  const [pinConfigs, setPinConfigs] = useState<Record<number, any>>({});
+  const rotation = React.useRef(new Animated.Value(0)).current;
+  const [serviceId, setServiceId] = useState(service_id || "");
+  const sheetTranslateY = React.useRef(new Animated.Value(0)).current;
 
   const monitorRef = React.useRef<Disposable | null>(null);
   const disconnectRef = React.useRef<Disposable | null>(null);
@@ -109,6 +150,53 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     };
   }, []);
 
+  useEffect(() => {
+    getIgnoredSensors(deviceId).then(setIgnoredSensors);
+  }, [deviceId]);
+
+  useEffect(() => {
+    Animated.loop(
+      Animated.timing(rotation, {
+        toValue: 1,
+        duration: 6000,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      })
+    ).start();
+  }, [rotation]);
+
+  const closeSheet = React.useCallback(() => {
+    Animated.timing(sheetTranslateY, {
+      toValue: 320,
+      duration: 220,
+      useNativeDriver: true,
+    }).start(() => {
+      sheetTranslateY.setValue(0);
+      setShowSensorModal(false);
+    });
+  }, [sheetTranslateY]);
+
+  const sheetPanResponder = React.useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dy) > 6,
+        onPanResponderMove: (_, gesture) => {
+          if (gesture.dy > 0) sheetTranslateY.setValue(gesture.dy);
+        },
+        onPanResponderRelease: (_, gesture) => {
+          if (gesture.dy > 80) {
+            closeSheet();
+            return;
+          }
+          Animated.spring(sheetTranslateY, {
+            toValue: 0,
+            useNativeDriver: true,
+          }).start();
+        },
+      }),
+    [closeSheet, sheetTranslateY]
+  );
+
   const teardownBle = React.useCallback(() => {
     monitorRef.current?.remove?.();
     monitorRef.current?.unsubscribe?.();
@@ -120,26 +208,45 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   }, [status]);
 
   useEffect(() => {
-    console.log("Calling board data");
-    console.log(route.params);
     loadSwitchboardData();
-  }, [deviceId]);
+  }, [deviceId, serviceId]);
 
   useEffect(() => {
     if (!activeDevice || !services.length || !isOnline) return;
     teardownBle();
 
     const onReceived = (data: any) => {
-      const pinDataArray = data.split(",");
+      if (!data || typeof data !== "string") return;
+      console.log("BLE RX", data);
+      if (data.startsWith("SENSORS:")) {
+        const list = data
+          .replace("SENSORS:", "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        handleAvailableSensors(list);
+        return;
+      }
+      if (data.startsWith("SENSORS_ATTACHED:")) {
+        const list = data
+          .replace("SENSORS_ATTACHED:", "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        handleAttachedSensors(list);
+        return;
+      }
+      if (data.startsWith("SENSOR_ATTACH_")) {
+        return;
+      }
 
+      const pinDataArray = data.split(",");
       const pinObj: any = {};
       pinDataArray.forEach((pinData: string) => {
         const statusData: string[] = pinData.split(":");
-        console.log(statusData);
         const pin = Number(statusData[0]);
         pinObj[pin] = statusData[1] === "1" ? true : false;
       });
-      console.log("Pin Obj", pinObj);
       setPins(pinObj);
     };
 
@@ -193,7 +300,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     Object.keys(pinsData).forEach((pin: string) => {
       pinObj[Number(pin)] = pinsData[pin] == 1 ? true : false;
     });
-    console.log("WEifi state", pinObj);
     setPins(pinObj);
   };
   useEffect(() => {
@@ -222,7 +328,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       // 1️⃣ service_id is ALWAYS available
 
       // 2️⃣ LOAD FROM LOCAL (always)
-      let localButtons = await getLayoutButtonsByServiceId(service_id);
+      const effectiveServiceId = serviceId || service_id || "";
+      let localButtons = await getLayoutButtonsByServiceId(effectiveServiceId);
 
       // 3️⃣ Render immediately if available
       if (localButtons.length > 0) {
@@ -240,13 +347,13 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
       // 4️⃣ BACKGROUND API SYNC (always)
       getLayout(deviceId)
-        .then(async ({ hasChanged }) => {
-          if (hasChanged) {
-            // Re-read LOCAL DB only if layout changed
-            const updatedButtons = await getLayoutButtonsByServiceId(
-              service_id
-            );
-
+        .then(async ({ serviceId: updatedServiceId }) => {
+          if (updatedServiceId && updatedServiceId !== serviceId) {
+            setServiceId(updatedServiceId);
+          }
+          const sid = updatedServiceId || serviceId || service_id || "";
+          const updatedButtons = await getLayoutButtonsByServiceId(sid);
+          if (updatedButtons.length) {
             setDevices(
               updatedButtons.map((button, idx) => ({
                 id: button.pin,
@@ -260,7 +367,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           }
         })
         .catch((err) => {
-          console.warn("Layout sync failed:", err);
+      console.warn("Layout sync failed:", err);
         });
 
       // 5️⃣ Non-blocking side calls
@@ -283,10 +390,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     }
   };
   const getCurrentState = async (device: BleDevice, serviceId: string) => {
-    if (!device) {
-      console.log("Device not connected");
-      return;
-    }
+    if (!device) return;
     try {
       const text = `REST:`;
       await bleManager.sendData(device, text, serviceId);
@@ -295,15 +399,307 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     }
   };
 
+  const requestSensorRefresh = async () => {
+    if (!services.length || !activeDevice) return;
+    await getCurrentState(activeDevice, services[0]);
+  };
+
+  const loadPinConfigs = async () => {
+    const local = await getPinConfigsByDevice(deviceId);
+    if (local.length) {
+      const map: Record<number, any> = {};
+      local.forEach((c) => {
+        map[c.pin] = {
+          name: c.name,
+          autoOn: !!c.auto_on,
+          autoOff: !!c.auto_off,
+          offDelay: c.off_delay || 600,
+        };
+      });
+      setPinConfigs(map);
+    }
+
+    await syncPendingPinConfigs();
+
+    try {
+      const res = await fetchPinConfigs(deviceId);
+      const list = res?.configs || [];
+      if (list.length) {
+        const map: Record<number, any> = {};
+        for (const c of list) {
+          map[c.pin] = {
+            name: c.name || "",
+            autoOn: !!c.auto_on,
+            autoOff: !!c.auto_off,
+            offDelay: c.off_delay || 600,
+          };
+          await upsertPinConfigLocal({
+            device_mac: deviceId,
+            pin: c.pin,
+            name: c.name || "",
+            auto_on: c.auto_on ? 1 : 0,
+            auto_off: c.auto_off ? 1 : 0,
+            off_delay: c.off_delay || 600,
+            pending_sync: 0,
+          });
+        }
+        setPinConfigs(map);
+      }
+    } catch {
+      // offline: keep local
+    }
+  };
+
+  const syncPendingPinConfigs = async () => {
+    const pending = await getPendingPinConfigs();
+    if (!pending.length) return;
+    for (const cfg of pending) {
+      try {
+        await savePinConfig({
+          device_mac: cfg.device_mac,
+          pin: cfg.pin,
+          name: cfg.name || "",
+          auto_on: !!cfg.auto_on,
+          auto_off: !!cfg.auto_off,
+          off_delay: cfg.off_delay || 600,
+        });
+        await markPinConfigSynced(cfg.device_mac, cfg.pin);
+      } catch {
+        // keep pending
+      }
+    }
+  };
+
+  const updatePinConfig = (pin: number, patch: Partial<any>) => {
+    setPinConfigs((prev) => {
+      const current = prev[pin] || {
+        name: "",
+        autoOn: false,
+        autoOff: false,
+        offDelay: 600,
+      };
+      return { ...prev, [pin]: { ...current, ...patch } };
+    });
+  };
+
+  const savePinConfigFor = async (pin: number) => {
+    const cfg = pinConfigs[pin];
+    if (!cfg) return;
+
+    await upsertPinConfigLocal({
+      device_mac: deviceId,
+      pin,
+      name: cfg.name || "",
+      auto_on: cfg.autoOn ? 1 : 0,
+      auto_off: cfg.autoOff ? 1 : 0,
+      off_delay: cfg.offDelay || 600,
+      pending_sync: 1,
+    });
+
+    try {
+      await savePinConfig({
+        device_mac: deviceId,
+        pin,
+        name: cfg.name || "",
+        auto_on: !!cfg.autoOn,
+        auto_off: !!cfg.autoOff,
+        off_delay: cfg.offDelay || 600,
+      });
+      await markPinConfigSynced(deviceId, pin);
+      Alert.alert("Saved", "Pin configuration saved.");
+    } catch {
+      Alert.alert("Saved offline", "Will sync when online.");
+    }
+  };
+
+  const saveAllPinConfigs = async () => {
+    const targetSensor = attachedSensors[0];
+    for (const d of devices) {
+      const cfg = pinConfigs[d.id] || {
+        name: d.name || "",
+        autoOn: false,
+        autoOff: false,
+        offDelay: 600,
+      };
+      await upsertPinConfigLocal({
+        device_mac: deviceId,
+        pin: d.id,
+        name: cfg.name || "",
+        auto_on: cfg.autoOn ? 1 : 0,
+        auto_off: cfg.autoOff ? 1 : 0,
+        off_delay: cfg.offDelay || 600,
+        pending_sync: 1,
+      });
+      try {
+        await savePinConfig({
+          device_mac: deviceId,
+          pin: d.id,
+          name: cfg.name || "",
+          auto_on: !!cfg.autoOn,
+          auto_off: !!cfg.autoOff,
+          off_delay: cfg.offDelay || 600,
+        });
+        await markPinConfigSynced(deviceId, d.id);
+      } catch {
+        // keep pending
+      }
+
+      if (targetSensor) {
+        try {
+          if (cfg.autoOn) {
+            await createSensorRule(targetSensor, d.id, "active", "on");
+          }
+          if (cfg.autoOff) {
+            await createSensorRule(
+              targetSensor,
+              d.id,
+              "inactive",
+              "off",
+              cfg.offDelay || 600
+            );
+          }
+        } catch {
+          // ignore rule errors
+        }
+      }
+    }
+    Alert.alert("Saved", "Pin configuration saved.");
+    setShowPinConfigModal(false);
+  };
+
+  const handleAvailableSensors = async (list: string[]) => {
+    if (!list.length) return;
+    const unique = Array.from(new Set(list.map((s) => s.toUpperCase())));
+    setAvailableSensors(unique);
+
+    for (const mac of unique) {
+      if (ignoredSensors.includes(mac)) {
+        console.log("Sensor ignored locally", mac);
+        continue;
+      }
+      try {
+        console.log("Checking sensor attach status", mac);
+        const res = await checkSensorAttachment(mac);
+        console.log("Sensor attach status", mac, res);
+        if (!res?.attached) {
+          setPendingSensor(mac);
+          setShowSensorModal(true);
+          setSensorStep("prompt");
+          return;
+        }
+      } catch {
+        // fallback: show prompt if check fails (offline/timeout)
+        console.log("Sensor attach check failed, showing prompt", mac);
+        setPendingSensor(mac);
+        setShowSensorModal(true);
+        setSensorStep("prompt");
+        return;
+      }
+    }
+  };
+
+  const handleAttachedSensors = (list: string[]) => {
+    if (!list.length) return;
+    const unique = Array.from(new Set(list.map((s) => s.toUpperCase())));
+    setAttachedSensors(unique);
+    // Do not auto-open popup for attached sensors.
+  };
+
+  const attachSensor = async () => {
+    if (!pendingSensor) return;
+    try {
+      const apiRes = await attachSensorToDevice(deviceId, pendingSensor);
+      console.log("Attach sensor API response", apiRes);
+      console.log("Attach sensor API success");
+      if (services.length && activeDevice) {
+        const cmd = `SENSOR_ATTACH:${pendingSensor}`;
+        console.log("Sending BLE attach command", cmd);
+        await bleManager.sendData(
+          activeDevice,
+          cmd,
+          services[0]
+        );
+        console.log("BLE attach command sent");
+      }
+      setShowSensorModal(false);
+      setPendingSensor(null);
+      await loadPinConfigs();
+      setShowPinConfigModal(true);
+    } catch (e: any) {
+      console.error(
+        "Attach sensor failed",
+        e?.response?.status,
+        e?.response?.data || e?.message || e
+      );
+      Alert.alert("Failed", e?.response?.data?.message || "Attach failed");
+      setShowSensorModal(false);
+    } finally {
+    }
+  };
+
+  const ignoreSensor = async () => {
+    if (!pendingSensor) return;
+    await addIgnoredSensor(deviceId, pendingSensor);
+    setIgnoredSensors((prev) => Array.from(new Set([...prev, pendingSensor])));
+    setShowSensorModal(false);
+    setPendingSensor(null);
+  };
+
+  const resetIgnoredSensors = async () => {
+    await clearIgnoredSensors(deviceId);
+    setIgnoredSensors([]);
+  };
+
+  // pin configuration handled in separate full-screen modal
+
+  const detachSensor = async (macOverride?: string) => {
+    const targetMac = macOverride || pendingSensor;
+    if (!targetMac) return;
+    Alert.alert(
+      "Remove Sensor",
+      "This will detach the sensor from this hub and reset the sensor. Continue?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Remove",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const apiRes = await detachSensorFromDevice(deviceId, targetMac);
+              console.log("Detach sensor API response", apiRes);
+              if (services.length && activeDevice) {
+                const cmd = `SENSOR_DETACH:${targetMac}`;
+                console.log("Sending BLE detach command", cmd);
+                await bleManager.sendData(activeDevice, cmd, services[0]);
+              }
+              setAttachedSensors((prev) =>
+                prev.filter((s) => s !== targetMac)
+              );
+              setShowSensorModal(false);
+              setPendingSensor(null);
+            } catch (e: any) {
+              console.error(
+                "Detach sensor failed",
+                e?.response?.status,
+                e?.response?.data || e?.message || e
+              );
+              Alert.alert(
+                "Failed",
+                e?.response?.data?.message || "Detach failed"
+              );
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const getBleConnection = async (macAddress: string) => {
     try {
       const already = await bleManager.getAlreadyConnected();
       let connected: BleDevice | null =
         already.find((d) => d.id === macAddress) || null;
-      console.log("is connected", connected);
-
       if (!connected) {
-        console.debug("Not Connected. Retrying connection");
         if (Platform.OS === "ios" && iosBleId) {
           connected = await bleManager.connectSafely(iosBleId, {
             retries: 2,
@@ -317,7 +713,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             autoConnect: false,
           });
         }
-        console.log("Connection status", connected);
       }
 
       if (connected) {
@@ -327,7 +722,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         setServices(serviceIds);
       }
     } catch (err) {
-      console.log("err", err);
+      console.warn("BLE connect failed", err);
     }
   };
 
@@ -336,7 +731,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     command: string
   ): Promise<boolean> => {
     if (!services.length || !activeDevice) {
-      console.log("Trying to send over wifi");
       const payload: WifiPayload = {
         mac_address: deviceId,
         data: {
@@ -349,7 +743,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     }
 
     try {
-      console.log("Send to ESP:", pin, command);
       const text = `PIN:${pin}:STATUS:${command}`;
       await bleManager.sendData(activeDevice, text, services[0]);
       return true;
@@ -383,6 +776,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       return;
     }
     setShowSettings(true);
+    loadPinConfigs();
+    requestSensorRefresh();
   };
 
   const applySettings = async () => {
@@ -394,7 +789,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     if (!services.length || !activeDevice) {
       // @ts-ignore
       const arr = tempColor.match(/\d+/g).map(Number);
-      console.log("Trying to send settings over wifi");
       const payload: WifiPayload = {
         mac_address: deviceId,
         data: {
@@ -445,7 +839,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       });
       //await bleManager.sendData(activeDevice, text, services[0]);
     } catch (err) {
-      console.log("Error sending wifi creds", err);
+      console.error("Error sending wifi creds", err);
     } finally {
       setShowWifiModal(false);
       Alert.alert("Success", "WiFi credentials sent to device");
@@ -512,6 +906,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     const IconComponent = ROOM_ICONS[device.device_type] || Lightbulb;
     const isActive = device.is_on;
     const speedValue = device.speed ?? 0;
+    const displayName =
+      pinConfigs[device.id]?.name?.trim() || device.name;
 
     return (
       <View style={[styles.deviceCard, isActive && styles.deviceCardActive]}>
@@ -541,7 +937,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             <Text
               style={[styles.deviceName, isActive && styles.deviceNameActive]}
             >
-              {device.name}
+              {displayName}
             </Text>
           </View>
           <View
@@ -671,6 +1067,15 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 >
                   <Text style={styles.configureText}>Configure WiFi</Text>
                 </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.pinConfigIconBtn}
+                  onPress={async () => {
+                    await loadPinConfigs();
+                    setShowPinConfigModal(true);
+                  }}
+                >
+                  <SlidersHorizontal size={14} color="#cbd5e1" />
+                </TouchableOpacity>
               </View>
             </View>
           </View>
@@ -680,66 +1085,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           {/* <View style={[styles.boardIcon, { backgroundColor: boardColor }]} /> */}
         </View>
 
-        {showSettings && (
-          <View style={styles.settingsPanel}>
-            <Text style={styles.settingsTitle}>LED Settings</Text>
-
-            <View style={styles.colorSection}>
-              <Text style={styles.sectionLabel}>Color</Text>
-              <View style={styles.colorGrid}>
-                {COLOR_PALETTE.map((color) => (
-                  <TouchableOpacity
-                    key={color}
-                    style={[
-                      styles.colorButton,
-                      { backgroundColor: color },
-                      tempColor === color && styles.colorButtonSelected,
-                    ]}
-                    onPress={() => setTempColor(color)}
-                  />
-                ))}
-              </View>
-
-              <View
-                style={[
-                  styles.selectedColorPreview,
-                  {
-                    backgroundColor: tempColor,
-                    opacity: tempIntensity / 100,
-                  },
-                ]}
-              />
-            </View>
-
-            <View style={styles.intensitySection}>
-              <Text style={styles.sectionLabel}>
-                Intensity: {tempIntensity}%
-              </Text>
-              <CustomSlider
-                value={tempIntensity}
-                minimumValue={0}
-                maximumValue={100}
-                step={1}
-                onValueChange={setTempIntensity}
-                minimumTrackTintColor="#5b8def"
-                maximumTrackTintColor="#334155"
-                thumbTintColor="#5b8def"
-              />
-              <View style={styles.intensityLabels}>
-                <Text style={styles.intensityLabel}>Off</Text>
-                <Text style={styles.intensityLabel}>Dim</Text>
-                <Text style={styles.intensityLabel}>Bright</Text>
-              </View>
-
-              <TouchableOpacity
-                style={styles.applyButton}
-                onPress={applySettings}
-              >
-                <Text style={styles.applyButtonText}>Apply</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
+        {/* settings moved to full-screen modal */}
 
         <View style={styles.devicesGrid}>
           {devices.map((device) => renderDeviceCard(device))}
@@ -795,6 +1141,473 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           </View>
         </View>
       </Modal>
+
+      <Modal
+        visible={showSensorModal}
+        transparent
+        animationType="slide"
+        onRequestClose={closeSheet}
+      >
+        <View style={styles.sheetOverlay}>
+          <Animated.View
+            style={[
+              styles.sheet,
+              { transform: [{ translateY: sheetTranslateY }] },
+            ]}
+            {...sheetPanResponder.panHandlers}
+          >
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetContent}>
+              {sensorStep === "prompt" && (
+                <>
+                  <View style={styles.sheetHeader}>
+                    <Text style={styles.sheetTitle}>Motion Sensor Found</Text>
+                  <TouchableOpacity onPress={closeSheet}>
+                    <X size={22} color="#94a3b8" />
+                  </TouchableOpacity>
+                  </View>
+                  <View style={styles.sensorHero}>
+                    <Animated.View
+                      style={[
+                        styles.sensorSpin,
+                        {
+                          transform: [
+                            { perspective: 900 },
+                            {
+                              rotateY: rotation.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: ["0deg", "360deg"],
+                              }),
+                            },
+                            { rotateX: "10deg" },
+                          ],
+                        },
+                      ]}
+                    >
+                      <Svg width={160} height={160} viewBox="0 0 160 160">
+                        <Defs>
+                          <LinearGradient id="front" x1="0" y1="0" x2="1" y2="1">
+                            <Stop offset="0" stopColor="#ffffff" />
+                            <Stop offset="1" stopColor="#e5e7eb" />
+                          </LinearGradient>
+                          <LinearGradient id="side" x1="0" y1="0" x2="1" y2="1">
+                            <Stop offset="0" stopColor="#e5e7eb" />
+                            <Stop offset="1" stopColor="#cbd5e1" />
+                          </LinearGradient>
+                          <LinearGradient id="top" x1="0" y1="0" x2="1" y2="0">
+                            <Stop offset="0" stopColor="#ffffff" />
+                            <Stop offset="1" stopColor="#f1f5f9" />
+                          </LinearGradient>
+                          <LinearGradient id="dome" x1="0" y1="0" x2="1" y2="1">
+                            <Stop offset="0" stopColor="#ffffff" />
+                            <Stop offset="0.6" stopColor="#d8e1ec" />
+                            <Stop offset="1" stopColor="#b6c2d1" />
+                          </LinearGradient>
+                          <LinearGradient id="gloss" x1="0" y1="0" x2="1" y2="1">
+                            <Stop offset="0" stopColor="rgba(255,255,255,0.7)" />
+                            <Stop offset="0.5" stopColor="rgba(255,255,255,0.2)" />
+                            <Stop offset="1" stopColor="rgba(255,255,255,0)" />
+                          </LinearGradient>
+                          <LinearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+                            <Stop offset="0" stopColor="#f8fafc" />
+                            <Stop offset="1" stopColor="#cbd5e1" />
+                          </LinearGradient>
+                          <LinearGradient id="baseShadow" x1="0" y1="0" x2="0" y2="1">
+                            <Stop offset="0" stopColor="rgba(15,23,42,0.35)" />
+                            <Stop offset="1" stopColor="rgba(15,23,42,0)" />
+                          </LinearGradient>
+                        </Defs>
+                        {/* soft ground shadow */}
+                        <Circle cx="84" cy="140" r="26" fill="url(#baseShadow)" />
+                        {/* thickness */}
+                        <Polygon points="22,18 34,28 134,28 122,18" fill="url(#top)" />
+                        <Polygon points="122,18 134,28 134,146 122,136" fill="url(#side)" />
+                        {/* front plate */}
+                        <Rect x="22" y="18" width="100" height="118" rx="12" fill="url(#front)" />
+                        {/* subtle inner border */}
+                        <Rect x="25" y="21" width="94" height="112" rx="10" fill="none" stroke="url(#edge)" />
+                        {/* sensor housing */}
+                        <Rect x="58" y="54" width="46" height="46" rx="7" fill="#e9eef5" stroke="#cbd5e1" />
+                        {/* dome */}
+                        <Circle cx="81" cy="77" r="18.5" fill="url(#dome)" stroke="#b6c2d1" />
+                        {/* dome highlight */}
+                        <Circle cx="75" cy="70" r="6" fill="rgba(255,255,255,0.7)" />
+                        {/* gloss */}
+                        <Rect x="26" y="20" width="86" height="30" rx="9" fill="url(#gloss)" />
+                        {/* dome dots */}
+                        <Circle cx="74" cy="74" r="2" fill="#b6c2d1" />
+                        <Circle cx="81" cy="72" r="2" fill="#b6c2d1" />
+                        <Circle cx="88" cy="74" r="2" fill="#b6c2d1" />
+                        <Circle cx="74" cy="81" r="2" fill="#b6c2d1" />
+                        <Circle cx="81" cy="83" r="2" fill="#b6c2d1" />
+                        <Circle cx="88" cy="81" r="2" fill="#b6c2d1" />
+                      </Svg>
+                    </Animated.View>
+                  </View>
+                  <Text style={styles.sheetText}>
+                    Sensor {pendingSensor} is nearby. Do you want to attach it to
+                    this switchboard?
+                  </Text>
+                  <View style={styles.sheetActions}>
+                    <TouchableOpacity
+                      style={[styles.sheetBtn, styles.sheetBtnGhost]}
+                      onPress={ignoreSensor}
+                    >
+                      <Text style={styles.sheetBtnGhostText}>Ignore</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.sheetBtn, styles.sheetBtnPrimary]}
+                      onPress={attachSensor}
+                    >
+                      <Text style={styles.sheetBtnPrimaryText}>Attach</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )}
+
+              {/* pin configuration moved to full-screen modal */}
+
+              {sensorStep === "attached" && (
+                <>
+                  <View style={styles.sheetHeader}>
+                    <Text style={styles.sheetTitle}>Sensor Attached</Text>
+                    <TouchableOpacity onPress={closeSheet}>
+                      <X size={22} color="#94a3b8" />
+                    </TouchableOpacity>
+                  </View>
+                  <View style={styles.sensorHero}>
+                    <Animated.View
+                      style={[
+                        styles.sensorSpin,
+                        {
+                          transform: [
+                            { perspective: 900 },
+                            {
+                              rotateY: rotation.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: ["0deg", "360deg"],
+                              }),
+                            },
+                            { rotateX: "10deg" },
+                          ],
+                        },
+                      ]}
+                    >
+                      <Svg width={160} height={160} viewBox="0 0 160 160">
+                        <Defs>
+                          <LinearGradient id="front" x1="0" y1="0" x2="1" y2="1">
+                            <Stop offset="0" stopColor="#ffffff" />
+                            <Stop offset="1" stopColor="#e5e7eb" />
+                          </LinearGradient>
+                          <LinearGradient id="side" x1="0" y1="0" x2="1" y2="1">
+                            <Stop offset="0" stopColor="#e5e7eb" />
+                            <Stop offset="1" stopColor="#cbd5e1" />
+                          </LinearGradient>
+                          <LinearGradient id="top" x1="0" y1="0" x2="1" y2="0">
+                            <Stop offset="0" stopColor="#ffffff" />
+                            <Stop offset="1" stopColor="#f1f5f9" />
+                          </LinearGradient>
+                          <LinearGradient id="dome" x1="0" y1="0" x2="1" y2="1">
+                            <Stop offset="0" stopColor="#ffffff" />
+                            <Stop offset="0.6" stopColor="#d8e1ec" />
+                            <Stop offset="1" stopColor="#b6c2d1" />
+                          </LinearGradient>
+                          <LinearGradient id="gloss" x1="0" y1="0" x2="1" y2="1">
+                            <Stop offset="0" stopColor="rgba(255,255,255,0.7)" />
+                            <Stop offset="0.5" stopColor="rgba(255,255,255,0.2)" />
+                            <Stop offset="1" stopColor="rgba(255,255,255,0)" />
+                          </LinearGradient>
+                          <LinearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+                            <Stop offset="0" stopColor="#f8fafc" />
+                            <Stop offset="1" stopColor="#cbd5e1" />
+                          </LinearGradient>
+                          <LinearGradient id="baseShadow" x1="0" y1="0" x2="0" y2="1">
+                            <Stop offset="0" stopColor="rgba(15,23,42,0.35)" />
+                            <Stop offset="1" stopColor="rgba(15,23,42,0)" />
+                          </LinearGradient>
+                        </Defs>
+                        <Circle cx="84" cy="140" r="26" fill="url(#baseShadow)" />
+                        <Polygon points="22,18 34,28 134,28 122,18" fill="url(#top)" />
+                        <Polygon points="122,18 134,28 134,146 122,136" fill="url(#side)" />
+                        <Rect x="22" y="18" width="100" height="118" rx="12" fill="url(#front)" />
+                        <Rect x="25" y="21" width="94" height="112" rx="10" fill="none" stroke="url(#edge)" />
+                        <Rect x="58" y="54" width="46" height="46" rx="7" fill="#e9eef5" stroke="#cbd5e1" />
+                        <Circle cx="81" cy="77" r="18.5" fill="url(#dome)" stroke="#b6c2d1" />
+                        <Circle cx="75" cy="70" r="6" fill="rgba(255,255,255,0.7)" />
+                        <Rect x="26" y="20" width="86" height="30" rx="9" fill="url(#gloss)" />
+                        <Circle cx="74" cy="74" r="2" fill="#b6c2d1" />
+                        <Circle cx="81" cy="72" r="2" fill="#b6c2d1" />
+                        <Circle cx="88" cy="74" r="2" fill="#b6c2d1" />
+                        <Circle cx="74" cy="81" r="2" fill="#b6c2d1" />
+                        <Circle cx="81" cy="83" r="2" fill="#b6c2d1" />
+                        <Circle cx="88" cy="81" r="2" fill="#b6c2d1" />
+                      </Svg>
+                    </Animated.View>
+                  </View>
+                  <Text style={styles.sheetText}>
+                    Sensor {pendingSensor} is attached to this hub. You can remove it if needed.
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.dangerButton}
+                    onPress={detachSensor}
+                  >
+                    <Text style={styles.dangerButtonText}>Remove Sensor</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+            </View>
+          </Animated.View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showSettings}
+        animationType="slide"
+        onRequestClose={() => setShowSettings(false)}
+      >
+        <View style={styles.settingsModal}>
+          <View style={styles.settingsHeader}>
+            <Text style={styles.settingsTitle}>Device Settings</Text>
+            <TouchableOpacity onPress={() => setShowSettings(false)}>
+              <X size={22} color="#94a3b8" />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.settingsBody}>
+            <View style={styles.settingsCard}>
+              <Text style={styles.sectionLabel}>LED Color</Text>
+              <View style={styles.colorGrid}>
+                {COLOR_PALETTE.map((color) => (
+                  <TouchableOpacity
+                    key={color}
+                    style={[
+                      styles.colorButton,
+                      { backgroundColor: color },
+                      tempColor === color && styles.colorButtonSelected,
+                    ]}
+                    onPress={() => setTempColor(color)}
+                  />
+                ))}
+              </View>
+              <View
+                style={[
+                  styles.selectedColorPreview,
+                  {
+                    backgroundColor: tempColor,
+                    opacity: tempIntensity / 100,
+                  },
+                ]}
+              />
+            </View>
+
+            <View style={styles.settingsCard}>
+              <Text style={styles.sectionLabel}>
+                Brightness: {tempIntensity}%
+              </Text>
+              <CustomSlider
+                value={tempIntensity}
+                minimumValue={0}
+                maximumValue={100}
+                step={1}
+                onValueChange={setTempIntensity}
+                minimumTrackTintColor="#5b8def"
+                maximumTrackTintColor="#334155"
+                thumbTintColor="#5b8def"
+              />
+              <View style={styles.intensityLabels}>
+                <Text style={styles.intensityLabel}>Off</Text>
+                <Text style={styles.intensityLabel}>Dim</Text>
+                <Text style={styles.intensityLabel}>Bright</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.applyButton}
+                onPress={applySettings}
+              >
+                <Text style={styles.applyButtonText}>Apply</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.settingsCard}>
+              <View style={styles.settingsRow}>
+                <Text style={styles.sectionLabel}>Sensor Configuration</Text>
+                <TouchableOpacity
+                  style={styles.refreshBtn}
+                  onPress={async () => {
+                    await requestSensorRefresh();
+                    await loadPinConfigs();
+                  }}
+                >
+                  <Text style={styles.refreshBtnText}>Refresh</Text>
+                </TouchableOpacity>
+              </View>
+              {ignoredSensors.length > 0 && (
+                <TouchableOpacity
+                  style={styles.clearIgnoredBtn}
+                  onPress={resetIgnoredSensors}
+                >
+                  <Text style={styles.clearIgnoredText}>
+                    Clear Ignored Sensors
+                  </Text>
+                </TouchableOpacity>
+              )}
+              {attachedSensors.length === 0 && (
+                <Text style={styles.sensorConfigEmpty}>
+                  No sensors attached to this hub.
+                </Text>
+              )}
+              {attachedSensors.map((mac) => (
+                <View key={mac} style={styles.sensorRow}>
+                  <Text style={styles.sensorMac}>{mac}</Text>
+                  <TouchableOpacity
+                    style={styles.sensorRemoveBtn}
+                    onPress={() => detachSensor(mac)}
+                  >
+                    <Text style={styles.sensorRemoveText}>Detach</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+
+            <TouchableOpacity
+              style={styles.closeBigBtn}
+              onPress={() => setShowSettings(false)}
+            >
+              <Text style={styles.closeBigBtnText}>Close</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showPinConfigModal}
+        animationType="slide"
+        onRequestClose={() => setShowPinConfigModal(false)}
+      >
+        <View style={styles.settingsModal}>
+          <View style={styles.settingsHeader}>
+            <Text style={styles.settingsTitle}>Pin Configuration</Text>
+            <TouchableOpacity onPress={() => setShowPinConfigModal(false)}>
+              <X size={22} color="#94a3b8" />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.settingsBody}>
+            <View style={styles.settingsCard}>
+              <Text style={styles.sectionLabel}>Pin Motion Rules</Text>
+              <Text style={styles.pinRulesHint}>
+                Configure each pin: name, auto on/off, and timer.
+              </Text>
+              {devices.map((d) => {
+                const cfg = pinConfigs[d.id] || {
+                  name: pinConfigs[d.id]?.name || d.name || "",
+                  autoOn: false,
+                  autoOff: false,
+                  offDelay: 600,
+                };
+                return (
+                  <View key={d.id} style={styles.pinConfigCard}>
+                    <View style={styles.pinConfigHeader}>
+                      <Text style={styles.pinConfigTitle}>Pin {d.id}</Text>
+                    </View>
+
+                    <TextInput
+                      style={styles.pinNameInput}
+                      placeholder="Switch name"
+                      placeholderTextColor="#64748b"
+                      value={cfg.name}
+                      onChangeText={(v) => updatePinConfig(d.id, { name: v })}
+                    />
+
+                    <View style={styles.pinOptionRow}>
+                      <TouchableOpacity
+                        style={[
+                          styles.ruleOption,
+                          cfg.autoOn && styles.ruleOptionActive,
+                        ]}
+                        onPress={() =>
+                          updatePinConfig(d.id, { autoOn: !cfg.autoOn })
+                        }
+                      >
+                        <Text
+                          style={[
+                            styles.ruleText,
+                            cfg.autoOn && styles.ruleTextActive,
+                          ]}
+                        >
+                          Auto On
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[
+                          styles.ruleOption,
+                          cfg.autoOff && styles.ruleOptionActive,
+                        ]}
+                        onPress={() =>
+                          updatePinConfig(d.id, { autoOff: !cfg.autoOff })
+                        }
+                      >
+                        <Text
+                          style={[
+                            styles.ruleText,
+                            cfg.autoOff && styles.ruleTextActive,
+                          ]}
+                        >
+                          Auto Off
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    {cfg.autoOff && (
+                      <View style={styles.durationRow}>
+                        {[120, 600, 1800].map((sec) => (
+                          <TouchableOpacity
+                            key={sec}
+                            style={[
+                              styles.durationChip,
+                              cfg.offDelay === sec &&
+                                styles.durationChipActive,
+                            ]}
+                            onPress={() =>
+                              updatePinConfig(d.id, { offDelay: sec })
+                            }
+                          >
+                            <Text
+                              style={[
+                                styles.durationChipText,
+                                cfg.offDelay === sec &&
+                                  styles.durationChipTextActive,
+                              ]}
+                            >
+                              {sec === 120
+                                ? "2 min"
+                                : sec === 600
+                                ? "10 min"
+                                : "30 min"}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    )}
+                  </View>
+                );
+              })}
+            </View>
+            <TouchableOpacity
+              style={styles.applyButton}
+              onPress={saveAllPinConfigs}
+            >
+              <Text style={styles.applyButtonText}>Save All</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.closeBigBtn}
+              onPress={() => setShowPinConfigModal(false)}
+            >
+              <Text style={styles.closeBigBtnText}>Close</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -816,6 +1629,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+    paddingVertical: 8,
+    paddingRight: 10,
   },
   speedControllerBox: {
     flexDirection: "column",
@@ -886,6 +1701,17 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 8,
+  },
+  pinConfigIconBtn: {
+    marginLeft: 6,
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(148, 163, 184, 0.35)",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(15, 23, 42, 0.5)",
   },
   boardInfo: {
     flex: 1,
@@ -974,6 +1800,35 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: "bold",
     color: "#fff",
+  },
+  modalText: {
+    color: "#e2e8f0",
+    fontSize: 14,
+    marginTop: 6,
+  },
+  modalActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginTop: 16,
+    gap: 10,
+  },
+  modalBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+  },
+  modalBtnPrimary: {
+    backgroundColor: "#2563eb",
+  },
+  modalBtnSecondary: {
+    backgroundColor: "#1f2937",
+  },
+  modalBtnTextPrimary: {
+    color: "#fff",
+    fontWeight: "600",
+  },
+  modalBtnTextSecondary: {
+    color: "#e2e8f0",
   },
   inputGroup: {
     marginBottom: 20,
@@ -1095,6 +1950,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.4,
     shadowRadius: 8,
     elevation: 6,
+    marginBottom: 16,
   },
   applyButtonText: {
     fontSize: 15,
@@ -1190,5 +2046,321 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 16,
     right: 16,
+  },
+  sheetOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.6)",
+    justifyContent: "flex-end",
+  },
+  sheet: {
+    backgroundColor: "#0f172a",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 0,
+    paddingBottom: 28,
+    borderWidth: 1,
+    borderColor: "#1f2937",
+    minHeight: 380,
+    maxHeight: "85%",
+  },
+  sheetContent: {
+    transform: [{ translateY: -20 }],
+    paddingTop: 20,
+  },
+  sheetHandle: {
+    alignSelf: "center",
+    width: 48,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: "#334155",
+    marginBottom: 10,
+  },
+  sheetHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  sheetTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#fff",
+  },
+  sheetText: {
+    color: "#cbd5e1",
+    fontSize: 14,
+    marginBottom: 16,
+  },
+  sheetActions: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 12,
+  },
+  sheetBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: "center",
+    borderWidth: 1,
+  },
+  sheetBtnPrimary: {
+    backgroundColor: "#2563eb",
+    borderColor: "#2563eb",
+  },
+  sheetBtnGhost: {
+    backgroundColor: "transparent",
+    borderColor: "#334155",
+  },
+  sheetBtnPrimaryText: {
+    color: "#fff",
+    fontWeight: "600",
+  },
+  sheetBtnGhostText: {
+    color: "#cbd5e1",
+    fontWeight: "600",
+  },
+  dangerButton: {
+    marginTop: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.5)",
+    backgroundColor: "rgba(239, 68, 68, 0.12)",
+    alignItems: "center",
+  },
+  dangerButtonText: {
+    color: "#ef4444",
+    fontWeight: "700",
+  },
+  settingsModal: {
+    flex: 1,
+    backgroundColor: "#0f172a",
+    paddingTop: 56,
+  },
+  settingsHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#1f2937",
+  },
+  settingsTitle: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  settingsBody: {
+    paddingHorizontal: 20,
+    paddingTop: 16,
+  },
+  settingsCard: {
+    backgroundColor: "#111827",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: "#1f2937",
+  },
+  settingsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  refreshBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#0b1220",
+  },
+  refreshBtnText: {
+    color: "#cbd5e1",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  pinRulesHint: {
+    color: "#94a3b8",
+    fontSize: 12,
+    marginBottom: 10,
+  },
+  pinConfigCard: {
+    backgroundColor: "#0b1220",
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "#1f2937",
+  },
+  pinConfigHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  pinConfigTitle: {
+    color: "#e2e8f0",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  savePinBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#111827",
+  },
+  savePinBtnText: {
+    color: "#cbd5e1",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  pinNameInput: {
+    backgroundColor: "#0f172a",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: "#334155",
+    color: "#fff",
+    marginBottom: 10,
+  },
+  pinOptionRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  clearIgnoredBtn: {
+    alignSelf: "flex-start",
+    marginBottom: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#475569",
+    backgroundColor: "#0b1220",
+  },
+  clearIgnoredText: {
+    color: "#cbd5e1",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  closeBigBtn: {
+    backgroundColor: "#1f2937",
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#334155",
+    marginBottom: 60,
+  },
+  closeBigBtnText: {
+    color: "#e2e8f0",
+    fontWeight: "700",
+    fontSize: 15,
+  },
+  sensorConfigSub: {
+    color: "#94a3b8",
+    fontSize: 13,
+    marginBottom: 12,
+  },
+  sensorConfigEmpty: {
+    color: "#64748b",
+    fontSize: 14,
+  },
+  sensorRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#1f2937",
+  },
+  sensorMac: {
+    color: "#e2e8f0",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  sensorRemoveBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.5)",
+    backgroundColor: "rgba(239, 68, 68, 0.12)",
+  },
+  sensorRemoveText: {
+    color: "#ef4444",
+    fontWeight: "700",
+  },
+  sensorHero: {
+    height: 140,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
+  },
+  sensorSpin: {
+    width: 160,
+    height: 160,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#0f172a",
+    shadowOpacity: 0.4,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 10,
+  },
+  ruleRow: {
+    gap: 10,
+    marginTop: 8,
+  },
+  ruleOption: {
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#0b1220",
+  },
+  ruleOptionActive: {
+    borderColor: "#2563eb",
+    backgroundColor: "rgba(37, 99, 235, 0.15)",
+  },
+  ruleText: {
+    color: "#cbd5e1",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  ruleTextActive: {
+    color: "#93c5fd",
+  },
+  durationRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 12,
+  },
+  durationChip: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#0b1220",
+  },
+  durationChipActive: {
+    borderColor: "#22c55e",
+    backgroundColor: "rgba(34, 197, 94, 0.18)",
+  },
+  durationChipText: {
+    color: "#cbd5e1",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  durationChipTextActive: {
+    color: "#86efac",
   },
 });

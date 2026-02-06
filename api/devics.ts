@@ -83,6 +83,7 @@ export async function addLayout(serviceId: string, body: any): Promise<any> {
 
 export interface GetLayoutResult {
   hasChanged: boolean;
+  serviceId?: string;
 }
 
 export async function getLayout(macAddress: string): Promise<GetLayoutResult> {
@@ -95,7 +96,7 @@ export async function getLayout(macAddress: string): Promise<GetLayoutResult> {
   const hasChanged = await upsertLayoutButtonsFromServer(layoutResponse);
 
   // 3️⃣ Return only change signal
-  return { hasChanged };
+  return { hasChanged, serviceId: layoutResponse?.service_id };
 }
 
 export async function sendCommandOverWifi(
@@ -121,4 +122,69 @@ export async function getDeviceStatusOverWifi(macAddress: string) {
   return client
     .get(`/devices/macaddress?mac_address=${macAddress}`)
     .then((res) => res.data);
+}
+
+export async function checkSensorAttachment(sensorMac: string) {
+  return client
+    .get(`/sensor/${encodeURIComponent(sensorMac)}/is-attached`)
+    .then((res) => res.data);
+}
+
+export async function attachSensorToDevice(
+  deviceMac: string,
+  sensorMac: string
+) {
+  return client
+    .post(`/sensor/attach-sensor`, {
+      device_mac: deviceMac,
+      sensor_mac: sensorMac,
+    })
+    .then((res) => res.data);
+}
+
+export async function createSensorRule(
+  sensorMac: string,
+  pin: number,
+  event: "active" | "inactive",
+  command: "on" | "off",
+  durationSec?: number
+) {
+  return client
+    .post(`/sensor/rule`, {
+      sensor_mac: sensorMac,
+      event,
+      command,
+      pin,
+      ...(durationSec ? { durationSec } : {}),
+    })
+    .then((res) => res.data);
+}
+
+export async function detachSensorFromDevice(
+  deviceMac: string,
+  sensorMac: string
+) {
+  return client
+    .post(`/sensor/detach-sensor`, {
+      device_mac: deviceMac,
+      sensor_mac: sensorMac,
+    })
+    .then((res) => res.data);
+}
+
+export async function fetchPinConfigs(deviceMac: string) {
+  return client
+    .get(`/sensor/pin-config/${encodeURIComponent(deviceMac)}`)
+    .then((res) => res.data);
+}
+
+export async function savePinConfig(payload: {
+  device_mac: string;
+  pin: number;
+  name: string;
+  auto_on: boolean;
+  auto_off: boolean;
+  off_delay: number;
+}) {
+  return client.post(`/sensor/pin-config`, payload).then((res) => res.data);
 }

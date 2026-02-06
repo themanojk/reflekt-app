@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const TOKEN_KEY = '@app:token';
 const USER_KEY  = '@app:user';
 const ESP_IDS_KEY = '@esp:key';
+const IGNORED_SENSORS_PREFIX = '@ignoredSensors:';
 
 export async function setToken(token: string) {
   await AsyncStorage.setItem(TOKEN_KEY, token);
@@ -38,4 +39,22 @@ export async function getESPServiceIds(): Promise<string[]> {
   const ids =  await AsyncStorage.getItem(ESP_IDS_KEY);
   if(ids) return JSON.parse(ids);
   else return [];
+}
+
+export async function getIgnoredSensors(deviceId: string): Promise<string[]> {
+  const raw = await AsyncStorage.getItem(`${IGNORED_SENSORS_PREFIX}${deviceId}`);
+  return raw ? JSON.parse(raw) : [];
+}
+
+export async function addIgnoredSensor(deviceId: string, mac: string) {
+  const list = await getIgnoredSensors(deviceId);
+  const next = Array.from(new Set([...list, mac.toUpperCase()]));
+  await AsyncStorage.setItem(
+    `${IGNORED_SENSORS_PREFIX}${deviceId}`,
+    JSON.stringify(next)
+  );
+}
+
+export async function clearIgnoredSensors(deviceId: string) {
+  await AsyncStorage.removeItem(`${IGNORED_SENSORS_PREFIX}${deviceId}`);
 }

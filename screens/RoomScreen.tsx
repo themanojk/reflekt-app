@@ -2,6 +2,7 @@ import { DatabaseDevice } from "@/api/devics";
 import { ROOM_ICONS } from "@/constants";
 import type { RootStackParamList } from "@/constants/types";
 import { getSwitchboardsByRoomId } from "@/db/switchboards.local";
+import { syncAppData } from "@/db_sync/app_sync";
 import { RouteProp } from "@react-navigation/native";
 import { ChevronLeft, Plus } from "lucide-react-native";
 import React, { useEffect, useState } from "react";
@@ -72,7 +73,11 @@ export default function RoomScreen({ route, navigation }: Props) {
   const loadSwitchboards = async () => {
     setLoading(true);
     try {
-      const boardData = await getSwitchboardsByRoomId(roomId);
+      let boardData = await getSwitchboardsByRoomId(roomId);
+      if (!boardData.length) {
+        await syncAppData();
+        boardData = await getSwitchboardsByRoomId(roomId);
+      }
       console.log(boardData);
       const deviceObj: any = {};
       devices.forEach((device) => {

@@ -38,17 +38,18 @@ export async function syncAppData(params?: SyncParams) {
     try {
       const devices = await fetchDevices();
 
-      devices.forEach(async (d) => {
+      for (const d of devices) {
+        const roomInfo = roomsObj[d["room_id"]] || {};
         await upsertSwitchboardLocal({
           id: d.device_id,
           name: d.title,
-          room_id: d["room_id"],
+          room_id: d["room_id"] ?? null,
           service_id: d["service_id"] || "",
-          room_name: roomsObj[d["room_id"]].name,
-          icon: roomsObj[d["room_id"]].icon,
+          room_name: roomInfo.name ?? null,
+          icon: roomInfo.icon ?? null,
           color: COLORS[Math.floor(Math.random() * COLORS.length)],
         });
-      });
+      }
     } catch (e) {
       console.warn("Switchboard sync skipped", e);
     }

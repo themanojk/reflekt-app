@@ -59,5 +59,23 @@ export function initDB() {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_pin_per_layout
     ON layout_buttons(service_id, pin);
 
+    -- =====================
+    -- PIN CONFIGS (Motion Rules + Names)
+    -- =====================
+    CREATE TABLE IF NOT EXISTS pin_configs (
+    id TEXT PRIMARY KEY,         -- device_mac:pin
+    device_mac TEXT,
+    pin INTEGER,
+    name TEXT,
+    auto_on INTEGER,
+    auto_off INTEGER,
+    off_delay INTEGER,
+    updatedAt INTEGER,
+    pending_sync INTEGER DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pin_configs_device
+    ON pin_configs(device_mac);
+
   `);
 }
