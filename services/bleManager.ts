@@ -380,6 +380,7 @@ class BLEManagerService {
         if (char?.value) {
           // decode Base64 → UTF8 string
           const received = Buffer.from(char.value, "base64").toString("utf8");
+          console.log("BLE decoded", received);
           onReceive(received);
         }
       }

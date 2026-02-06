@@ -124,7 +124,7 @@ export async function fetchDevicesByRoomForUser() {
 
 export async function getDeviceStatusOverWifi(macAddress: string) {
   return client
-    .get(`/devices/macaddress?mac_address=${macAddress}`)
+    .get(`/devices/macAddress?mac_address=${macAddress}`)
     .then((res) => res.data);
 }
 

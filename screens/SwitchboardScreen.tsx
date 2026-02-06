@@ -57,9 +57,7 @@ import {
   clearIgnoredSensors,
   getIgnoredSensors,
   getLastLayout,
-  getLastPins,
   setLastLayout,
-  setLastPins,
 } from "@/utils/storage";
 import {
   getPinConfigsByDevice,
@@ -120,6 +118,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [wifiSSID, setWifiSSID] = useState("");
   const [wifiPassword, setWifiPassword] = useState("");
   const [pins, setPins] = useState<any>({});
+  const lastBlePinsAtRef = React.useRef<number>(0);
   const [isOnline, setIsOnline] = useState<boolean>(status);
   const [isWifiOnline, setIsWifiOnline] = useState<boolean>(status);
   const [speed, setSpeed] = useState(0);
@@ -220,10 +219,12 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     teardownBle();
 
     const onReceived = (data: any) => {
+      const wifiOnlyPins = true;
       if (!data || typeof data !== "string") return;
-      console.log("BLE RX", data);
-      if (data.startsWith("SENSORS:")) {
-        const list = data
+      const raw = data.trim();
+      console.log("BLE RX", raw);
+      if (raw.startsWith("SENSORS:")) {
+        const list = raw
           .replace("SENSORS:", "")
           .split(",")
           .map((s) => s.trim())
@@ -231,8 +232,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         handleAvailableSensors(list);
         return;
       }
-      if (data.startsWith("SENSORS_ATTACHED:")) {
-        const list = data
+      if (raw.startsWith("SENSORS_ATTACHED:")) {
+        const list = raw
           .replace("SENSORS_ATTACHED:", "")
           .split(",")
           .map((s) => s.trim())
@@ -240,19 +241,35 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         handleAttachedSensors(list);
         return;
       }
-      if (data.startsWith("SENSOR_ATTACH_")) {
+      if (raw.startsWith("SENSOR_ATTACH_")) {
         return;
       }
 
-      const pinDataArray = data.split(",");
+      const payload = raw.startsWith("PINS:") ? raw.slice(5).trim() : raw;
+      if (!payload.includes(":")) {
+        console.log("BLE non-pin payload", payload);
+        return;
+      }
+      if (wifiOnlyPins) {
+        console.log("BLE pins ignored (wifi only)");
+        return;
+      }
+
+      const pinDataArray = payload.includes(",") ? payload.split(",") : [payload];
       const pinObj: any = {};
       pinDataArray.forEach((pinData: string) => {
         const statusData: string[] = pinData.split(":");
         const pin = Number(statusData[0]);
+        if (!Number.isFinite(pin) || statusData.length < 2) return;
         pinObj[pin] = statusData[1] === "1" ? true : false;
       });
+      if (!Object.keys(pinObj).length) {
+        console.log("BLE pins parse failed", payload);
+        return;
+      }
+      console.log("BLE pins", pinObj);
+      lastBlePinsAtRef.current = Date.now();
       setPins(pinObj);
-      setLastPins(deviceId, pinObj);
     };
 
     const onError = (err: any) => {
@@ -305,9 +322,14 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     Object.keys(pinsData).forEach((pin: string) => {
       pinObj[Number(pin)] = pinsData[pin] == 1 ? true : false;
     });
-    if (!services.length || !activeDevice || !isOnline) {
+    console.log("WiFi pins", pinObj);
+    const bleStaleMs = 8000;
+    const bleStale =
+      !lastBlePinsAtRef.current ||
+      Date.now() - lastBlePinsAtRef.current > bleStaleMs;
+    // BLE has priority; apply Wi-Fi if BLE not connected or BLE pins stale
+    if (!activeDevice || !services.length || !isOnline || bleStale) {
       setPins(pinObj);
-      setLastPins(deviceId, pinObj);
     }
   };
   useEffect(() => {
@@ -367,12 +389,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         }
       }
 
-      // 3.1️⃣ Load cached pin states for offline mode
-      const cachedPins = await getLastPins(deviceId);
-      if (cachedPins) {
-        setPins(cachedPins);
-      }
-
       // 4️⃣ BACKGROUND API SYNC (always)
       getLayout(deviceId)
         .then(async ({ serviceId: updatedServiceId }) => {
@@ -420,6 +436,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const loadWifiStatusData = async () => {
     try {
       const wifiStatus = await getDeviceStatusOverWifi(deviceId);
+      console.log("WiFi status response", wifiStatus);
       if (wifiStatus) {
         setIsWifiOnline(wifiStatus?.status?.online);
         if (wifiStatus?.status?.online) {
