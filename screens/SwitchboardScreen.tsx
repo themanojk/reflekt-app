@@ -42,6 +42,8 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { getCanonicalId } from "@/services/bleCanonicalId";
 import Svg, {
   Circle,
   Defs,
@@ -102,7 +104,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   if (!bleManagerRef.current) bleManagerRef.current = new BLEManagerService();
   const bleManager = bleManagerRef.current;
 
-  const { switchboardName, service_id, deviceId, roomIcon, status, iosBleId } =
+  const { switchboardName, service_id, deviceId, roomIcon, status, iosBleId, bleId } =
     route.params;
   const [devices, setDevices] = useState<Device[]>([]);
   const [activeDevice, setActiveDevice] = useState<BleDevice>();
@@ -119,6 +121,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [wifiPassword, setWifiPassword] = useState("");
   const [pins, setPins] = useState<any>({});
   const lastBlePinsAtRef = React.useRef<number>(0);
+  const lastSensorListRef = React.useRef<string>("");
+  const lastSensorCheckRef = React.useRef<number>(0);
+  const resolvingBleRef = React.useRef<boolean>(false);
+  const connectingBleRef = React.useRef<boolean>(false);
   const [isOnline, setIsOnline] = useState<boolean>(status);
   const [isWifiOnline, setIsWifiOnline] = useState<boolean>(status);
   const [speed, setSpeed] = useState(0);
@@ -164,7 +170,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         duration: 6000,
         easing: Easing.linear,
         useNativeDriver: true,
-      })
+      }),
     ).start();
   }, [rotation]);
 
@@ -197,7 +203,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           }).start();
         },
       }),
-    [closeSheet, sheetTranslateY]
+    [closeSheet, sheetTranslateY],
   );
 
   const teardownBle = React.useCallback(() => {
@@ -207,19 +213,33 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   }, []);
 
   useEffect(() => {
-    setIsOnline(status);
-  }, [status]);
+    // BLE online should reflect actual BLE connection state
+    if (!activeDevice || !services.length) {
+      setIsOnline(false);
+    }
+  }, [activeDevice, services.length]);
 
   useEffect(() => {
     loadSwitchboardData();
   }, [deviceId, serviceId]);
 
   useEffect(() => {
+    console.log("BLE state", {
+      activeDevice: activeDevice?.id,
+      services,
+      isOnline,
+    });
     if (!activeDevice || !services.length || !isOnline) return;
     teardownBle();
+    console.log(
+      "BLE subscribe",
+      "device",
+      activeDevice.id,
+      "service",
+      services[0],
+    );
 
     const onReceived = (data: any) => {
-      const wifiOnlyPins = true;
       if (!data || typeof data !== "string") return;
       const raw = data.trim();
       console.log("BLE RX", raw);
@@ -229,7 +249,16 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           .split(",")
           .map((s) => s.trim())
           .filter(Boolean);
-        handleAvailableSensors(list);
+        const key = list.join(",");
+        const now = Date.now();
+        const minGapMs = 10000;
+        if (key !== lastSensorListRef.current || now - lastSensorCheckRef.current > minGapMs) {
+          lastSensorListRef.current = key;
+          lastSensorCheckRef.current = now;
+          handleAvailableSensors(list);
+        } else {
+          console.log("Skipping duplicate SENSORS payload");
+        }
         return;
       }
       if (raw.startsWith("SENSORS_ATTACHED:")) {
@@ -250,12 +279,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         console.log("BLE non-pin payload", payload);
         return;
       }
-      if (wifiOnlyPins) {
-        console.log("BLE pins ignored (wifi only)");
-        return;
-      }
-
-      const pinDataArray = payload.includes(",") ? payload.split(",") : [payload];
+      const pinDataArray = payload.includes(",")
+        ? payload.split(",")
+        : [payload];
       const pinObj: any = {};
       pinDataArray.forEach((pinData: string) => {
         const statusData: string[] = pinData.split(":");
@@ -267,7 +293,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         console.log("BLE pins parse failed", payload);
         return;
       }
-      console.log("BLE pins", pinObj);
+      console.log("BLE pins decoded", pinObj);
       lastBlePinsAtRef.current = Date.now();
       setPins(pinObj);
     };
@@ -286,7 +312,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       activeDevice,
       services[0],
       onReceived,
-      onError
+      onError,
     ) as unknown as Disposable;
     getCurrentState(activeDevice, services[0]);
 
@@ -320,7 +346,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     const pinsData = pins;
     const pinObj: any = {};
     Object.keys(pinsData).forEach((pin: string) => {
-      pinObj[Number(pin)] = pinsData[pin] == 1 ? true : false;
+      const n = Number(pin);
+      if (!Number.isFinite(n)) return;
+      pinObj[n] = pinsData[pin] == 1 ? true : false;
     });
     console.log("WiFi pins", pinObj);
     const bleStaleMs = 8000;
@@ -371,7 +399,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             is_on: false,
             position: idx,
             command: button.command,
-          }))
+          })),
         );
       } else {
         const cachedLayout = await getLastLayout(deviceId);
@@ -384,7 +412,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
               is_on: false,
               position: idx,
               command: button.command,
-            }))
+            })),
           );
         }
       }
@@ -405,7 +433,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 label: b.label,
                 type: b.type,
                 command: b.command,
-              }))
+              })),
             );
             setDevices(
               updatedButtons.map((button, idx) => ({
@@ -415,7 +443,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 is_on: false,
                 position: idx,
                 command: button.command,
-              }))
+              })),
             );
           }
         })
@@ -436,7 +464,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const loadWifiStatusData = async () => {
     try {
       const wifiStatus = await getDeviceStatusOverWifi(deviceId);
-      console.log("WiFi status response", wifiStatus);
       if (wifiStatus) {
         setIsWifiOnline(wifiStatus?.status?.online);
         if (wifiStatus?.status?.online) {
@@ -451,6 +478,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     if (!device) return;
     try {
       const text = `REST:`;
+      console.log("BLE getCurrentState -> sending", text);
       await bleManager.sendData(device, text, serviceId);
     } catch (e) {
       console.error("Write failed", e);
@@ -613,7 +641,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
               d.id,
               "inactive",
               "off",
-              cfg.offDelay || 600
+              cfg.offDelay || 600,
             );
           }
         } catch {
@@ -672,11 +700,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       if (services.length && activeDevice) {
         const cmd = `SENSOR_ATTACH:${pendingSensor}`;
         console.log("Sending BLE attach command", cmd);
-        await bleManager.sendData(
-          activeDevice,
-          cmd,
-          services[0]
-        );
+        await bleManager.sendData(activeDevice, cmd, services[0]);
         console.log("BLE attach command sent");
       }
       setShowSensorModal(false);
@@ -687,7 +711,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       console.error(
         "Attach sensor failed",
         e?.response?.status,
-        e?.response?.data || e?.message || e
+        e?.response?.data || e?.message || e,
       );
       Alert.alert("Failed", e?.response?.data?.message || "Attach failed");
       setShowSensorModal(false);
@@ -730,63 +754,96 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 console.log("Sending BLE detach command", cmd);
                 await bleManager.sendData(activeDevice, cmd, services[0]);
               }
-              setAttachedSensors((prev) =>
-                prev.filter((s) => s !== targetMac)
-              );
+              setAttachedSensors((prev) => prev.filter((s) => s !== targetMac));
               setShowSensorModal(false);
               setPendingSensor(null);
             } catch (e: any) {
               console.error(
                 "Detach sensor failed",
                 e?.response?.status,
-                e?.response?.data || e?.message || e
+                e?.response?.data || e?.message || e,
               );
               Alert.alert(
                 "Failed",
-                e?.response?.data?.message || "Detach failed"
+                e?.response?.data?.message || "Detach failed",
               );
             }
           },
         },
-      ]
+      ],
     );
   };
 
   const getBleConnection = async (macAddress: string) => {
     try {
+      if (connectingBleRef.current) return;
+      connectingBleRef.current = true;
+      let transportId = (bleId || iosBleId || "").toString();
+      console.log("BLE step 1: start connect flow", {
+        macAddress,
+        bleId,
+        iosBleId,
+      });
+      if (!transportId) {
+        try {
+          const keys = await AsyncStorage.getAllKeys();
+          const canonicalKeys = keys.filter((k) => k.startsWith("ble:canonical:"));
+          console.log("BLE step 2: cached canonical keys", canonicalKeys.length);
+          for (const k of canonicalKeys) {
+            const val = await AsyncStorage.getItem(k);
+            if (val && val.toUpperCase() === macAddress.toUpperCase()) {
+              transportId = k.replace("ble:canonical:", "");
+              break;
+            }
+          }
+        } catch {}
+      }
+      if (!transportId) transportId = (macAddress || "").toString();
+      console.log("BLE step 3: transportId resolved", transportId);
+
+      const targetId = transportId.toLowerCase();
+      console.log("BLE connect", { macAddress, transportId });
+      await bleManager.stopScan();
+      await bleManager.cancelById(targetId);
       const already = await bleManager.getAlreadyConnected();
+      console.log("BLE step 4: already connected", already.map((d) => d.id));
       let connected: BleDevice | null =
-        already.find((d) => d.id === macAddress) || null;
+        already.find((d) => d.id.toLowerCase() === targetId) || null;
+      if (activeDevice && activeDevice.id?.toLowerCase() === targetId) {
+        connectingBleRef.current = false;
+        return;
+      }
       if (!connected) {
-        if (Platform.OS === "ios" && iosBleId) {
-          connected = await bleManager.connectSafely(iosBleId, {
-            retries: 2,
-            connectTimeoutMs: 5000,
-            autoConnect: false,
-          });
-        } else {
-          connected = await bleManager.connectSafely(deviceId, {
-            retries: 2,
-            connectTimeoutMs: 5000,
-            autoConnect: false,
-          });
+        console.log("BLE step 5: connectSafely");
+        connected = await bleManager.connectSafely(targetId, {
+          retries: 2,
+          connectTimeoutMs: 5000,
+          autoConnect: false,
+          skipScan: false,
+        });
+        if (!connected) {
+          console.warn("BLE step 5b: connectSafely returned null");
         }
       }
 
       if (connected) {
+        console.log("BLE step 6: connected", connected.id);
         setIsOnline(true);
         setActiveDevice(connected);
         const serviceIds = await bleManager.getCustomServiceId(connected);
+        console.log("BLE step 7: services", serviceIds);
         setServices(serviceIds);
       }
     } catch (err) {
       console.warn("BLE connect failed", err);
+    } finally {
+      connectingBleRef.current = false;
     }
   };
 
   const sendDataToESP = async (
     pin: number,
-    command: string
+    command: string,
   ): Promise<boolean> => {
     if (!services.length || !activeDevice) {
       const payload: WifiPayload = {
@@ -817,13 +874,13 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       const status = await sendDataToESP(dev.id, dev.command);
       if (status) {
         setDevices((prev) =>
-          prev.map((d) => (d.id === deviceId ? { ...d, is_on: !d.is_on } : d))
+          prev.map((d) => (d.id === deviceId ? { ...d, is_on: !d.is_on } : d)),
         );
       }
     } catch (e) {
       // revert on failure
       setDevices((prev) =>
-        prev.map((d) => (d.id === deviceId ? { ...d, is_on: !d.is_on } : d))
+        prev.map((d) => (d.id === deviceId ? { ...d, is_on: !d.is_on } : d)),
       );
     }
   };
@@ -957,20 +1014,21 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         return next;
       });
     },
-    [services.length, activeDevice]
+    [services.length, activeDevice],
   );
 
   const renderDeviceCard = (device: Device) => {
     const IconComponent = ROOM_ICONS[device.device_type] || Lightbulb;
     const isActive = device.is_on;
     const speedValue = device.speed ?? 0;
-    const displayName =
-      pinConfigs[device.id]?.name?.trim() || device.name;
+    const displayName = pinConfigs[device.id]?.name?.trim() || device.name;
 
     return (
-      <View style={[styles.deviceCard, isActive && styles.deviceCardActive]}>
+      <View
+        key={device.id}
+        style={[styles.deviceCard, isActive && styles.deviceCardActive]}
+      >
         <TouchableOpacity
-          key={device.id}
           onPress={() => toggleDevice(device.id)}
         >
           <View style={isActive ? styles.glassOverlay : null} />
@@ -1027,8 +1085,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                             speed: clamped,
                             is_on: clamped > 0 ? true : d.is_on,
                           }
-                        : d
-                    )
+                        : d,
+                    ),
                   );
                 }}
                 // commit on release
@@ -1220,9 +1278,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 <>
                   <View style={styles.sheetHeader}>
                     <Text style={styles.sheetTitle}>Motion Sensor Found</Text>
-                  <TouchableOpacity onPress={closeSheet}>
-                    <X size={22} color="#94a3b8" />
-                  </TouchableOpacity>
+                    <TouchableOpacity onPress={closeSheet}>
+                      <X size={22} color="#94a3b8" />
+                    </TouchableOpacity>
                   </View>
                   <View style={styles.sensorHero}>
                     <Animated.View
@@ -1244,7 +1302,13 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                     >
                       <Svg width={160} height={160} viewBox="0 0 160 160">
                         <Defs>
-                          <LinearGradient id="front" x1="0" y1="0" x2="1" y2="1">
+                          <LinearGradient
+                            id="front"
+                            x1="0"
+                            y1="0"
+                            x2="1"
+                            y2="1"
+                          >
                             <Stop offset="0" stopColor="#ffffff" />
                             <Stop offset="1" stopColor="#e5e7eb" />
                           </LinearGradient>
@@ -1261,37 +1325,107 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                             <Stop offset="0.6" stopColor="#d8e1ec" />
                             <Stop offset="1" stopColor="#b6c2d1" />
                           </LinearGradient>
-                          <LinearGradient id="gloss" x1="0" y1="0" x2="1" y2="1">
-                            <Stop offset="0" stopColor="rgba(255,255,255,0.7)" />
-                            <Stop offset="0.5" stopColor="rgba(255,255,255,0.2)" />
+                          <LinearGradient
+                            id="gloss"
+                            x1="0"
+                            y1="0"
+                            x2="1"
+                            y2="1"
+                          >
+                            <Stop
+                              offset="0"
+                              stopColor="rgba(255,255,255,0.7)"
+                            />
+                            <Stop
+                              offset="0.5"
+                              stopColor="rgba(255,255,255,0.2)"
+                            />
                             <Stop offset="1" stopColor="rgba(255,255,255,0)" />
                           </LinearGradient>
                           <LinearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
                             <Stop offset="0" stopColor="#f8fafc" />
                             <Stop offset="1" stopColor="#cbd5e1" />
                           </LinearGradient>
-                          <LinearGradient id="baseShadow" x1="0" y1="0" x2="0" y2="1">
+                          <LinearGradient
+                            id="baseShadow"
+                            x1="0"
+                            y1="0"
+                            x2="0"
+                            y2="1"
+                          >
                             <Stop offset="0" stopColor="rgba(15,23,42,0.35)" />
                             <Stop offset="1" stopColor="rgba(15,23,42,0)" />
                           </LinearGradient>
                         </Defs>
                         {/* soft ground shadow */}
-                        <Circle cx="84" cy="140" r="26" fill="url(#baseShadow)" />
+                        <Circle
+                          cx="84"
+                          cy="140"
+                          r="26"
+                          fill="url(#baseShadow)"
+                        />
                         {/* thickness */}
-                        <Polygon points="22,18 34,28 134,28 122,18" fill="url(#top)" />
-                        <Polygon points="122,18 134,28 134,146 122,136" fill="url(#side)" />
+                        <Polygon
+                          points="22,18 34,28 134,28 122,18"
+                          fill="url(#top)"
+                        />
+                        <Polygon
+                          points="122,18 134,28 134,146 122,136"
+                          fill="url(#side)"
+                        />
                         {/* front plate */}
-                        <Rect x="22" y="18" width="100" height="118" rx="12" fill="url(#front)" />
+                        <Rect
+                          x="22"
+                          y="18"
+                          width="100"
+                          height="118"
+                          rx="12"
+                          fill="url(#front)"
+                        />
                         {/* subtle inner border */}
-                        <Rect x="25" y="21" width="94" height="112" rx="10" fill="none" stroke="url(#edge)" />
+                        <Rect
+                          x="25"
+                          y="21"
+                          width="94"
+                          height="112"
+                          rx="10"
+                          fill="none"
+                          stroke="url(#edge)"
+                        />
                         {/* sensor housing */}
-                        <Rect x="58" y="54" width="46" height="46" rx="7" fill="#e9eef5" stroke="#cbd5e1" />
+                        <Rect
+                          x="58"
+                          y="54"
+                          width="46"
+                          height="46"
+                          rx="7"
+                          fill="#e9eef5"
+                          stroke="#cbd5e1"
+                        />
                         {/* dome */}
-                        <Circle cx="81" cy="77" r="18.5" fill="url(#dome)" stroke="#b6c2d1" />
+                        <Circle
+                          cx="81"
+                          cy="77"
+                          r="18.5"
+                          fill="url(#dome)"
+                          stroke="#b6c2d1"
+                        />
                         {/* dome highlight */}
-                        <Circle cx="75" cy="70" r="6" fill="rgba(255,255,255,0.7)" />
+                        <Circle
+                          cx="75"
+                          cy="70"
+                          r="6"
+                          fill="rgba(255,255,255,0.7)"
+                        />
                         {/* gloss */}
-                        <Rect x="26" y="20" width="86" height="30" rx="9" fill="url(#gloss)" />
+                        <Rect
+                          x="26"
+                          y="20"
+                          width="86"
+                          height="30"
+                          rx="9"
+                          fill="url(#gloss)"
+                        />
                         {/* dome dots */}
                         <Circle cx="74" cy="74" r="2" fill="#b6c2d1" />
                         <Circle cx="81" cy="72" r="2" fill="#b6c2d1" />
@@ -1303,8 +1437,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                     </Animated.View>
                   </View>
                   <Text style={styles.sheetText}>
-                    Sensor {pendingSensor} is nearby. Do you want to attach it to
-                    this switchboard?
+                    Sensor {pendingSensor} is nearby. Do you want to attach it
+                    to this switchboard?
                   </Text>
                   <View style={styles.sheetActions}>
                     <TouchableOpacity
@@ -1353,7 +1487,13 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                     >
                       <Svg width={160} height={160} viewBox="0 0 160 160">
                         <Defs>
-                          <LinearGradient id="front" x1="0" y1="0" x2="1" y2="1">
+                          <LinearGradient
+                            id="front"
+                            x1="0"
+                            y1="0"
+                            x2="1"
+                            y2="1"
+                          >
                             <Stop offset="0" stopColor="#ffffff" />
                             <Stop offset="1" stopColor="#e5e7eb" />
                           </LinearGradient>
@@ -1370,29 +1510,99 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                             <Stop offset="0.6" stopColor="#d8e1ec" />
                             <Stop offset="1" stopColor="#b6c2d1" />
                           </LinearGradient>
-                          <LinearGradient id="gloss" x1="0" y1="0" x2="1" y2="1">
-                            <Stop offset="0" stopColor="rgba(255,255,255,0.7)" />
-                            <Stop offset="0.5" stopColor="rgba(255,255,255,0.2)" />
+                          <LinearGradient
+                            id="gloss"
+                            x1="0"
+                            y1="0"
+                            x2="1"
+                            y2="1"
+                          >
+                            <Stop
+                              offset="0"
+                              stopColor="rgba(255,255,255,0.7)"
+                            />
+                            <Stop
+                              offset="0.5"
+                              stopColor="rgba(255,255,255,0.2)"
+                            />
                             <Stop offset="1" stopColor="rgba(255,255,255,0)" />
                           </LinearGradient>
                           <LinearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
                             <Stop offset="0" stopColor="#f8fafc" />
                             <Stop offset="1" stopColor="#cbd5e1" />
                           </LinearGradient>
-                          <LinearGradient id="baseShadow" x1="0" y1="0" x2="0" y2="1">
+                          <LinearGradient
+                            id="baseShadow"
+                            x1="0"
+                            y1="0"
+                            x2="0"
+                            y2="1"
+                          >
                             <Stop offset="0" stopColor="rgba(15,23,42,0.35)" />
                             <Stop offset="1" stopColor="rgba(15,23,42,0)" />
                           </LinearGradient>
                         </Defs>
-                        <Circle cx="84" cy="140" r="26" fill="url(#baseShadow)" />
-                        <Polygon points="22,18 34,28 134,28 122,18" fill="url(#top)" />
-                        <Polygon points="122,18 134,28 134,146 122,136" fill="url(#side)" />
-                        <Rect x="22" y="18" width="100" height="118" rx="12" fill="url(#front)" />
-                        <Rect x="25" y="21" width="94" height="112" rx="10" fill="none" stroke="url(#edge)" />
-                        <Rect x="58" y="54" width="46" height="46" rx="7" fill="#e9eef5" stroke="#cbd5e1" />
-                        <Circle cx="81" cy="77" r="18.5" fill="url(#dome)" stroke="#b6c2d1" />
-                        <Circle cx="75" cy="70" r="6" fill="rgba(255,255,255,0.7)" />
-                        <Rect x="26" y="20" width="86" height="30" rx="9" fill="url(#gloss)" />
+                        <Circle
+                          cx="84"
+                          cy="140"
+                          r="26"
+                          fill="url(#baseShadow)"
+                        />
+                        <Polygon
+                          points="22,18 34,28 134,28 122,18"
+                          fill="url(#top)"
+                        />
+                        <Polygon
+                          points="122,18 134,28 134,146 122,136"
+                          fill="url(#side)"
+                        />
+                        <Rect
+                          x="22"
+                          y="18"
+                          width="100"
+                          height="118"
+                          rx="12"
+                          fill="url(#front)"
+                        />
+                        <Rect
+                          x="25"
+                          y="21"
+                          width="94"
+                          height="112"
+                          rx="10"
+                          fill="none"
+                          stroke="url(#edge)"
+                        />
+                        <Rect
+                          x="58"
+                          y="54"
+                          width="46"
+                          height="46"
+                          rx="7"
+                          fill="#e9eef5"
+                          stroke="#cbd5e1"
+                        />
+                        <Circle
+                          cx="81"
+                          cy="77"
+                          r="18.5"
+                          fill="url(#dome)"
+                          stroke="#b6c2d1"
+                        />
+                        <Circle
+                          cx="75"
+                          cy="70"
+                          r="6"
+                          fill="rgba(255,255,255,0.7)"
+                        />
+                        <Rect
+                          x="26"
+                          y="20"
+                          width="86"
+                          height="30"
+                          rx="9"
+                          fill="url(#gloss)"
+                        />
                         <Circle cx="74" cy="74" r="2" fill="#b6c2d1" />
                         <Circle cx="81" cy="72" r="2" fill="#b6c2d1" />
                         <Circle cx="88" cy="74" r="2" fill="#b6c2d1" />
@@ -1403,7 +1613,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                     </Animated.View>
                   </View>
                   <Text style={styles.sheetText}>
-                    Sensor {pendingSensor} is attached to this hub. You can remove it if needed.
+                    Sensor {pendingSensor} is attached to this hub. You can
+                    remove it if needed.
                   </Text>
                   <TouchableOpacity
                     style={styles.dangerButton}
@@ -1623,8 +1834,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                             key={sec}
                             style={[
                               styles.durationChip,
-                              cfg.offDelay === sec &&
-                                styles.durationChipActive,
+                              cfg.offDelay === sec && styles.durationChipActive,
                             ]}
                             onPress={() =>
                               updatePinConfig(d.id, { offDelay: sec })
@@ -1640,8 +1850,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                               {sec === 120
                                 ? "2 min"
                                 : sec === 600
-                                ? "10 min"
-                                : "30 min"}
+                                  ? "10 min"
+                                  : "30 min"}
                             </Text>
                           </TouchableOpacity>
                         ))}

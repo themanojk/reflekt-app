@@ -70,11 +70,9 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
   const onDeviceFound = React.useCallback(async (device: Device) => {
     let canonicalId = device.id;
 
-    if (Platform.OS === "ios") {
-      try {
-        canonicalId = await getCanonicalId(device);
-      } catch {}
-    }
+    try {
+      canonicalId = await getCanonicalId(device);
+    } catch {}
 
     setDevices((prev) => {
       const idx = prev.findIndex((d) => d.canonicalId === canonicalId);

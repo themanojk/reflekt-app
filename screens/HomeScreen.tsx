@@ -59,7 +59,9 @@ type Row = {
 };
 
 export default function HomeScreen({ navigation }: any) {
-  const bleManager = new BLEManagerService();
+  const bleManagerRef = React.useRef<BLEManagerService | null>(null);
+  if (!bleManagerRef.current) bleManagerRef.current = new BLEManagerService();
+  const bleManager = bleManagerRef.current;
   const [scanning, setScanning] = useState(false);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [roomsWithBoards, setRoomsWithBoards] = useState<
@@ -81,16 +83,14 @@ export default function HomeScreen({ navigation }: any) {
 
   const onDeviceFound = React.useCallback(async (device: BleDevice) => {
     console.log("Discovered device:", device.id, device.name);
-    // Platform-aware canonical id (only iOS)
+    // Canonical id from DIS serial (WiFi MAC). Use for all platforms.
     let canonicalId = device.id;
-    if (Platform.OS === "ios") {
-      try {
-        canonicalId = await getCanonicalId(device);
-        console.log(`Canonical ID for device ${device.id} is ${canonicalId}`);
-      } catch (e) {
-        console.warn("canonicalId lookup failed; fallback to device.id", e);
-        canonicalId = device.id;
-      }
+    try {
+      canonicalId = await getCanonicalId(device);
+      console.log(`Canonical ID for device ${device.id} is ${canonicalId}`);
+    } catch (e) {
+      console.warn("canonicalId lookup failed; fallback to device.id", e);
+      canonicalId = device.id;
     }
 
     setDevices((prev) => {
@@ -335,6 +335,9 @@ export default function HomeScreen({ navigation }: any) {
                       iosBleId: devices.find(
                         (d) => d.canonicalId === switchboard.id
                       )?.iosBleId,
+                      bleId: devices.find(
+                        (d) => d.canonicalId === switchboard.id
+                      )?.device?.id,
                     })
                   }
                 >
@@ -384,19 +387,22 @@ export default function HomeScreen({ navigation }: any) {
                       devices.some((d) => d.canonicalId === switchboard.id);
                     return (
                     <TouchableOpacity
-                      key={switchboard.id}
-                      style={styles.switchboardCardHorizontal}
-                      onPress={() =>
-                        navigation.navigate("Switchboard", {
-                          switchboardId: switchboard.id,
-                          switchboardName: switchboard.name,
-                          deviceId: switchboard.id,
-                          status: switchboard.is_online,
-                          iosBleId: devices.find(
-                            (d) => d.canonicalId === switchboard.id
-                          )?.iosBleId,
-                        })
-                      }
+                  key={switchboard.id}
+                  style={styles.switchboardCardHorizontal}
+                  onPress={() =>
+                    navigation.navigate("Switchboard", {
+                      switchboardId: switchboard.id,
+                      switchboardName: switchboard.name,
+                      deviceId: switchboard.id,
+                      status: switchboard.is_online,
+                      iosBleId: devices.find(
+                        (d) => d.canonicalId === switchboard.id
+                      )?.iosBleId,
+                      bleId: devices.find(
+                        (d) => d.canonicalId === switchboard.id
+                      )?.device?.id,
+                    })
+                  }
                     >
                       <View
                         style={[

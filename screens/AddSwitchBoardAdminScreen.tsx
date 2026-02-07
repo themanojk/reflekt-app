@@ -54,15 +54,13 @@ export default function AddSwitchboardAdminScreen({ navigation, route }: any) {
 
   const onDeviceFound = React.useCallback(async (device: Device) => {
     console.log('Discovered device:', device.id, device.name);
-    // Platform-aware canonical id (only iOS)
+    // Canonical id from DIS serial (WiFi MAC). Use for all platforms.
     let canonicalId = device.id;
-    if (Platform.OS === 'ios') {
-      try {
-        canonicalId = await getCanonicalId(device);
-      } catch (e) {
-         console.warn('canonicalId lookup failed; fallback to device.id', e);
-          canonicalId = device.id;
-       }
+    try {
+      canonicalId = await getCanonicalId(device);
+    } catch (e) {
+      console.warn('canonicalId lookup failed; fallback to device.id', e);
+      canonicalId = device.id;
     }
 
     setDevices(prev => {

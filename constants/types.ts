@@ -5,7 +5,7 @@ export type RootStackParamList = {
   Login: undefined;
   Home: undefined;
   AddRoom: undefined;
-  Switchboard: {switchboardName: string; deviceId: string, roomIcon: string, status: boolean, iosBleId: string | undefined};
+  Switchboard: {switchboardName: string; deviceId: string, roomIcon: string, status: boolean, iosBleId: string | undefined, bleId?: string | undefined};
   AddSwitchboard: undefined;
   AddSwitchboardAdmin: undefined;
   Profile: undefined;

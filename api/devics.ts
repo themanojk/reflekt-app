@@ -115,7 +115,7 @@ export async function fetchDevicesByMac(
         qs.stringify(params, { arrayFormat: "repeat" }),
     })
     .then((res) => res.data)
-    .catch((e) => console.log(e.message));
+    .catch(() => undefined);
 }
 
 export async function fetchDevicesByRoomForUser() {

@@ -1,11 +1,12 @@
 // bleCanonicalId.ts
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Buffer } from 'buffer';
-import { BleManager, Device } from 'react-native-ble-plx';
+import { Device } from 'react-native-ble-plx';
+import { sharedBleManager } from './bleManager';
 
 (global as any).Buffer = (global as any).Buffer || Buffer;
 
-const manager = new BleManager();
+const manager = sharedBleManager;
 const DIS_SERVICE = '180A';
 const SERIAL_CHAR  = '2A25';
 
@@ -35,10 +36,15 @@ function normalizeMac(txt: string) {
  *  - We read DIS/Serial Number (you set it to BLE MAC or your own serial on the ESP).
  *  - Cached so iOS doesn’t need to reconnect next time.
  */
-export async function getCanonicalId(device: Device, opts?: { disconnectAfter?: boolean }): Promise<string> {
+export async function getCanonicalId(
+  device: Device,
+  opts?: { disconnectAfter?: boolean; skipCache?: boolean }
+): Promise<string> {
   const cacheKey = `ble:canonical:${device.id}`;
-  const cached = await AsyncStorage.getItem(cacheKey);
-  if (cached) return cached;
+  if (!opts?.skipCache) {
+    const cached = await AsyncStorage.getItem(cacheKey);
+    if (cached) return cached;
+  }
 
   // Connect and read DIS/2A25
   const connected = await connectSafely(device);
