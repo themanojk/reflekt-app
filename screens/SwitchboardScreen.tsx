@@ -1,21 +1,35 @@
 import {
+  attachSensorToDevice,
+  checkSensorAttachment,
+  createSensorRule,
+  detachSensorFromDevice,
+  fetchPinConfigs,
   getDeviceStatusOverWifi,
   getLayout,
+  savePinConfig,
   sendCommandOverWifi,
   WifiPayload,
-  checkSensorAttachment,
-  attachSensorToDevice,
-  detachSensorFromDevice,
-  createSensorRule,
-  fetchPinConfigs,
-  savePinConfig,
 } from "@/api/devics";
 import HingeSlider from "@/components/HingeSlider";
 import { DATA_CHAR_UUID, ROOM_ICONS } from "@/constants";
 import { RootStackParamList } from "@/constants/types";
 import { getLayoutButtonsByServiceId } from "@/db/layout_buttons";
+import {
+  getPendingPinConfigs,
+  getPinConfigsByDevice,
+  markPinConfigSynced,
+  upsertPinConfigLocal,
+} from "@/db/pin_configs";
 import BLEManagerService from "@/services/bleManager";
+import {
+  addIgnoredSensor,
+  clearIgnoredSensors,
+  getIgnoredSensors,
+  getLastLayout,
+  setLastLayout,
+} from "@/utils/storage";
 import { loadWifi, saveWifi } from "@/utils/wifiCreds";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { RouteProp } from "@react-navigation/native";
 import { Buffer } from "buffer";
 import {
@@ -34,7 +48,6 @@ import {
   Easing,
   Modal,
   PanResponder,
-  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -42,8 +55,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { getCanonicalId } from "@/services/bleCanonicalId";
+import { Device as BleDevice } from "react-native-ble-plx";
 import Svg, {
   Circle,
   Defs,
@@ -52,21 +64,7 @@ import Svg, {
   Rect,
   Stop,
 } from "react-native-svg";
-import { Device as BleDevice } from "react-native-ble-plx";
 import CustomSlider from "../components/CustomSlider";
-import {
-  addIgnoredSensor,
-  clearIgnoredSensors,
-  getIgnoredSensors,
-  getLastLayout,
-  setLastLayout,
-} from "@/utils/storage";
-import {
-  getPinConfigsByDevice,
-  upsertPinConfigLocal,
-  getPendingPinConfigs,
-  markPinConfigSynced,
-} from "@/db/pin_configs";
 
 interface Device {
   id: number;
@@ -104,8 +102,15 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   if (!bleManagerRef.current) bleManagerRef.current = new BLEManagerService();
   const bleManager = bleManagerRef.current;
 
-  const { switchboardName, service_id, deviceId, roomIcon, status, iosBleId, bleId } =
-    route.params;
+  const {
+    switchboardName,
+    service_id,
+    deviceId,
+    roomIcon,
+    status,
+    iosBleId,
+    bleId,
+  } = route.params;
   const [devices, setDevices] = useState<Device[]>([]);
   const [activeDevice, setActiveDevice] = useState<BleDevice>();
   const [services, setServices] = useState<string[]>([]);
@@ -149,6 +154,13 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     FAN_SPEED_LEVELS[Math.max(0, Math.min(5, Math.round(level)))];
 
   useEffect(() => {
+    console.log("SwitchboardScreen mounted", {
+      deviceId,
+      service_id,
+      bleId,
+      iosBleId,
+      status,
+    });
     return () => {
       // on unmount
       mountedRef.current = false;
@@ -216,6 +228,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     // BLE online should reflect actual BLE connection state
     if (!activeDevice || !services.length) {
       setIsOnline(false);
+    } else {
+      setIsOnline(true);
     }
   }, [activeDevice, services.length]);
 
@@ -252,7 +266,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         const key = list.join(",");
         const now = Date.now();
         const minGapMs = 10000;
-        if (key !== lastSensorListRef.current || now - lastSensorCheckRef.current > minGapMs) {
+        if (
+          key !== lastSensorListRef.current ||
+          now - lastSensorCheckRef.current > minGapMs
+        ) {
           lastSensorListRef.current = key;
           lastSensorCheckRef.current = now;
           handleAvailableSensors(list);
@@ -787,8 +804,13 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       if (!transportId) {
         try {
           const keys = await AsyncStorage.getAllKeys();
-          const canonicalKeys = keys.filter((k) => k.startsWith("ble:canonical:"));
-          console.log("BLE step 2: cached canonical keys", canonicalKeys.length);
+          const canonicalKeys = keys.filter((k) =>
+            k.startsWith("ble:canonical:"),
+          );
+          console.log(
+            "BLE step 2: cached canonical keys",
+            canonicalKeys.length,
+          );
           for (const k of canonicalKeys) {
             const val = await AsyncStorage.getItem(k);
             if (val && val.toUpperCase() === macAddress.toUpperCase()) {
@@ -806,7 +828,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       await bleManager.stopScan();
       await bleManager.cancelById(targetId);
       const already = await bleManager.getAlreadyConnected();
-      console.log("BLE step 4: already connected", already.map((d) => d.id));
+      console.log(
+        "BLE step 4: already connected",
+        already.map((d) => d.id),
+      );
       let connected: BleDevice | null =
         already.find((d) => d.id.toLowerCase() === targetId) || null;
       if (activeDevice && activeDevice.id?.toLowerCase() === targetId) {
@@ -1028,9 +1053,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         key={device.id}
         style={[styles.deviceCard, isActive && styles.deviceCardActive]}
       >
-        <TouchableOpacity
-          onPress={() => toggleDevice(device.id)}
-        >
+        <TouchableOpacity onPress={() => toggleDevice(device.id)}>
           <View style={isActive ? styles.glassOverlay : null} />
           <View
             style={[styles.deviceIcon, isActive && styles.deviceIconActive]}

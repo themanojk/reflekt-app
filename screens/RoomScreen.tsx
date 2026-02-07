@@ -85,11 +85,11 @@ export default function RoomScreen({ route, navigation }: Props) {
       });
 
       boardData.forEach((item) => {
-        item.is_online = deviceObj[item.device_id] ?? false;
+        item.is_online = item.device_id && deviceObj[item.device_id] ? true : false;
       });
       setSwitchboards(boardData);
       setLoading(false);
-    } catch (e) {
+    } catch (e: any) {
       console.log(e.message);
     }
   };

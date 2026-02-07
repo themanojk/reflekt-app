@@ -11,6 +11,8 @@ export interface SwitchboardLocal {
 
   icon: string | null;
   color: string | null;
+  is_online?: boolean;
+  device_id?: string | undefined;
 
   firmware_version?: string | null;
   updatedAt?: number;
@@ -35,17 +37,17 @@ export async function upsertSwitchboardLocal(sb: SwitchboardLocal) {
       sb.icon,
       sb.color,
       Date.now(),
-    ]
+    ],
   );
 }
 
 export async function getSwitchboardsByRoomId(
-  roomId: string
+  roomId: string,
 ): Promise<SwitchboardLocal[]> {
   return db.getAllAsync<SwitchboardLocal>(
     `SELECT * FROM switchboards
      WHERE room_id = ?
      ORDER BY updatedAt DESC`,
-    [roomId]
+    [roomId],
   );
 }
