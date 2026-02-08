@@ -55,6 +55,8 @@ export async function getCanonicalId(
     const serial = Buffer.from(ch.value, 'base64').toString('utf8');
     const canonical = normalizeMac(serial); // if you stored MAC; otherwise keep as-is
     await AsyncStorage.setItem(cacheKey, canonical);
+    // reverse mapping: canonical -> transport id
+    await AsyncStorage.setItem(`ble:byCanonical:${canonical}`, device.id);
     return canonical;
   } finally {
     if (opts?.disconnectAfter !== false) {

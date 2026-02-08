@@ -72,6 +72,8 @@ interface Device {
   device_type: string;
   position: number;
   is_on: boolean;
+  pin_status_ble?: boolean | null;
+  pin_status_wifi?: boolean | null;
   brightness?: number;
   color?: string;
   speed?: number;
@@ -124,8 +126,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [showPinConfigModal, setShowPinConfigModal] = useState(false);
   const [wifiSSID, setWifiSSID] = useState("");
   const [wifiPassword, setWifiPassword] = useState("");
-  const [pins, setPins] = useState<any>({});
-  const lastBlePinsAtRef = React.useRef<number>(0);
+  const [blePinsReceived, setBlePinsReceived] = useState(false);
   const lastSensorListRef = React.useRef<string>("");
   const lastSensorCheckRef = React.useRef<number>(0);
   const resolvingBleRef = React.useRef<boolean>(false);
@@ -154,13 +155,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     FAN_SPEED_LEVELS[Math.max(0, Math.min(5, Math.round(level)))];
 
   useEffect(() => {
-    console.log("SwitchboardScreen mounted", {
-      deviceId,
-      service_id,
-      bleId,
-      iosBleId,
-      status,
-    });
     return () => {
       // on unmount
       mountedRef.current = false;
@@ -238,25 +232,12 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   }, [deviceId, serviceId]);
 
   useEffect(() => {
-    console.log("BLE state", {
-      activeDevice: activeDevice?.id,
-      services,
-      isOnline,
-    });
     if (!activeDevice || !services.length || !isOnline) return;
     teardownBle();
-    console.log(
-      "BLE subscribe",
-      "device",
-      activeDevice.id,
-      "service",
-      services[0],
-    );
 
     const onReceived = (data: any) => {
       if (!data || typeof data !== "string") return;
       const raw = data.trim();
-      console.log("BLE RX", raw);
       if (raw.startsWith("SENSORS:")) {
         const list = raw
           .replace("SENSORS:", "")
@@ -273,8 +254,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           lastSensorListRef.current = key;
           lastSensorCheckRef.current = now;
           handleAvailableSensors(list);
-        } else {
-          console.log("Skipping duplicate SENSORS payload");
         }
         return;
       }
@@ -293,7 +272,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
       const payload = raw.startsWith("PINS:") ? raw.slice(5).trim() : raw;
       if (!payload.includes(":")) {
-        console.log("BLE non-pin payload", payload);
         return;
       }
       const pinDataArray = payload.includes(",")
@@ -307,16 +285,19 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         pinObj[pin] = statusData[1] === "1" ? true : false;
       });
       if (!Object.keys(pinObj).length) {
-        console.log("BLE pins parse failed", payload);
         return;
       }
-      console.log("BLE pins decoded", pinObj);
-      lastBlePinsAtRef.current = Date.now();
-      setPins(pinObj);
+      setBlePinsReceived(true);
+      setDevices((prev) =>
+        prev.map((d) =>
+          pinObj[d.id] === undefined
+            ? d
+            : { ...d, pin_status_ble: pinObj[d.id] },
+        ),
+      );
     };
 
     const onError = (err: any) => {
-      console.warn("BLE monitor error", err?.message || err);
       teardownBle();
       if (mountedRef.current) {
         setIsOnline(false);
@@ -367,34 +348,14 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       if (!Number.isFinite(n)) return;
       pinObj[n] = pinsData[pin] == 1 ? true : false;
     });
-    console.log("WiFi pins", pinObj);
-    const bleStaleMs = 8000;
-    const bleStale =
-      !lastBlePinsAtRef.current ||
-      Date.now() - lastBlePinsAtRef.current > bleStaleMs;
-    // BLE has priority; apply Wi-Fi if BLE not connected or BLE pins stale
-    if (!activeDevice || !services.length || !isOnline || bleStale) {
-      setPins(pinObj);
-    }
+    setDevices((prev) =>
+      prev.map((d) =>
+        pinObj[d.id] === undefined
+          ? d
+          : { ...d, pin_status_wifi: pinObj[d.id] },
+      ),
+    );
   };
-  useEffect(() => {
-    if (!pins || Object.keys(pins).length === 0) return;
-
-    setDevices((prev) => {
-      let changed = false;
-      const next = prev.map((d) => {
-        const p = pins[d.id];
-        if (p === undefined) return d;
-        const is_on = p;
-
-        if (d.is_on === is_on) return d;
-        changed = true;
-        return { ...d, is_on };
-      });
-
-      return changed ? next : prev;
-    });
-  }, [pins]);
 
   const loadSwitchboardData = async () => {
     setLoading(true);
@@ -408,29 +369,41 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
       // 3️⃣ Render immediately if available
       if (localButtons.length > 0) {
-        setDevices(
-          localButtons.map((button, idx) => ({
-            id: button.pin,
-            name: button.label,
-            device_type: button.type,
-            is_on: false,
-            position: idx,
-            command: button.command,
-          })),
-        );
-      } else {
-        const cachedLayout = await getLastLayout(deviceId);
-        if (cachedLayout?.length) {
-          setDevices(
-            cachedLayout.map((button: any, idx: number) => ({
+        setDevices((prev) => {
+          const prevById = new Map(prev.map((d) => [d.id, d]));
+          return localButtons.map((button, idx) => {
+            const prevDevice = prevById.get(button.pin);
+            return {
               id: button.pin,
               name: button.label,
               device_type: button.type,
-              is_on: false,
+              is_on: prevDevice?.is_on ?? false,
+              pin_status_ble: prevDevice?.pin_status_ble,
+              pin_status_wifi: prevDevice?.pin_status_wifi,
               position: idx,
               command: button.command,
-            })),
-          );
+            };
+          });
+        });
+      } else {
+        const cachedLayout = await getLastLayout(deviceId);
+        if (cachedLayout?.length) {
+          setDevices((prev) => {
+            const prevById = new Map(prev.map((d) => [d.id, d]));
+            return cachedLayout.map((button: any, idx: number) => {
+              const prevDevice = prevById.get(button.pin);
+              return {
+                id: button.pin,
+                name: button.label,
+                device_type: button.type,
+                is_on: prevDevice?.is_on ?? false,
+                pin_status_ble: prevDevice?.pin_status_ble,
+                pin_status_wifi: prevDevice?.pin_status_wifi,
+                position: idx,
+                command: button.command,
+              };
+            });
+          });
         }
       }
 
@@ -452,27 +425,30 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 command: b.command,
               })),
             );
-            setDevices(
-              updatedButtons.map((button, idx) => ({
-                id: button.pin,
-                name: button.label,
-                device_type: button.type,
-                is_on: false,
-                position: idx,
-                command: button.command,
-              })),
-            );
+            setDevices((prev) => {
+              const prevById = new Map(prev.map((d) => [d.id, d]));
+              return updatedButtons.map((button, idx) => {
+                const prevDevice = prevById.get(button.pin);
+                return {
+                  id: button.pin,
+                  name: button.label,
+                  device_type: button.type,
+                  is_on: prevDevice?.is_on ?? false,
+                  pin_status_ble: prevDevice?.pin_status_ble,
+                  pin_status_wifi: prevDevice?.pin_status_wifi,
+                  position: idx,
+                  command: button.command,
+                };
+              });
+            });
           }
         })
-        .catch((err) => {
-          console.warn("Layout sync failed:", err);
-        });
+        .catch((err) => {});
 
       // 5️⃣ Non-blocking side calls
       loadWifiStatusData();
       getBleConnection(deviceId);
     } catch (err) {
-      console.error("Failed to load switchboard data:", err);
     } finally {
       setLoading(false);
     }
@@ -495,11 +471,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     if (!device) return;
     try {
       const text = `REST:`;
-      console.log("BLE getCurrentState -> sending", text);
       await bleManager.sendData(device, text, serviceId);
-    } catch (e) {
-      console.error("Write failed", e);
-    }
+    } catch (e) {}
   };
 
   const requestSensorRefresh = async () => {
@@ -677,13 +650,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
     for (const mac of unique) {
       if (ignoredSensors.includes(mac)) {
-        console.log("Sensor ignored locally", mac);
         continue;
       }
       try {
-        console.log("Checking sensor attach status", mac);
         const res = await checkSensorAttachment(mac);
-        console.log("Sensor attach status", mac, res);
         if (!res?.attached) {
           setPendingSensor(mac);
           setShowSensorModal(true);
@@ -692,7 +662,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         }
       } catch {
         // fallback: show prompt if check fails (offline/timeout)
-        console.log("Sensor attach check failed, showing prompt", mac);
         setPendingSensor(mac);
         setShowSensorModal(true);
         setSensorStep("prompt");
@@ -712,24 +681,15 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     if (!pendingSensor) return;
     try {
       const apiRes = await attachSensorToDevice(deviceId, pendingSensor);
-      console.log("Attach sensor API response", apiRes);
-      console.log("Attach sensor API success");
       if (services.length && activeDevice) {
         const cmd = `SENSOR_ATTACH:${pendingSensor}`;
-        console.log("Sending BLE attach command", cmd);
         await bleManager.sendData(activeDevice, cmd, services[0]);
-        console.log("BLE attach command sent");
       }
       setShowSensorModal(false);
       setPendingSensor(null);
       await loadPinConfigs();
       setShowPinConfigModal(true);
     } catch (e: any) {
-      console.error(
-        "Attach sensor failed",
-        e?.response?.status,
-        e?.response?.data || e?.message || e,
-      );
       Alert.alert("Failed", e?.response?.data?.message || "Attach failed");
       setShowSensorModal(false);
     } finally {
@@ -764,22 +724,15 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           style: "destructive",
           onPress: async () => {
             try {
-              const apiRes = await detachSensorFromDevice(deviceId, targetMac);
-              console.log("Detach sensor API response", apiRes);
+              await detachSensorFromDevice(deviceId, targetMac);
               if (services.length && activeDevice) {
                 const cmd = `SENSOR_DETACH:${targetMac}`;
-                console.log("Sending BLE detach command", cmd);
                 await bleManager.sendData(activeDevice, cmd, services[0]);
               }
               setAttachedSensors((prev) => prev.filter((s) => s !== targetMac));
               setShowSensorModal(false);
               setPendingSensor(null);
             } catch (e: any) {
-              console.error(
-                "Detach sensor failed",
-                e?.response?.status,
-                e?.response?.data || e?.message || e,
-              );
               Alert.alert(
                 "Failed",
                 e?.response?.data?.message || "Detach failed",
@@ -796,20 +749,17 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       if (connectingBleRef.current) return;
       connectingBleRef.current = true;
       let transportId = (bleId || iosBleId || "").toString();
-      console.log("BLE step 1: start connect flow", {
-        macAddress,
-        bleId,
-        iosBleId,
-      });
       if (!transportId) {
         try {
+          const direct = await AsyncStorage.getItem(
+            `ble:byCanonical:${macAddress.toUpperCase()}`,
+          );
+          if (direct) {
+            transportId = direct;
+          }
           const keys = await AsyncStorage.getAllKeys();
           const canonicalKeys = keys.filter((k) =>
             k.startsWith("ble:canonical:"),
-          );
-          console.log(
-            "BLE step 2: cached canonical keys",
-            canonicalKeys.length,
           );
           for (const k of canonicalKeys) {
             const val = await AsyncStorage.getItem(k);
@@ -821,17 +771,12 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         } catch {}
       }
       if (!transportId) transportId = (macAddress || "").toString();
-      console.log("BLE step 3: transportId resolved", transportId);
 
       const targetId = transportId.toLowerCase();
-      console.log("BLE connect", { macAddress, transportId });
       await bleManager.stopScan();
       await bleManager.cancelById(targetId);
       const already = await bleManager.getAlreadyConnected();
-      console.log(
-        "BLE step 4: already connected",
-        already.map((d) => d.id),
-      );
+
       let connected: BleDevice | null =
         already.find((d) => d.id.toLowerCase() === targetId) || null;
       if (activeDevice && activeDevice.id?.toLowerCase() === targetId) {
@@ -839,28 +784,23 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         return;
       }
       if (!connected) {
-        console.log("BLE step 5: connectSafely");
         connected = await bleManager.connectSafely(targetId, {
-          retries: 2,
+          retries: 1,
           connectTimeoutMs: 5000,
           autoConnect: false,
-          skipScan: false,
+          skipScan: true,
+          scanTimeoutMs: 8000,
         });
-        if (!connected) {
-          console.warn("BLE step 5b: connectSafely returned null");
-        }
       }
 
       if (connected) {
-        console.log("BLE step 6: connected", connected.id);
         setIsOnline(true);
         setActiveDevice(connected);
         const serviceIds = await bleManager.getCustomServiceId(connected);
-        console.log("BLE step 7: services", serviceIds);
         setServices(serviceIds);
       }
     } catch (err) {
-      console.warn("BLE connect failed", err);
+      // no-op
     } finally {
       connectingBleRef.current = false;
     }
@@ -887,7 +827,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       await bleManager.sendData(activeDevice, text, services[0]);
       return true;
     } catch (e) {
-      console.error("Write failed", e);
       return false;
     }
   };
@@ -896,17 +835,25 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     try {
       const dev = devices.find((d) => d.id === deviceId);
       if (!dev) return;
+      const current = resolvePinStatus(dev);
       const status = await sendDataToESP(dev.id, dev.command);
       if (status) {
+        const nextVal = !current;
+        const useBle = blePinsReceived && activeDevice && services.length > 0;
         setDevices((prev) =>
-          prev.map((d) => (d.id === deviceId ? { ...d, is_on: !d.is_on } : d)),
+          prev.map((d) => {
+            if (d.id !== deviceId) return d;
+            return {
+              ...d,
+              is_on: nextVal,
+              pin_status_ble: useBle ? nextVal : d.pin_status_ble,
+              pin_status_wifi: !useBle ? nextVal : d.pin_status_wifi,
+            };
+          }),
         );
       }
     } catch (e) {
-      // revert on failure
-      setDevices((prev) =>
-        prev.map((d) => (d.id === deviceId ? { ...d, is_on: !d.is_on } : d)),
-      );
+      // no-op on failure
     }
   };
 
@@ -979,7 +926,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       });
       //await bleManager.sendData(activeDevice, text, services[0]);
     } catch (err) {
-      console.error("Error sending wifi creds", err);
     } finally {
       setShowWifiModal(false);
       Alert.alert("Success", "WiFi credentials sent to device");
@@ -1042,9 +988,19 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     [services.length, activeDevice],
   );
 
+  const resolvePinStatus = (device: Device) => {
+    if (blePinsReceived && device.pin_status_ble !== undefined) {
+      return !!device.pin_status_ble;
+    }
+    if (device.pin_status_wifi !== undefined) {
+      return !!device.pin_status_wifi;
+    }
+    return !!device.is_on;
+  };
+
   const renderDeviceCard = (device: Device) => {
     const IconComponent = ROOM_ICONS[device.device_type] || Lightbulb;
-    const isActive = device.is_on;
+    const isActive = resolvePinStatus(device);
     const speedValue = device.speed ?? 0;
     const displayName = pinConfigs[device.id]?.name?.trim() || device.name;
 

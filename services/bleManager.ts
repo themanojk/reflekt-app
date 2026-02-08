@@ -58,12 +58,10 @@ class BLEManagerService {
   }
 
   mapServiceIds = async () => {
-    console.log("Mapping ESP Service IDs");
     this.ESP_SERVICE_UUID = await getESPServiceIds();
   };
 
   private handleAppStateChange = (nextState: AppStateStatus) => {
-    console.log("App got in background");
     this.appState = nextState;
   };
 
@@ -149,13 +147,16 @@ class BLEManagerService {
     const rssiDelta = opts?.rssiDelta ?? 8; // dBm change threshold
     const minIntervalMs = opts?.minIntervalMs ?? 5000; // throttle same id
 
-    console.log("Starting Scan with", this.ESP_SERVICE_UUID);
     this.isScanning = true;
     this.seen.clear();
     this.last.clear();
 
+    const scanFilter =
+      this.ESP_SERVICE_UUID && this.ESP_SERVICE_UUID.length
+        ? this.ESP_SERVICE_UUID
+        : null;
     this.manager.startDeviceScan(
-      this.ESP_SERVICE_UUID,
+      scanFilter as any,
       Platform.select({
         ios: { allowDuplicates: false },
         android: {
@@ -166,7 +167,6 @@ class BLEManagerService {
       }) as any,
       async (error, device) => {
         if (error) {
-          console.error("BLE scan error", error);
           return;
         }
         if (!device) return;
@@ -177,14 +177,6 @@ class BLEManagerService {
         const rssi = device.rssi ?? null;
 
         if (!this.seen.has(scanId)) {
-          console.log(
-            "Found:",
-            device.name,
-            "device.id=",
-            device.id,
-            "scanId=",
-            scanId,
-          );
           this.seen.add(scanId);
           this.last.set(scanId, { ts: now, rssi });
           onDeviceFound(device);
@@ -237,7 +229,6 @@ class BLEManagerService {
         await this.waitForPoweredOn();
         await this.ensureRestartableCoolDown(120); // tiny delay helps some Android stacks
       } catch (e) {
-        console.warn("BLE init/poweredOn failed", e);
         stop();
         return;
       }
@@ -246,10 +237,11 @@ class BLEManagerService {
         typeof opts.serviceUUIDs === "undefined"
           ? this.ESP_SERVICE_UUID
           : opts.serviceUUIDs;
-      console.log("Starting Scan with", serviceUUIDs);
+      const scanFilter =
+        serviceUUIDs && serviceUUIDs.length ? serviceUUIDs : null;
 
       this.manager.startDeviceScan(
-        serviceUUIDs as any,
+        scanFilter as any,
         Platform.select({
           ios: { allowDuplicates: false } as any,
           android: {
@@ -263,7 +255,6 @@ class BLEManagerService {
           if (this.session !== mySession) return;
 
           if (error) {
-            console.warn("BLE scan error", error);
             stop();
             return;
           }
@@ -297,7 +288,6 @@ class BLEManagerService {
 
   //   await this.waitForPoweredOn();
 
-  //   console.log('Strating Scan...');
   //   this.isScanning = true;
 
   //   this.manager.startDeviceScan(ESP_SERVICE_UUID, Platform.select({
@@ -311,7 +301,6 @@ class BLEManagerService {
   //   },
   // }) as any, (error, device) => {
   //     if (error) {
-  //       console.error('BLE scan error', error);
   //       return;
   //     }
 
@@ -333,7 +322,6 @@ class BLEManagerService {
   /** Connect to a device (with automatic service discovery) */
   async connect(device: Device): Promise<Device> {
     const connected = await device.connect();
-    console.log("Connection response", connected);
     await connected.discoverAllServicesAndCharacteristics();
     this.connectedDeviceIds.add(connected.id);
 
@@ -350,16 +338,13 @@ class BLEManagerService {
     serviceUUID: string,
   ): Promise<void> {
     try {
-      console.log("Sending Data", data);
       const base64 = Buffer.from(data, "utf8").toString("base64");
       const res = await device.writeCharacteristicWithResponseForService(
         serviceUUID,
         DATA_CHAR_UUID,
         base64,
       );
-    } catch (err) {
-      console.error(err);
-    }
+    } catch (err) {}
   }
 
   /**
@@ -377,16 +362,13 @@ class BLEManagerService {
       DATA_CHAR_UUID,
       (error, char: Characteristic | null) => {
         if (error) {
-          console.warn("BLE notification error", error);
           onError?.(error);
           return;
         }
-        console.log("Data received", char);
 
         if (char?.value) {
           // decode Base64 → UTF8 string
           const received = Buffer.from(char.value, "base64").toString("utf8");
-          console.log("BLE decoded", received);
           onReceive(received);
         }
       },
@@ -443,9 +425,11 @@ class BLEManagerService {
   }
 
   async connectedDevices() {
-    const connected: Device[] = await this.manager.connectedDevices(
-      this.ESP_SERVICE_UUID,
-    );
+    const filter =
+      this.ESP_SERVICE_UUID && this.ESP_SERVICE_UUID.length
+        ? this.ESP_SERVICE_UUID
+        : [];
+    const connected: Device[] = await this.manager.connectedDevices(filter);
     return connected;
   }
 
@@ -462,9 +446,7 @@ class BLEManagerService {
 
       this.stopScan();
       this.manager.destroy();
-    } catch (e) {
-      console.warn("Error destroying BLE manager", e);
-    }
+    } catch (e) {}
   }
 
   onDeviceDisconnected(
@@ -486,12 +468,15 @@ class BLEManagerService {
    * On Android it may be empty if none are connected right now.
    */
   async getAlreadyConnected(): Promise<Device[]> {
-    return await this.manager.connectedDevices(this.ESP_SERVICE_UUID);
+    const filter =
+      this.ESP_SERVICE_UUID && this.ESP_SERVICE_UUID.length
+        ? this.ESP_SERVICE_UUID
+        : [];
+    return await this.manager.connectedDevices(filter);
   }
 
   async connectToDevice(deviceId: string) {
     try {
-      console.log("Starting connection");
       const device = await this.manager.connectToDevice(deviceId, {
         autoConnect: true,
         timeout: 5000,
@@ -499,26 +484,18 @@ class BLEManagerService {
 
       return device;
     } catch (err) {
-      console.log("connectToDevice", err);
       return null;
     }
   }
 
   private async resetManager(deviceId: string) {
     try {
-      console.log("Resetting");
       this.manager.stopDeviceScan();
-      console.log("Stopped");
       await new Promise((res) => setTimeout(res, 100));
-      await this.manager.cancelDeviceConnection(deviceId).catch((err) => {
-        console.log("cancel", err);
-      });
-      console.log("Cancelled");
+      await this.manager.cancelDeviceConnection(deviceId).catch((err) => {});
 
       await new Promise((res) => setTimeout(res, 200));
-    } catch (err) {
-      console.log("Reset err", err);
-    }
+    } catch (err) {}
   }
 
   async connectAndDiscover(deviceId: string) {
@@ -528,28 +505,22 @@ class BLEManagerService {
       await this.initialize();
       await this.waitForPoweredOn();
 
-      console.log("Trying connection for deviceId", deviceId);
-
       try {
         const device = await this.manager.connectToDevice(deviceId, {
           autoConnect: true,
           timeout: 5000,
           refreshGatt: "OnConnected",
         });
-        console.log("Device", device);
         const discoveredDevice =
           await device.discoverAllServicesAndCharacteristics();
-        console.log("Connected and discovered");
 
         this.connectedDeviceIds.add(deviceId);
 
         const services = await discoveredDevice.services();
 
         for (let service of services) {
-          console.log("Service:", service.uuid);
           const characteristics = await service.characteristics();
           for (let char of characteristics) {
-            console.log("-- Characteristic:", char.uuid);
           }
         }
 
@@ -558,11 +529,8 @@ class BLEManagerService {
           this.connectedDeviceIds.delete(deviceId),
         );
         return discoveredDevice;
-      } catch (err: any) {
-        console.warn(`Attempt error:`, err.message);
-      }
+      } catch (err: any) {}
     } catch (err) {
-      console.error("BLE connect/discover error:", err);
       throw err;
     }
   }
@@ -573,17 +541,13 @@ class BLEManagerService {
       (service) => !STANDARD_SERVICE_UUIDS.includes(service.uuid.toLowerCase()),
     );
 
-    console.log("Custom services only:", customServices);
-
     return customServices.map((service) => service.uuid);
   };
 
   cancelDeviceConnection = async (device: Device) => {
     try {
       await this.manager.cancelDeviceConnection(device.id);
-    } catch (e) {
-      console.log("error", e);
-    }
+    } catch (e) {}
   };
 
   cancelById = async (deviceId: string) => {
@@ -603,14 +567,11 @@ class BLEManagerService {
       skipScan = false,
     }: ConnectOpts = {},
   ): Promise<Device | null> {
-    // 0) BLE on?
     const state = await this.manager.state();
     if (state !== "PoweredOn") {
-      // You may want to prompt the user to enable Bluetooth here
       return null;
     }
 
-    // 1) Pre-scan so we don't try connecting to a device that's off
     if (!skipScan && scanTimeoutMs > 0) {
       const seen = await this.scanForPresence(this.manager, {
         deviceId,
@@ -620,20 +581,21 @@ class BLEManagerService {
       if (!seen) return null;
     }
 
-    // 2) Connect with retries and proper try/catch
-    let lastErr: unknown;
-    for (let attempt = 0; attempt <= retries; attempt++) {
+    for (let attempt = 0; attempt < retries; attempt++) {
       try {
-        console.log(deviceId);
         const device = await this.manager.connectToDevice(
           deviceId.toUpperCase(),
           {
-            autoConnect, // prefer false for foreground connects
-            timeout: connectTimeoutMs,
+            autoConnect: false,
+            timeout: undefined,
           },
         );
+        if (Platform.OS === "android") {
+          await sleep(300);
+        }
 
-        // 3) MTU / connection priority tweaks (optional)
+        await device.discoverAllServicesAndCharacteristics();
+
         if (Platform.OS === "android") {
           try {
             await device.requestMTU(185);
@@ -643,26 +605,18 @@ class BLEManagerService {
           } catch {}
         }
 
-        // 4) Always discover before any read/write
-        await device.discoverAllServicesAndCharacteristics();
-        console.log("Data", device);
-        return device; // ✅ success
-      } catch (err) {
-        lastErr = err;
-        // Common transient Android errors: 133, 8, 62… small delay then retry
-        await sleep(250 + attempt * 250);
+        return device;
+      } catch (err: any) {
+        if (err?.message?.includes("already connected")) {
+          const devices = await this.manager.connectedDevices([]);
+          const match = devices.find((d) => d.id === deviceId);
+          return match || devices[0] || null;
+        }
+        try {
+          await this.manager.cancelDeviceConnection(deviceId);
+        } catch {}
+        await sleep(1500);
       }
-    }
-    // 5) Give up gracefully
-    if (lastErr) {
-      const errAny: any = lastErr;
-      console.warn("connectSafely failed:", {
-        message: errAny?.message,
-        reason: errAny?.reason,
-        errorCode: errAny?.errorCode,
-      });
-    } else {
-      console.warn("connectSafely failed:", lastErr);
     }
     return null;
   }
@@ -693,7 +647,6 @@ class BLEManagerService {
           if (dev) {
             const devId = dev.id?.toLowerCase?.() ?? "";
             const targetId = (deviceId || "").toLowerCase();
-            console.log("scanForPresence", dev.id, deviceId);
             if (!deviceId || devId === targetId) {
               stop();
               resolve(true);
