@@ -19,7 +19,7 @@ import Toast from "@/components/Toast";
 import { DATA_CHAR_UUID } from "@/constants";
 import { getCanonicalId } from "@/services/bleCanonicalId";
 import BLEManagerService from "@/services/bleManager";
-import { storeBleDevice } from "@/utils/storage";
+import { clearPendingSwitchboardDeviceId, storeBleDevice } from "@/utils/storage";
 import { loadWifi, saveWifi } from "@/utils/wifiCreds";
 import { Buffer } from "buffer";
 
@@ -39,14 +39,18 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
     bleManagerRef.current = new BLEManagerService();
   }
   const bleManager = bleManagerRef.current;
-  const { roomId } = route.params;
+  const { roomId, pendingDeviceId, prefillName, roomName, roomIcon } = route.params;
   const [_connectingId, setConnectingId] = useState<string | null>(null);
   const [step, setStep] = useState<Step>("scan");
   const [scanning, setScanning] = useState(true);
   const [devices, setDevices] = useState<Row[]>([]);
   const [device, setDevice] = useState<BleDevice>();
   const [_selectedDevice, setSelectedDevice] = useState<BleDevice | null>(null);
-  const [name, setName] = useState("");
+  const [name, setName] = useState(prefillName || "");
+  const [selectedCanonicalId, setSelectedCanonicalId] = useState<string | null>(
+    null,
+  );
+  const [serviceIdFromLayout, setServiceIdFromLayout] = useState("");
   const [wifiSSID, setWifiSSID] = useState("");
   const [wifiPassword, setWifiPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -66,6 +70,10 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
     setWifiSSID(creds.ssid);
     setWifiPassword(creds.pass);
   };
+
+  useEffect(() => {
+    if (prefillName) setName(prefillName);
+  }, [prefillName]);
 
   const onDeviceFound = React.useCallback(async (device: Device) => {
     let canonicalId = device.id;
@@ -90,6 +98,19 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
         },
       ];
     });
+
+    if (pendingDeviceId) {
+      const candidate = canonicalId || device.id;
+      if (String(candidate).toUpperCase() === String(pendingDeviceId).toUpperCase()) {
+        handleDeviceSelect({
+          id: device.id,
+          name: device.name ?? null,
+          rssi: device.rssi ?? null,
+          device,
+          canonicalId,
+        });
+      }
+    }
   }, []);
 
   const runScan = React.useCallback(async () => {
@@ -180,6 +201,10 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
       if (!layout) {
         showToast("Unrecognized device");
       } else {
+        if (layout?.serviceId) {
+          setServiceIdFromLayout(layout.serviceId);
+        }
+        setSelectedCanonicalId(canonicalId || null);
         await storeBleDevice(device.id);
         setSelectedDevice(device);
         setName(device.id);
@@ -212,19 +237,37 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
     console.log("Body", body);
 
     try {
-      const deviceRes = await addDevice(body);
-      console.log(deviceRes);
+      await addDevice(body);
       await sendWifiConfigToESP(device);
       Alert.alert(
         "Success",
         `Switchboard "${name.trim()}" added successfully!`
       );
+      navigation.reset({
+        index: 1,
+        routes: [
+          { name: "Home" },
+          {
+            name: "Switchboard",
+            params: {
+              switchboardName: name.trim(),
+              deviceId: selectedCanonicalId || device.id,
+              roomIcon: roomIcon || "",
+              status: true,
+              iosBleId: Platform.OS === "ios" ? device.id : undefined,
+              bleId: device.id,
+              service_id: serviceIdFromLayout || "",
+              roomName: roomName || "",
+            },
+          },
+        ],
+      });
     } catch (err) {
       console.log(err);
       Alert.alert("Error", `Failed to add "${name.trim()}" switchboard!`);
     } finally {
+      await clearPendingSwitchboardDeviceId();
       setLoading(false);
-      navigation.goBack();
     }
   };
 

@@ -2,19 +2,27 @@ import { fetchDevicesByMac, fetchDevicesByRoomForUser } from "@/api/devics";
 import { useDebouncedCallback } from "@/callbacks/useDeboundcedCallback";
 import { getRoomsLocal } from "@/db/rooms.local";
 import {
+  addIgnoredSwitchboard,
+  getIgnoredSwitchboards,
   getNearbyDevicesCache,
   getRoomsByRoomCache,
   setNearbyDevicesCache,
+  setPendingSwitchboardDeviceId,
   setRoomsByRoomCache,
 } from "@/utils/storage";
 import { syncAppData } from "@/db_sync/app_sync";
 import { getCanonicalId } from "@/services/bleCanonicalId";
 import BLEManagerService from "@/services/bleManager";
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { Plus, User } from "lucide-react-native";
 import React, { useCallback, useEffect, useState } from "react";
 import {
+  Animated,
+  Easing,
+  Image,
+  Modal,
   Platform,
+  PanResponder,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -62,6 +70,7 @@ export default function HomeScreen({ navigation }: any) {
   const bleManagerRef = React.useRef<BLEManagerService | null>(null);
   if (!bleManagerRef.current) bleManagerRef.current = new BLEManagerService();
   const bleManager = bleManagerRef.current;
+  const isFocused = useIsFocused();
   const [scanning, setScanning] = useState(false);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [roomsWithBoards, setRoomsWithBoards] = useState<
@@ -70,6 +79,14 @@ export default function HomeScreen({ navigation }: any) {
   const [devices, setDevices] = useState<Row[]>([]);
   const [switchboards, setSwitchboards] = useState<Switchboard[]>([]);
   const [loading, setLoading] = useState(false);
+  const [ignoredSwitchboards, setIgnoredSwitchboards] = useState<string[]>([]);
+  const [newBoardModalVisible, setNewBoardModalVisible] = useState(false);
+  const [candidateDevice, setCandidateDevice] = useState<Row | null>(null);
+  const boardAnim = React.useRef(new Animated.Value(0)).current;
+  const newBoardSheetY = React.useRef(new Animated.Value(0)).current;
+  const dismissedBoardRef = React.useRef<{ id: string; at: number } | null>(
+    null,
+  );
 
   const fetchAlreadyConnected = useCallback(async () => {
     try {
@@ -266,12 +283,143 @@ export default function HomeScreen({ navigation }: any) {
   }, []);
 
   useEffect(() => {
+    getIgnoredSwitchboards().then(setIgnoredSwitchboards);
+  }, []);
+
+  useEffect(() => {
     if (!devices.length) return;
     const deviceIds = devices.map((d) => d.id);
     fetchDevicesDebounced(deviceIds);
 
     return () => fetchDevicesDebounced.cancel();
   }, [devices, fetchDevicesDebounced]);
+
+  useEffect(() => {
+    if (!isFocused) return;
+    if (scanning) return;
+    if (!devices.length) return;
+    if (newBoardModalVisible) return;
+
+    const existing = new Set(
+      switchboards.map((s) => String(s.id).toUpperCase())
+    );
+    const ignored = new Set(ignoredSwitchboards.map((s) => s.toUpperCase()));
+
+    const fresh = devices.find((d) => {
+      const id = String(d.canonicalId || d.id).toUpperCase();
+      return !existing.has(id) && !ignored.has(id);
+    });
+
+    if (fresh) {
+      const dismissed = dismissedBoardRef.current;
+      const freshId = String(fresh.canonicalId || fresh.id);
+      if (dismissed && dismissed.id === freshId && Date.now() - dismissed.at < 120000) {
+        return;
+      }
+      setCandidateDevice(fresh);
+      setNewBoardModalVisible(true);
+    }
+  }, [
+    isFocused,
+    scanning,
+    devices,
+    switchboards,
+    ignoredSwitchboards,
+    newBoardModalVisible,
+  ]);
+
+  useEffect(() => {
+    if (!newBoardModalVisible) return;
+    boardAnim.setValue(0);
+    newBoardSheetY.setValue(280);
+    Animated.timing(newBoardSheetY, {
+      toValue: 0,
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(boardAnim, {
+          toValue: 1,
+          duration: 2200,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(boardAnim, {
+          toValue: 0,
+          duration: 2200,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [newBoardModalVisible, boardAnim]);
+
+  const closeNewBoardSheet = (markDismissed = false, keepCandidate = false) => {
+    Animated.timing(newBoardSheetY, {
+      toValue: 280,
+      duration: 180,
+      useNativeDriver: true,
+    }).start(() => {
+      setNewBoardModalVisible(false);
+      if (markDismissed && candidateDevice) {
+        dismissedBoardRef.current = {
+          id: String(candidateDevice.canonicalId || candidateDevice.id),
+          at: Date.now(),
+        };
+      }
+      if (!keepCandidate) {
+        setCandidateDevice(null);
+      }
+      newBoardSheetY.setValue(280);
+    });
+  };
+
+  const newBoardPan = React.useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: (_, g) => g.dy > 6,
+        onMoveShouldSetPanResponderCapture: (_, g) => g.dy > 6,
+        onPanResponderMove: (_, g) => {
+          if (g.dy > 0) newBoardSheetY.setValue(g.dy);
+        },
+        onPanResponderRelease: (_, g) => {
+          if (g.dy > 24) {
+            closeNewBoardSheet(true);
+          } else {
+            Animated.spring(newBoardSheetY, {
+              toValue: 0,
+              useNativeDriver: true,
+            }).start();
+          }
+        },
+      }),
+    [newBoardSheetY]
+  );
+
+  const handleIgnoreNewBoard = async () => {
+    if (!candidateDevice) return;
+    const id = String(candidateDevice.canonicalId || candidateDevice.id);
+    await addIgnoredSwitchboard(id);
+    setIgnoredSwitchboards((prev) => Array.from(new Set([...prev, id])));
+    closeNewBoardSheet(true);
+  };
+
+  const handleAddNewBoard = async () => {
+    if (!candidateDevice) return;
+    setNewBoardModalVisible(false);
+    newBoardSheetY.setValue(280);
+    const pendingId = String(candidateDevice.canonicalId || candidateDevice.id);
+    await setPendingSwitchboardDeviceId(pendingId);
+    setCandidateDevice(null);
+    navigation.navigate("ConfirmNewBoard", {
+      pendingDeviceId: pendingId,
+    });
+  };
 
   const onlineCount = switchboards.filter((sb) => sb.is_online).length;
 
@@ -444,6 +592,60 @@ export default function HomeScreen({ navigation }: any) {
           <Text style={styles.createRoomText}>Create New Room</Text>
         </TouchableOpacity>
       </ScrollView>
+      <Modal
+        visible={newBoardModalVisible}
+        transparent
+        animationType="none"
+        onRequestClose={closeNewBoardSheet}
+      >
+        <View style={styles.modalOverlay}>
+          <Animated.View
+            style={[styles.bottomSheet, { transform: [{ translateY: newBoardSheetY }] }]}
+          >
+            <View style={styles.sheetHandle} {...newBoardPan.panHandlers}>
+              <View style={styles.sheetHandleBar} />
+            </View>
+            <Text style={styles.sheetTitle}>New Switchboard Found</Text>
+            <Text style={styles.sheetSubtitle}>
+              {candidateDevice?.canonicalId || candidateDevice?.id}
+            </Text>
+            <Animated.View
+              style={{
+                alignItems: "center",
+                marginBottom: 10,
+                transform: [
+                  {
+                    translateY: boardAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0, -8],
+                    }),
+                  },
+                ],
+              }}
+            >
+              <Image
+                source={require("@/assets/images/board-image.png")}
+                style={styles.boardHero}
+              />
+            </Animated.View>
+            <View style={styles.sheetActions}>
+              <TouchableOpacity
+                style={[styles.sheetButton, styles.sheetButtonGhost]}
+                onPress={handleIgnoreNewBoard}
+              >
+                <Text style={styles.sheetButtonGhostText}>Not Now</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.sheetButton, styles.sheetButtonPrimary]}
+                onPress={handleAddNewBoard}
+              >
+                <Text style={styles.sheetButtonPrimaryText}>Add Now</Text>
+              </TouchableOpacity>
+            </View>
+          </Animated.View>
+        </View>
+      </Modal>
+
     </View>
   );
 }
@@ -600,5 +802,73 @@ const styles = StyleSheet.create({
     color: "#e2e8f0",
     fontWeight: "700",
     fontSize: 14,
+  },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: "rgba(15, 23, 42, 0.6)",
+  },
+  bottomSheet: {
+    backgroundColor: "#0f172a",
+    padding: 20,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    borderColor: "#1e293b",
+    borderWidth: 1,
+    paddingBottom: 20,
+  },
+  sheetHandle: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingTop: 6,
+    paddingBottom: 10,
+  },
+  sheetHandleBar: {
+    width: 52,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: "rgba(148, 163, 184, 0.6)",
+  },
+  sheetTitle: {
+    color: "#e2e8f0",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  sheetSubtitle: {
+    color: "#94a3b8",
+    marginTop: 6,
+    marginBottom: 16,
+  },
+  sheetActions: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 8,
+    paddingBottom: 20,
+  },
+  sheetButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  sheetButtonGhost: {
+    borderWidth: 1,
+    borderColor: "#334155",
+  },
+  sheetButtonGhostText: {
+    color: "#cbd5e1",
+    fontWeight: "600",
+  },
+  sheetButtonPrimary: {
+    backgroundColor: "#5b8def",
+  },
+  sheetButtonPrimaryText: {
+    color: "#0f172a",
+    fontWeight: "700",
+  },
+  boardHero: {
+    width: 240,
+    height: 170,
+    resizeMode: "contain",
   },
 });

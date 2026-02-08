@@ -4,6 +4,7 @@ export type RootStackParamList = {
   Login: undefined;
   Home: undefined;
   AddRoom: undefined;
+  ConfirmNewBoard: { pendingDeviceId?: string } | undefined;
   Switchboard: {
     switchboardName: string;
     deviceId: string;
@@ -13,7 +14,9 @@ export type RootStackParamList = {
     bleId?: string | undefined;
     service_id: string;
   };
-  AddSwitchboard: undefined;
+  AddSwitchboard:
+    | { roomId: string; pendingDeviceId?: string; prefillName?: string; roomName?: string; roomIcon?: string }
+    | undefined;
   AddSwitchboardAdmin: undefined;
   Profile: undefined;
   Room: {

@@ -13,7 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { setUser } from '@/utils/storage';
+import { clearBoardCache, clearSensorCache, setUser } from '@/utils/storage';
 
 export default function ProfileScreen({ navigation }: any) {
 
@@ -114,6 +114,42 @@ export default function ProfileScreen({ navigation }: any) {
         },
       },
     ]);
+  };
+
+  const handleClearBoardCache = () => {
+    Alert.alert(
+      'Clear Board Cache',
+      'This will clear cached boards, layouts, and nearby device data. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: async () => {
+            await clearBoardCache();
+            Alert.alert('Done', 'Board cache cleared');
+          },
+        },
+      ],
+    );
+  };
+
+  const handleClearSensorCache = () => {
+    Alert.alert(
+      'Clear Sensor Cache',
+      'This will clear cached/ignored sensor data on this device. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: async () => {
+            await clearSensorCache();
+            Alert.alert('Done', 'Sensor cache cleared');
+          },
+        },
+      ],
+    );
   };
 
   return (
@@ -255,6 +291,14 @@ export default function ProfileScreen({ navigation }: any) {
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Account Actions</Text>
+
+          <TouchableOpacity style={styles.actionButtonNeutral} onPress={handleClearBoardCache}>
+            <Text style={styles.actionButtonText}>Clear Board Cache</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.actionButtonNeutral} onPress={handleClearSensorCache}>
+            <Text style={styles.actionButtonText}>Clear Sensor Cache</Text>
+          </TouchableOpacity>
 
           <TouchableOpacity style={styles.actionButton} onPress={handleSignOut}>
             <Text style={styles.actionButtonTextDanger}>Sign Out</Text>
@@ -402,6 +446,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#ef4444',
+    marginTop: 12,
+  },
+  actionButtonNeutral: {
+    backgroundColor: '#0b1220',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#334155',
+    marginBottom: 12,
+  },
+  actionButtonText: {
+    color: '#e2e8f0',
+    fontSize: 15,
+    fontWeight: '600',
   },
   actionButtonTextDanger: {
     color: '#ef4444',

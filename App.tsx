@@ -10,6 +10,7 @@ import { initDB } from "./db";
 import AddRoomScreen from "./screens/AddRoomScreen";
 import AddSwitchboardAdminScreen from "./screens/AddSwitchBoardAdminScreen";
 import AddSwitchboardScreen from "./screens/AddSwitchboardScreen";
+import ConfirmNewBoardScreen from "./screens/ConfirmNewBoardScreen";
 import HomeScreen from "./screens/HomeScreen";
 import LoginScreen from "./screens/LoginScreen";
 import ProfileScreen from "./screens/ProfileScreen";
@@ -48,6 +49,7 @@ function UserStack() {
       <Stack.Screen name="AddRoom" component={AddRoomScreen} />
       <Stack.Screen name="Room" component={RoomScreen} />
       <Stack.Screen name="Switchboard" component={SwitchboardScreen} />
+      <Stack.Screen name="ConfirmNewBoard" component={ConfirmNewBoardScreen} />
       <Stack.Screen name="AddSwitchboard" component={AddSwitchboardScreen} />
       <Stack.Screen name="Profile" component={ProfileScreen} />
     </Stack.Navigator>

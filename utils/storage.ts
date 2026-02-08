@@ -9,6 +9,8 @@ const ROOMS_BY_ROOM_KEY = '@roomsByRoom';
 const NEARBY_DEVICES_KEY = '@nearbyDevices';
 const LAST_PINS_PREFIX = '@lastPins:';
 const LAST_LAYOUT_PREFIX = '@lastLayout:';
+const IGNORED_SWITCHBOARDS_KEY = '@ignoredSwitchboards';
+const PENDING_SWITCHBOARD_DEVICE_KEY = '@pendingSwitchboardDeviceId';
 
 export async function setToken(token: string) {
   await AsyncStorage.setItem(TOKEN_KEY, token);
@@ -103,4 +105,56 @@ export async function setLastLayout(deviceId: string, buttons: any[]) {
 export async function getLastLayout(deviceId: string): Promise<any[] | null> {
   const raw = await AsyncStorage.getItem(`${LAST_LAYOUT_PREFIX}${deviceId}`);
   return raw ? JSON.parse(raw) : null;
+}
+
+export async function getIgnoredSwitchboards(): Promise<string[]> {
+  const raw = await AsyncStorage.getItem(IGNORED_SWITCHBOARDS_KEY);
+  return raw ? JSON.parse(raw) : [];
+}
+
+export async function addIgnoredSwitchboard(id: string) {
+  const list = await getIgnoredSwitchboards();
+  const next = Array.from(new Set([...list, id.toUpperCase()]));
+  await AsyncStorage.setItem(IGNORED_SWITCHBOARDS_KEY, JSON.stringify(next));
+}
+
+export async function clearIgnoredSwitchboards() {
+  await AsyncStorage.removeItem(IGNORED_SWITCHBOARDS_KEY);
+}
+
+export async function setPendingSwitchboardDeviceId(id: string) {
+  await AsyncStorage.setItem(PENDING_SWITCHBOARD_DEVICE_KEY, id);
+}
+
+export async function getPendingSwitchboardDeviceId(): Promise<string | null> {
+  return await AsyncStorage.getItem(PENDING_SWITCHBOARD_DEVICE_KEY);
+}
+
+export async function clearPendingSwitchboardDeviceId() {
+  await AsyncStorage.removeItem(PENDING_SWITCHBOARD_DEVICE_KEY);
+}
+
+export async function clearBoardCache() {
+  const keys = await AsyncStorage.getAllKeys();
+  const toRemove = keys.filter(
+    (k) => k.startsWith(LAST_PINS_PREFIX) || k.startsWith(LAST_LAYOUT_PREFIX)
+  );
+  toRemove.push(
+    ROOMS_BY_ROOM_KEY,
+    NEARBY_DEVICES_KEY,
+    IGNORED_SWITCHBOARDS_KEY,
+    PENDING_SWITCHBOARD_DEVICE_KEY
+  );
+  const unique = Array.from(new Set(toRemove));
+  if (unique.length) {
+    await AsyncStorage.multiRemove(unique);
+  }
+}
+
+export async function clearSensorCache() {
+  const keys = await AsyncStorage.getAllKeys();
+  const toRemove = keys.filter((k) => k.startsWith(IGNORED_SENSORS_PREFIX));
+  if (toRemove.length) {
+    await AsyncStorage.multiRemove(toRemove);
+  }
 }
