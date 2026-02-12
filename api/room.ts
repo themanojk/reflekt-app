@@ -1,4 +1,4 @@
-import client from './client';
+import client from "./client";
 
 export interface Room {
   _id: string;
@@ -8,9 +8,9 @@ export interface Room {
 }
 
 export async function addRoom(name: string, icon: string): Promise<Room> {
-  return client.post('/rooms', {name, icon}).then(res => res.data);
+  return client.post("/rooms", { name, icon }).then((res) => res.data);
 }
 
 export async function getRooms(): Promise<Room[]> {
-  return client.get('/rooms').then(res => res.data);
+  return client.get("/rooms").then((res) => res.data);
 }

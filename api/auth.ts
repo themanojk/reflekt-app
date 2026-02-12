@@ -11,6 +11,7 @@ export interface User {
   firstName?: string;
   lastName?: string;
   email?: string;
+  avatar?: string;
   role: Role
 }
 
@@ -35,4 +36,13 @@ export async function verifyOtp(transactionId: string, code: string): Promise<Au
 
 export async function getProfile() : Promise<User> {
   return client.get('/user').then(res => res.data.user);
+}
+
+export async function updateProfile(payload: {
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  avatar?: string;
+}) : Promise<User> {
+  return client.patch('/user', payload).then(res => res.data.user);
 }

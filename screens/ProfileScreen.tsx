@@ -1,4 +1,4 @@
-import { getProfile } from '@/api/auth';
+import { getProfile, updateProfile } from '@/api/auth';
 import { useAuth } from '@/contexts/AuthContext';
 import Constants from 'expo-constants';
 import { CreditCard as Edit2, Mail, Phone, Save, User, X } from 'lucide-react-native';
@@ -13,6 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { clearBoardCache, clearSensorCache, setUser } from '@/utils/storage';
 
 export default function ProfileScreen({ navigation }: any) {
 
@@ -21,6 +22,8 @@ export default function ProfileScreen({ navigation }: any) {
   const [editing, setEditing] = useState(false);
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [avatar, setAvatar] = useState('🙂');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -30,18 +33,38 @@ export default function ProfileScreen({ navigation }: any) {
 
   const loadProfile = async () => {
     setLoading(true);
-    const userDetails = await getProfile();
-
-    const userObj = {
-      id: userDetails.id,
-      phone: userDetails.phone,
-      full_name: userDetails?.firstName ? (userDetails?.firstName ?? '') + " " + (userDetails?.lastName ?? '') : "Not Set",
-      email: userDetails?.email,
-    };
-    setProfile(userObj);
-    setFullName(userObj.full_name);
-    setPhone(userObj.phone);
-    setLoading(false);
+    try {
+      const userDetails = await getProfile();
+      const userObj = {
+        id: userDetails.id,
+        phone: userDetails.phone,
+        full_name: userDetails?.firstName
+          ? (userDetails?.firstName ?? "") + " " + (userDetails?.lastName ?? "")
+          : "Not Set",
+        email: userDetails?.email,
+        avatar: userDetails?.avatar || "🙂",
+      };
+      setProfile(userObj);
+      setFullName(userObj.full_name);
+      setPhone(userObj.phone);
+      setEmail(userObj.email || "");
+      setAvatar(userObj.avatar || "🙂");
+    } catch (err) {
+      const fallback = {
+        id: user?.id,
+        phone: user?.phone,
+        full_name: user?.full_name || user?.name || "Not Set",
+        email: user?.email,
+        avatar: user?.avatar || "🙂",
+      };
+      setProfile(fallback);
+      setFullName(fallback.full_name || "");
+      setPhone(fallback.phone || "");
+      setEmail(fallback.email || "");
+      setAvatar(fallback.avatar || "🙂");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleSave = async () => {
@@ -51,13 +74,33 @@ export default function ProfileScreen({ navigation }: any) {
     }
 
     setSaving(true);
-    // Simulate API call
-    setTimeout(() => {
-      setSaving(false);
+    try {
+      const [firstName, ...rest] = fullName.trim().split(" ");
+      const lastName = rest.join(" ").trim();
+      const updated = await updateProfile({
+        firstName,
+        lastName,
+        email: email?.trim() || undefined,
+        avatar,
+      });
+      await setUser(updated as any);
+      const userObj = {
+        id: updated.id,
+        phone: updated.phone,
+        full_name: updated?.firstName
+          ? (updated?.firstName ?? "") + " " + (updated?.lastName ?? "")
+          : fullName.trim(),
+        email: updated?.email,
+        avatar: updated?.avatar || avatar,
+      };
+      setProfile(userObj);
       setEditing(false);
-      setProfile({ ...profile, full_name: fullName.trim() });
       Alert.alert('Success', 'Profile updated successfully');
-    }, 1000);
+    } catch (err) {
+      Alert.alert("Error", "Failed to update profile");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleSignOut = () => {
@@ -73,22 +116,41 @@ export default function ProfileScreen({ navigation }: any) {
     ]);
   };
 
-  if (loading) {
-    return (
-      <View style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => navigation.goBack()}>
-            <Text style={styles.backButton}>← Back</Text>
-          </TouchableOpacity>
-          <Text style={styles.title}>Profile</Text>
-          <View style={styles.placeholder} />
-        </View>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#3b82f6" />
-        </View>
-      </View>
+  const handleClearBoardCache = () => {
+    Alert.alert(
+      'Clear Board Cache',
+      'This will clear cached boards, layouts, and nearby device data. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: async () => {
+            await clearBoardCache();
+            Alert.alert('Done', 'Board cache cleared');
+          },
+        },
+      ],
     );
-  }
+  };
+
+  const handleClearSensorCache = () => {
+    Alert.alert(
+      'Clear Sensor Cache',
+      'This will clear cached/ignored sensor data on this device. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: async () => {
+            await clearSensorCache();
+            Alert.alert('Done', 'Sensor cache cleared');
+          },
+        },
+      ],
+    );
+  };
 
   return (
     <View style={styles.container}>
@@ -109,11 +171,20 @@ export default function ProfileScreen({ navigation }: any) {
       </View>
 
       <ScrollView style={styles.content}>
+        {loading && (
+          <View style={styles.loadingInline}>
+            <ActivityIndicator size="small" color="#3b82f6" />
+            <Text style={styles.loadingText}>Loading profile...</Text>
+          </View>
+        )}
         <View style={styles.avatarSection}>
           <View style={styles.avatar}>
-            <User size={48} color="#94a3b8" />
+            <Text style={styles.avatarEmoji}>{profile?.avatar || avatar}</Text>
           </View>
-          <Text style={styles.userId}>ID: {user?.id?.slice(0, 8)}...</Text>
+          <Text style={styles.profileName}>
+            {profile?.full_name || fullName || "User"}
+          </Text>
+          {/* removed ID display */}
         </View>
 
         <View style={styles.section}>
@@ -153,7 +224,19 @@ export default function ProfileScreen({ navigation }: any) {
               <Mail size={18} color="#94a3b8" />
               <Text style={styles.label}>Email</Text>
             </View>
-            <Text style={styles.value}>{user?.email || 'Not set'}</Text>
+            {editing ? (
+              <TextInput
+                style={styles.input}
+                placeholder="Enter your email"
+                placeholderTextColor="#64748b"
+                value={email}
+                onChangeText={setEmail}
+                editable={!saving}
+                autoCapitalize="none"
+              />
+            ) : (
+              <Text style={styles.value}>{profile?.email || 'Not set'}</Text>
+            )}
           </View>
         </View>
 
@@ -174,8 +257,48 @@ export default function ProfileScreen({ navigation }: any) {
           </TouchableOpacity>
         )}
 
+        {editing && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Choose Avatar</Text>
+            <View style={styles.avatarGrid}>
+              {[
+                { icon: "👨‍👩‍👧‍👦", label: "Family" },
+                { icon: "👨‍👩‍👦", label: "Parents" },
+                { icon: "👩‍👧", label: "Mother" },
+                { icon: "👨‍👧", label: "Father" },
+                { icon: "👩‍🦰", label: "Mom" },
+                { icon: "👨‍🦱", label: "Dad" },
+                { icon: "👧", label: "Daughter" },
+                { icon: "👦", label: "Son" },
+                { icon: "👵", label: "Grandma" },
+                { icon: "👴", label: "Grandpa" },
+              ].map((a) => (
+                <TouchableOpacity
+                  key={a.icon}
+                  style={[
+                    styles.avatarOption,
+                    avatar === a.icon && styles.avatarOptionActive,
+                  ]}
+                  onPress={() => setAvatar(a.icon)}
+                >
+                  <Text style={styles.avatarEmojiSmall}>{a.icon}</Text>
+                  <Text style={styles.avatarLabel}>{a.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
+
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Account Actions</Text>
+
+          <TouchableOpacity style={styles.actionButtonNeutral} onPress={handleClearBoardCache}>
+            <Text style={styles.actionButtonText}>Clear Board Cache</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.actionButtonNeutral} onPress={handleClearSensorCache}>
+            <Text style={styles.actionButtonText}>Clear Sensor Cache</Text>
+          </TouchableOpacity>
 
           <TouchableOpacity style={styles.actionButton} onPress={handleSignOut}>
             <Text style={styles.actionButtonTextDanger}>Sign Out</Text>
@@ -221,6 +344,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  loadingInline: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  loadingText: {
+    color: "#94a3b8",
+    fontSize: 13,
+  },
   content: {
     flex: 1,
   },
@@ -239,9 +373,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginBottom: 12,
   },
-  userId: {
-    fontSize: 12,
-    color: '#64748b',
+  avatarEmoji: {
+    fontSize: 44,
+  },
+  profileName: {
+    color: '#e2e8f0',
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 4,
   },
   section: {
     padding: 24,
@@ -307,6 +446,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#ef4444',
+    marginTop: 12,
+  },
+  actionButtonNeutral: {
+    backgroundColor: '#0b1220',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#334155',
+    marginBottom: 12,
+  },
+  actionButtonText: {
+    color: '#e2e8f0',
+    fontSize: 15,
+    fontWeight: '600',
   },
   actionButtonTextDanger: {
     color: '#ef4444',
@@ -317,6 +471,34 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 24,
     gap: 4,
+  },
+  avatarGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 12,
+  },
+  avatarOption: {
+    width: 70,
+    height: 70,
+    borderRadius: 16,
+    backgroundColor: '#0f172a',
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarOptionActive: {
+    borderColor: '#3b82f6',
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+  },
+  avatarEmojiSmall: {
+    fontSize: 24,
+  },
+  avatarLabel: {
+    fontSize: 10,
+    color: '#94a3b8',
+    marginTop: 2,
   },
   footerText: {
     fontSize: 12,

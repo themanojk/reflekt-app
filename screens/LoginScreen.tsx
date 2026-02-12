@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -18,12 +18,15 @@ export default function LoginScreen() {
   const [step, setStep] = useState<'phone' | 'otp'>('phone');
   const [loading, setLoading] = useState(false);
   const { signInWithPhone, verifyOTP } = useAuth();
+  const otpInputRef = useRef<TextInput>(null);
+  const lastAutoSentRef = useRef<string>('');
 
   const handleSendOTP = async () => {
     if (!phone || phone.length < 10) {
       Alert.alert('Error', 'Please enter a valid phone number');
       return;
     }
+    if (loading) return;
 
     setLoading(true);
     const id = await signInWithPhone(phone);
@@ -38,6 +41,7 @@ export default function LoginScreen() {
       Alert.alert('Error', 'Please enter the 4-digit OTP (1234)');
       return;
     }
+    if (loading) return;
 
     setLoading(true);
     const { error } = await verifyOTP(transactionId, otp);
@@ -47,6 +51,27 @@ export default function LoginScreen() {
       Alert.alert('Error', error.message);
     }
   };
+
+  useEffect(() => {
+    if (step === 'otp') {
+      setTimeout(() => otpInputRef.current?.focus(), 150);
+    }
+  }, [step]);
+
+  useEffect(() => {
+    if (step !== 'phone') return;
+    if (phone.length === 10 && !loading && lastAutoSentRef.current !== phone) {
+      lastAutoSentRef.current = phone;
+      handleSendOTP();
+    }
+  }, [phone, step, loading]);
+
+  useEffect(() => {
+    if (step !== 'otp') return;
+    if (otp.length === 4) {
+      handleVerifyOTP();
+    }
+  }, [otp, step]);
 
   return (
     <KeyboardAwareScrollView
@@ -67,7 +92,10 @@ export default function LoginScreen() {
               style={styles.input}
               placeholder=""
               value={phone}
-              onChangeText={setPhone}
+              onChangeText={(v) => {
+                const digits = v.replace(/\D/g, "").slice(0, 10);
+                setPhone(digits);
+              }}
               keyboardType="phone-pad"
               autoComplete="tel"
               editable={!loading}
@@ -98,6 +126,7 @@ export default function LoginScreen() {
               keyboardType="number-pad"
               maxLength={4}
               editable={!loading}
+              ref={otpInputRef}
             />
             <TouchableOpacity
               style={[styles.button, loading && styles.buttonDisabled]}

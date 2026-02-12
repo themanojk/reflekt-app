@@ -1,5 +1,5 @@
-import { Bluetooth } from 'lucide-react-native';
-import React, { useEffect, useState } from 'react';
+import { Bluetooth } from "lucide-react-native";
+import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -10,23 +10,23 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-} from 'react-native';
-import { Device as BleDevice, Device } from 'react-native-ble-plx';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
+} from "react-native";
+import { Device as BleDevice, Device } from "react-native-ble-plx";
+import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
 
-import { AddDevice, addDevice, getLayout } from '@/api/devics';
-import Toast from '@/components/Toast';
-import { DATA_CHAR_UUID } from '@/constants';
-import { getCanonicalId } from '@/services/bleCanonicalId';
-import BLEManagerService from '@/services/bleManager';
-import { storeBleDevice } from '@/utils/storage';
-import { loadWifi, saveWifi } from '@/utils/wifiCreds';
-import { Buffer } from 'buffer';
+import { AddDevice, addDevice, getLayout } from "@/api/devics";
+import Toast from "@/components/Toast";
+import { DATA_CHAR_UUID } from "@/constants";
+import { getCanonicalId } from "@/services/bleCanonicalId";
+import BLEManagerService from "@/services/bleManager";
+import { clearPendingSwitchboardDeviceId, storeBleDevice } from "@/utils/storage";
+import { loadWifi, saveWifi } from "@/utils/wifiCreds";
+import { Buffer } from "buffer";
 
-type Step = 'scan' | 'form';
+type Step = "scan" | "form";
 
 type Row = {
-  id: string;           // transport id (device.id)
+  id: string; // transport id (device.id)
   name: string | null;
   rssi: number | null;
   device: Device;
@@ -39,20 +39,24 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
     bleManagerRef.current = new BLEManagerService();
   }
   const bleManager = bleManagerRef.current;
-  const { roomId } = route.params;
+  const { roomId, pendingDeviceId, prefillName, roomName, roomIcon } = route.params;
   const [_connectingId, setConnectingId] = useState<string | null>(null);
-  const [step, setStep] = useState<Step>('scan');
+  const [step, setStep] = useState<Step>("scan");
   const [scanning, setScanning] = useState(true);
   const [devices, setDevices] = useState<Row[]>([]);
   const [device, setDevice] = useState<BleDevice>();
   const [_selectedDevice, setSelectedDevice] = useState<BleDevice | null>(null);
-  const [name, setName] = useState('');
-  const [wifiSSID, setWifiSSID] = useState('');
-  const [wifiPassword, setWifiPassword] = useState('');
+  const [name, setName] = useState(prefillName || "");
+  const [selectedCanonicalId, setSelectedCanonicalId] = useState<string | null>(
+    null,
+  );
+  const [serviceIdFromLayout, setServiceIdFromLayout] = useState("");
+  const [wifiSSID, setWifiSSID] = useState("");
+  const [wifiPassword, setWifiPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<{ visible: boolean; message: string }>({
     visible: false,
-    message: '',
+    message: "",
   });
 
   const showToast = (msg: string) => {
@@ -61,23 +65,25 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
 
   const loadWifiCreds = async () => {
     const creds = await loadWifi();
-    if(!creds || !creds.ssid) return
+    if (!creds || !creds.ssid) return;
 
     setWifiSSID(creds.ssid);
     setWifiPassword(creds.pass);
-  }
+  };
+
+  useEffect(() => {
+    if (prefillName) setName(prefillName);
+  }, [prefillName]);
 
   const onDeviceFound = React.useCallback(async (device: Device) => {
     let canonicalId = device.id;
 
-    if (Platform.OS === 'ios') {
-      try {
-        canonicalId = await getCanonicalId(device);
-      } catch {}
-    }
+    try {
+      canonicalId = await getCanonicalId(device);
+    } catch {}
 
-    setDevices(prev => {
-      const idx = prev.findIndex(d => d.canonicalId === canonicalId);
+    setDevices((prev) => {
+      const idx = prev.findIndex((d) => d.canonicalId === canonicalId);
 
       if (idx >= 0) return prev; // ❗ ignore repeated advertisements
 
@@ -92,21 +98,36 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
         },
       ];
     });
+
+    if (pendingDeviceId) {
+      const candidate = canonicalId || device.id;
+      if (String(candidate).toUpperCase() === String(pendingDeviceId).toUpperCase()) {
+        handleDeviceSelect({
+          id: device.id,
+          name: device.name ?? null,
+          rssi: device.rssi ?? null,
+          device,
+          canonicalId,
+        });
+      }
+    }
   }, []);
 
   const runScan = React.useCallback(async () => {
-    if (scanning) return;            // prevent double taps
+    if (scanning) return; // prevent double taps
     setScanning(true);
     try {
-      const { done } = bleManager.startScan_new(onDeviceFound, { stopAfterMs: 30000 });
-      await done;                    // await completion (auto-stop or manual)
+      const { done } = bleManager.startScan_new(onDeviceFound, {
+        stopAfterMs: 30000,
+      });
+      await done; // await completion (auto-stop or manual)
     } finally {
       setScanning(false);
     }
   }, [bleManager, onDeviceFound, scanning]);
 
   useEffect(() => {
-    if (step !== 'scan') return;
+    if (step !== "scan") return;
 
     let cancelled = false;
 
@@ -136,36 +157,40 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
 
   const getDeviceLayout = async (deviceId: string | undefined) => {
     try {
-      if(!deviceId) return;
-      console.info("Fetching layout for", deviceId)
+      if (!deviceId) return;
+      console.info("Fetching layout for", deviceId);
       const deviceLayout = await getLayout(deviceId);
       return deviceLayout;
     } catch (err) {
-      console.log("Error while fetching layout", err)
-      return null
+      console.log("Error while fetching layout", err);
+      return null;
     }
   };
 
   const sendWifiConfigToESP = async (device: BleDevice) => {
     if (!wifiSSID.trim() || !wifiPassword.trim()) {
-      Alert.alert('Error', 'Please enter a WiFi network name');
+      Alert.alert("Error", "Please enter a WiFi network name");
       return;
     }
 
     await saveWifi(wifiSSID, wifiPassword);
     const serviceIds = await bleManager.getCustomServiceId(device);
-    if(!serviceIds.length) return;
+    if (!serviceIds.length) return;
 
     const text = `WIFI:${wifiSSID};${wifiPassword}`;
-    console.log('Send to ESP:', text);
+    console.log("Send to ESP:", text);
     //await bleManager.sendData(device, text, serviceIds[0]);
-    await bleManager.safeWrite({device, serviceUUID: serviceIds[0], charUUID: DATA_CHAR_UUID, base64Payload: Buffer.from(text).toString("base64")})
-
+    await bleManager.safeWrite({
+      device,
+      serviceUUID: serviceIds[0],
+      charUUID: DATA_CHAR_UUID,
+      base64Payload: Buffer.from(text).toString("base64"),
+    });
   };
 
   const handleDeviceSelect = async (bleDevice: Row) => {
     const { device, canonicalId } = bleDevice;
-    console.log("Starting connection")
+    console.log("Starting connection");
     setConnectingId(device.id);
     bleManager.stopScan();
 
@@ -174,30 +199,32 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
       const layout = await getDeviceLayout(canonicalId);
 
       if (!layout) {
-        showToast('Unrecognized device');
+        showToast("Unrecognized device");
       } else {
-        
+        if (layout?.serviceId) {
+          setServiceIdFromLayout(layout.serviceId);
+        }
+        setSelectedCanonicalId(canonicalId || null);
         await storeBleDevice(device.id);
         setSelectedDevice(device);
         setName(device.id);
-        setStep('form');
+        setStep("form");
         setDevice(device);
       }
       setConnectingId(null);
     } catch (err) {
-      console.error('Connection failed', err);
+      console.error("Connection failed", err);
       setConnectingId(null);
     }
-    
   };
 
   const handleAddSwitchboard = async () => {
     if (!name.trim()) {
-      Alert.alert('Error', 'Please enter a switchboard name');
+      Alert.alert("Error", "Please enter a switchboard name");
       return;
     }
     if (!device) {
-      Alert.alert('Error', 'Bluetooth connection failed');
+      Alert.alert("Error", "Bluetooth connection failed");
       return;
     }
     setLoading(true);
@@ -207,23 +234,44 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
       device_id: device.id,
       os: Platform.OS,
     };
-    console.log('Body', body);
+    console.log("Body", body);
 
     try {
-      const deviceRes = await addDevice(body);
-      console.log(deviceRes);
+      await addDevice(body);
       await sendWifiConfigToESP(device);
-      Alert.alert('Success', `Switchboard "${name.trim()}" added successfully!`);
+      Alert.alert(
+        "Success",
+        `Switchboard "${name.trim()}" added successfully!`
+      );
+      navigation.reset({
+        index: 1,
+        routes: [
+          { name: "Home" },
+          {
+            name: "Switchboard",
+            params: {
+              switchboardName: name.trim(),
+              deviceId: selectedCanonicalId || device.id,
+              roomIcon: roomIcon || "",
+              status: true,
+              iosBleId: Platform.OS === "ios" ? device.id : undefined,
+              bleId: device.id,
+              service_id: serviceIdFromLayout || "",
+              roomName: roomName || "",
+            },
+          },
+        ],
+      });
     } catch (err) {
       console.log(err);
-      Alert.alert('Error', `Failed to add "${name.trim()}" switchboard!`);
+      Alert.alert("Error", `Failed to add "${name.trim()}" switchboard!`);
     } finally {
+      await clearPendingSwitchboardDeviceId();
       setLoading(false);
-      navigation.goBack();
     }
   };
 
-  if (step === 'scan') {
+  if (step === "scan") {
     return (
       <View style={styles.container}>
         <Toast
@@ -246,16 +294,20 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
           </View>
 
           <Text style={styles.scanTitle}>
-            {scanning ? 'Scanning for devices...' : 'Nearby Devices'}
+            {scanning ? "Scanning for devices..." : "Nearby Devices"}
           </Text>
           <Text style={styles.scanSubtitle}>
             {scanning
-              ? 'Please wait while we search for switchboards'
-              : 'Select a switchboard to connect'}
+              ? "Please wait while we search for switchboards"
+              : "Select a switchboard to connect"}
           </Text>
 
           {scanning && (
-            <ActivityIndicator size="large" color="#3b82f6" style={styles.loader} />
+            <ActivityIndicator
+              size="large"
+              color="#3b82f6"
+              style={styles.loader}
+            />
           )}
 
           {!scanning && devices.length === 0 && (
@@ -265,7 +317,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
                 style={styles.retryButton}
                 onPress={() => {
                   setScanning(true);
-                  setStep('scan');
+                  setStep("scan");
                   setDevices([]);
                   runScan();
                 }}
@@ -286,10 +338,14 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
                   <View style={styles.deviceInfo}>
                     <Bluetooth size={24} color="#3b82f6" />
                     <View style={styles.deviceDetails}>
-                      <Text style={styles.deviceName}>{device.id.slice(0, 20)}</Text>
-                      <Text style={styles.deviceName}>{device.canonicalId}</Text>
+                      <Text style={styles.deviceName}>
+                        {device.id.slice(0, 20)}
+                      </Text>
+                      <Text style={styles.deviceName}>
+                        {device.canonicalId}
+                      </Text>
                       <Text style={styles.deviceSignal}>
-                        Signal: {device.rssi ? Math.abs(device.rssi): ''} dBm
+                        Signal: {device.rssi ? Math.abs(device.rssi) : ""} dBm
                       </Text>
                     </View>
                   </View>
@@ -302,7 +358,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
           <TouchableOpacity
             style={styles.manualButton}
             onPress={() => {
-              setStep('scan');
+              setStep("scan");
               runScan();
             }}
           >
@@ -320,7 +376,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
       extraScrollHeight={16}
     >
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => setStep('scan')}>
+        <TouchableOpacity onPress={() => setStep("scan")}>
           <Text style={styles.cancelButton}>Back</Text>
         </TouchableOpacity>
         <Text style={styles.title}>Configure Switchboard</Text>
@@ -384,25 +440,25 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0f172a',
+    backgroundColor: "#0f172a",
   },
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     padding: 16,
     paddingTop: 60,
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
+    borderBottomColor: "#1e293b",
   },
   cancelButton: {
-    color: '#3b82f6',
+    color: "#3b82f6",
     fontSize: 16,
   },
   title: {
     fontSize: 18,
-    fontWeight: '600',
-    color: '#fff',
+    fontWeight: "600",
+    color: "#fff",
   },
   placeholder: {
     width: 60,
@@ -412,37 +468,37 @@ const styles = StyleSheet.create({
   },
   label: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#e2e8f0',
+    fontWeight: "600",
+    color: "#e2e8f0",
     marginTop: 16,
     marginBottom: 8,
   },
   sectionTitle: {
     fontSize: 18,
-    fontWeight: 'bold',
-    color: '#fff',
+    fontWeight: "bold",
+    color: "#fff",
     marginTop: 24,
     marginBottom: 4,
   },
   sectionSubtitle: {
     fontSize: 14,
-    color: '#94a3b8',
+    color: "#94a3b8",
     marginBottom: 8,
   },
   input: {
-    backgroundColor: '#1e293b',
+    backgroundColor: "#1e293b",
     borderRadius: 12,
     padding: 16,
     fontSize: 16,
-    color: '#fff',
+    color: "#fff",
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: "#334155",
   },
   button: {
-    backgroundColor: '#3b82f6',
+    backgroundColor: "#3b82f6",
     borderRadius: 12,
     padding: 16,
-    alignItems: 'center',
+    alignItems: "center",
     marginTop: 32,
     marginBottom: 24,
   },
@@ -450,78 +506,78 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   buttonText: {
-    color: '#fff',
+    color: "#fff",
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: "600",
   },
   scanContent: {
     flex: 1,
     padding: 24,
-    alignItems: 'center',
+    alignItems: "center",
   },
   scanIcon: {
     width: 120,
     height: 120,
     borderRadius: 60,
-    backgroundColor: '#1e3a8a',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "#1e3a8a",
+    alignItems: "center",
+    justifyContent: "center",
     marginTop: 48,
     marginBottom: 24,
   },
   scanTitle: {
     fontSize: 22,
-    fontWeight: 'bold',
-    color: '#fff',
+    fontWeight: "bold",
+    color: "#fff",
     marginBottom: 8,
   },
   scanSubtitle: {
     fontSize: 14,
-    color: '#94a3b8',
-    textAlign: 'center',
+    color: "#94a3b8",
+    textAlign: "center",
     marginBottom: 24,
   },
   loader: {
     marginVertical: 24,
   },
   emptyState: {
-    alignItems: 'center',
+    alignItems: "center",
     marginTop: 24,
   },
   emptyText: {
     fontSize: 16,
-    color: '#64748b',
+    color: "#64748b",
     marginBottom: 16,
   },
   retryButton: {
-    backgroundColor: '#334155',
+    backgroundColor: "#334155",
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 8,
   },
   retryButtonText: {
-    color: '#fff',
+    color: "#fff",
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: "600",
   },
   deviceList: {
-    width: '100%',
+    width: "100%",
     marginTop: 16,
   },
   deviceCard: {
-    backgroundColor: '#1e293b',
+    backgroundColor: "#1e293b",
     borderRadius: 12,
     padding: 16,
     marginBottom: 12,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: "#334155",
   },
   deviceInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 12,
   },
   deviceDetails: {
@@ -529,26 +585,26 @@ const styles = StyleSheet.create({
   },
   deviceName: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#fff',
+    fontWeight: "600",
+    color: "#fff",
   },
   deviceSignal: {
     fontSize: 12,
-    color: '#94a3b8',
+    color: "#94a3b8",
   },
   connectText: {
     fontSize: 14,
-    color: '#3b82f6',
-    fontWeight: '600',
+    color: "#3b82f6",
+    fontWeight: "600",
   },
   manualButton: {
-    marginTop: 'auto',
+    marginTop: "auto",
     paddingVertical: 16,
   },
   manualButtonText: {
-    color: '#3b82f6',
+    color: "#3b82f6",
     fontSize: 16,
-    fontWeight: '600',
-    textAlign: 'center',
+    fontWeight: "600",
+    textAlign: "center",
   },
 });
