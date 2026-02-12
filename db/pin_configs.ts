@@ -8,6 +8,9 @@ export interface PinConfigLocal {
   auto_on: number;
   auto_off: number;
   off_delay: number;
+  load_watt: number;
+  on_exclude_start_hour: number;
+  on_exclude_end_hour: number;
   updatedAt: number;
   pending_sync: number;
 }
@@ -34,8 +37,8 @@ export async function upsertPinConfigLocal(
   await db.runAsync(
     `
     INSERT OR REPLACE INTO pin_configs
-    (id, device_mac, pin, name, auto_on, auto_off, off_delay, updatedAt, pending_sync)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (id, device_mac, pin, name, auto_on, auto_off, off_delay, load_watt, on_exclude_start_hour, on_exclude_end_hour, updatedAt, pending_sync)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       id,
@@ -45,6 +48,9 @@ export async function upsertPinConfigLocal(
       cfg.auto_on,
       cfg.auto_off,
       cfg.off_delay,
+      cfg.load_watt ?? 0,
+      cfg.on_exclude_start_hour ?? 22,
+      cfg.on_exclude_end_hour ?? 7,
       now,
       cfg.pending_sync ?? 0,
     ]

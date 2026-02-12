@@ -13,6 +13,7 @@ import {
 import HingeSlider from "@/components/HingeSlider";
 import { DATA_CHAR_UUID, ROOM_ICONS } from "@/constants";
 import { RootStackParamList } from "@/constants/types";
+import { useToast } from "@/contexts/ToastContext";
 import { getLayoutButtonsByServiceId } from "@/db/layout_buttons";
 import {
   getPendingPinConfigs,
@@ -34,6 +35,8 @@ import { RouteProp } from "@react-navigation/native";
 import { Buffer } from "buffer";
 import {
   ChevronLeft,
+  ChevronDown,
+  ChevronUp,
   Lightbulb,
   Power,
   Settings,
@@ -92,6 +95,25 @@ const COLOR_PALETTE = [
 ];
 
 const FAN_SPEED_LEVELS = [30, 45, 60, 75, 90, 100];
+const DEFAULT_EXCLUDE_START = 22;
+const DEFAULT_EXCLUDE_END = 7;
+const DEFAULT_LOAD_WATT = 0;
+const HOUR_CHIP_MIN_WIDTH = 64;
+const HOUR_CHIP_GAP = 8;
+
+const formatHourLabel = (hour: number) => {
+  const h = ((hour % 24) + 24) % 24;
+  const period = h >= 12 ? "PM" : "AM";
+  const display = h % 12 === 0 ? 12 : h % 12;
+  return `${display} ${period}`;
+};
+
+const clampWatt = (value: number) => Math.min(250, Math.max(0, value));
+const getHourScrollOffset = (hour: number) =>
+  Math.max(0, hour * (HOUR_CHIP_MIN_WIDTH + HOUR_CHIP_GAP) - 16);
+
+const formatExcludeSummary = (start: number, end: number) =>
+  `${formatHourLabel(start)} - ${formatHourLabel(end)}`;
 
 type Props = {
   route: RouteProp<RootStackParamList, "Switchboard">;
@@ -141,6 +163,13 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [ignoredSensors, setIgnoredSensors] = useState<string[]>([]);
   const [attachedSensors, setAttachedSensors] = useState<string[]>([]);
   const [pinConfigs, setPinConfigs] = useState<Record<number, any>>({});
+  const [expandedPinId, setExpandedPinId] = useState<number | null>(null);
+  const [ruleTabs, setRuleTabs] = useState<Record<number, "on" | "off">>({});
+  const hourScrollRefs = React.useRef<Record<string, ScrollView | null>>({});
+  const [pinConfigBaseline, setPinConfigBaseline] = useState<
+    Record<number, string>
+  >({});
+  const { showToast } = useToast();
   const rotation = React.useRef(new Animated.Value(0)).current;
   const [serviceId, setServiceId] = useState(service_id || "");
   const sheetTranslateY = React.useRef(new Animated.Value(0)).current;
@@ -179,6 +208,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       }),
     ).start();
   }, [rotation]);
+
+  useEffect(() => {
+    loadPinConfigs();
+  }, []);
 
   const closeSheet = React.useCallback(() => {
     Animated.timing(sheetTranslateY, {
@@ -484,15 +517,22 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     const local = await getPinConfigsByDevice(deviceId);
     if (local.length) {
       const map: Record<number, any> = {};
+      const baseline: Record<number, string> = {};
       local.forEach((c) => {
         map[c.pin] = {
           name: c.name,
           autoOn: !!c.auto_on,
           autoOff: !!c.auto_off,
           offDelay: c.off_delay || 600,
+          loadWatt: c.load_watt ?? DEFAULT_LOAD_WATT,
+          onExcludeStartHour:
+            c.on_exclude_start_hour ?? DEFAULT_EXCLUDE_START,
+          onExcludeEndHour: c.on_exclude_end_hour ?? DEFAULT_EXCLUDE_END,
         };
+        baseline[c.pin] = JSON.stringify(map[c.pin]);
       });
       setPinConfigs(map);
+      setPinConfigBaseline(baseline);
     }
 
     await syncPendingPinConfigs();
@@ -502,13 +542,19 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       const list = res?.configs || [];
       if (list.length) {
         const map: Record<number, any> = {};
+        const baseline: Record<number, string> = {};
         for (const c of list) {
           map[c.pin] = {
             name: c.name || "",
             autoOn: !!c.auto_on,
             autoOff: !!c.auto_off,
             offDelay: c.off_delay || 600,
+            loadWatt: c.load_watt ?? DEFAULT_LOAD_WATT,
+            onExcludeStartHour:
+              c.on_exclude_start_hour ?? DEFAULT_EXCLUDE_START,
+            onExcludeEndHour: c.on_exclude_end_hour ?? DEFAULT_EXCLUDE_END,
           };
+          baseline[c.pin] = JSON.stringify(map[c.pin]);
           await upsertPinConfigLocal({
             device_mac: deviceId,
             pin: c.pin,
@@ -516,10 +562,16 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             auto_on: c.auto_on ? 1 : 0,
             auto_off: c.auto_off ? 1 : 0,
             off_delay: c.off_delay || 600,
+            load_watt: c.load_watt ?? DEFAULT_LOAD_WATT,
+            on_exclude_start_hour:
+              c.on_exclude_start_hour ?? DEFAULT_EXCLUDE_START,
+            on_exclude_end_hour:
+              c.on_exclude_end_hour ?? DEFAULT_EXCLUDE_END,
             pending_sync: 0,
           });
         }
         setPinConfigs(map);
+        setPinConfigBaseline(baseline);
       }
     } catch {
       // offline: keep local
@@ -538,6 +590,11 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           auto_on: !!cfg.auto_on,
           auto_off: !!cfg.auto_off,
           off_delay: cfg.off_delay || 600,
+          load_watt: cfg.load_watt ?? DEFAULT_LOAD_WATT,
+          on_exclude_start_hour:
+            cfg.on_exclude_start_hour ?? DEFAULT_EXCLUDE_START,
+          on_exclude_end_hour:
+            cfg.on_exclude_end_hour ?? DEFAULT_EXCLUDE_END,
         });
         await markPinConfigSynced(cfg.device_mac, cfg.pin);
       } catch {
@@ -553,9 +610,21 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         autoOn: false,
         autoOff: false,
         offDelay: 600,
+        loadWatt: DEFAULT_LOAD_WATT,
+        onExcludeStartHour: DEFAULT_EXCLUDE_START,
+        onExcludeEndHour: DEFAULT_EXCLUDE_END,
       };
       return { ...prev, [pin]: { ...current, ...patch } };
     });
+  };
+
+
+  const togglePinExpanded = (pin: number) => {
+    setExpandedPinId((prev) => (prev === pin ? null : pin));
+  };
+
+  const setRuleTab = (pin: number, tab: "on" | "off") => {
+    setRuleTabs((prev) => ({ ...prev, [pin]: tab }));
   };
 
   const savePinConfigFor = async (pin: number) => {
@@ -569,6 +638,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       auto_on: cfg.autoOn ? 1 : 0,
       auto_off: cfg.autoOff ? 1 : 0,
       off_delay: cfg.offDelay || 600,
+      load_watt: cfg.loadWatt ?? DEFAULT_LOAD_WATT,
+      on_exclude_start_hour:
+        cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
+      on_exclude_end_hour: cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END,
       pending_sync: 1,
     });
 
@@ -580,66 +653,109 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         auto_on: !!cfg.autoOn,
         auto_off: !!cfg.autoOff,
         off_delay: cfg.offDelay || 600,
+        load_watt: cfg.loadWatt ?? DEFAULT_LOAD_WATT,
+        on_exclude_start_hour:
+          cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
+        on_exclude_end_hour: cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END,
       });
       await markPinConfigSynced(deviceId, pin);
-      Alert.alert("Saved", "Pin configuration saved.");
+      showToast("Changes saved and applied.");
     } catch {
-      Alert.alert("Saved offline", "Will sync when online.");
+      showToast("Saved offline. Will sync when online.");
     }
   };
 
   const saveAllPinConfigs = async () => {
     const targetSensor = attachedSensors[0];
+    const saveTasks: Promise<any>[] = [];
+    const changedPins: number[] = [];
     for (const d of devices) {
       const cfg = pinConfigs[d.id] || {
         name: d.name || "",
         autoOn: false,
         autoOff: false,
         offDelay: 600,
+        loadWatt: DEFAULT_LOAD_WATT,
+        onExcludeStartHour: DEFAULT_EXCLUDE_START,
+        onExcludeEndHour: DEFAULT_EXCLUDE_END,
       };
-      await upsertPinConfigLocal({
-        device_mac: deviceId,
-        pin: d.id,
-        name: cfg.name || "",
-        auto_on: cfg.autoOn ? 1 : 0,
-        auto_off: cfg.autoOff ? 1 : 0,
-        off_delay: cfg.offDelay || 600,
-        pending_sync: 1,
-      });
-      try {
-        await savePinConfig({
-          device_mac: deviceId,
-          pin: d.id,
-          name: cfg.name || "",
-          auto_on: !!cfg.autoOn,
-          auto_off: !!cfg.autoOff,
-          off_delay: cfg.offDelay || 600,
-        });
-        await markPinConfigSynced(deviceId, d.id);
-      } catch {
-        // keep pending
-      }
+      const signature = JSON.stringify(cfg);
+      if (pinConfigBaseline[d.id] === signature) continue;
+      changedPins.push(d.id);
+      saveTasks.push(
+        (async () => {
+          await upsertPinConfigLocal({
+            device_mac: deviceId,
+            pin: d.id,
+            name: cfg.name || "",
+            auto_on: cfg.autoOn ? 1 : 0,
+            auto_off: cfg.autoOff ? 1 : 0,
+            off_delay: cfg.offDelay || 600,
+            load_watt: cfg.loadWatt ?? DEFAULT_LOAD_WATT,
+            on_exclude_start_hour:
+              cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
+            on_exclude_end_hour: cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END,
+            pending_sync: 1,
+          });
+          try {
+            await savePinConfig({
+              device_mac: deviceId,
+              pin: d.id,
+              name: cfg.name || "",
+              auto_on: !!cfg.autoOn,
+              auto_off: !!cfg.autoOff,
+              off_delay: cfg.offDelay || 600,
+              load_watt: cfg.loadWatt ?? DEFAULT_LOAD_WATT,
+              on_exclude_start_hour:
+                cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
+              on_exclude_end_hour: cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END,
+            });
+            await markPinConfigSynced(deviceId, d.id);
+          } catch {
+            // keep pending
+          }
+        })()
+      );
 
       if (targetSensor) {
-        try {
-          if (cfg.autoOn) {
-            await createSensorRule(targetSensor, d.id, "active", "on");
-          }
-          if (cfg.autoOff) {
-            await createSensorRule(
-              targetSensor,
-              d.id,
-              "inactive",
-              "off",
-              cfg.offDelay || 600,
-            );
-          }
-        } catch {
-          // ignore rule errors
-        }
+        saveTasks.push(
+          (async () => {
+            try {
+              if (cfg.autoOn) {
+                await createSensorRule(targetSensor, d.id, "active", "on");
+              }
+              if (cfg.autoOff) {
+                await createSensorRule(
+                  targetSensor,
+                  d.id,
+                  "inactive",
+                  "off",
+                  cfg.offDelay || 600,
+                );
+              }
+            } catch {
+              // ignore rule errors
+            }
+          })()
+        );
       }
     }
-    Alert.alert("Saved", "Pin configuration saved.");
+    if (!saveTasks.length) {
+      showToast("No changes to save.");
+      return;
+    }
+    await Promise.all(saveTasks);
+    if (changedPins.length) {
+      setPinConfigBaseline((prev) => {
+        const next = { ...prev };
+        for (const pin of changedPins) {
+          const cfg = pinConfigs[pin];
+          if (cfg) next[pin] = JSON.stringify(cfg);
+        }
+        return next;
+      });
+    }
+    showToast("Changes saved and applied.");
     setShowPinConfigModal(false);
   };
 
@@ -1022,14 +1138,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           </View>
           <View style={styles.deviceInfo}>
             <Text
-              style={[
-                styles.deviceButton,
-                isActive && styles.deviceButtonActive,
-              ]}
-            >
-              Button {device.position}
-            </Text>
-            <Text
               style={[styles.deviceName, isActive && styles.deviceNameActive]}
             >
               {displayName}
@@ -1155,21 +1263,26 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 </>
               )}
               <View style={styles.wifiContainer}>
-                <Wifi size={14} color="#5b8def" strokeWidth={2} />
                 <TouchableOpacity
-                  style={styles.configureButton}
+                  style={styles.actionChip}
                   onPress={openWifiModal}
+                  activeOpacity={0.85}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
-                  <Text style={styles.configureText}>Configure WiFi</Text>
+                  <Wifi size={14} color="#5b8def" strokeWidth={2} />
+                  <Text style={styles.actionChipText}>Wifi Config</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={styles.pinConfigIconBtn}
+                  style={styles.actionChip}
                   onPress={async () => {
-                    await loadPinConfigs();
                     setShowPinConfigModal(true);
+                    loadPinConfigs();
                   }}
+                  activeOpacity={0.85}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
                   <SlidersHorizontal size={14} color="#cbd5e1" />
+                  <Text style={styles.actionChipText}>Pin Config</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -1740,7 +1853,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           </View>
 
           <ScrollView style={styles.settingsBody}>
-            <View style={styles.settingsCard}>
+            <View style={styles.pinRulesContainer}>
               <Text style={styles.sectionLabel}>Pin Motion Rules</Text>
               <Text style={styles.pinRulesHint}>
                 Configure each pin: name, auto on/off, and timer.
@@ -1751,89 +1864,353 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                   autoOn: false,
                   autoOff: false,
                   offDelay: 600,
+                  onExcludeStartHour: DEFAULT_EXCLUDE_START,
+                  onExcludeEndHour: DEFAULT_EXCLUDE_END,
+                  loadWatt: DEFAULT_LOAD_WATT,
                 };
+                const displayName =
+                  cfg.name?.trim() || d.name?.trim() || `Pin ${d.id}`;
+                const offDelayMinutes = Math.max(
+                  1,
+                  Math.round((cfg.offDelay || 0) / 60)
+                );
+                const isExpanded = expandedPinId === d.id;
+                const activeTab =
+                  ruleTabs[d.id] ||
+                  (cfg.autoOn ? "on" : cfg.autoOff ? "off" : "on");
+                const summaryItems: string[] = [];
+                if (cfg.autoOn) {
+                  summaryItems.push(
+                    `Auto On exclude: ${formatExcludeSummary(
+                      cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
+                      cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END
+                    )}`
+                  );
+                }
+                if (cfg.autoOff) {
+                  summaryItems.push(
+                    `Auto Off: ${offDelayMinutes} min`
+                  );
+                }
+                const summaryText = summaryItems.length
+                  ? summaryItems.join(" • ")
+                  : "No rules enabled";
                 return (
                   <View key={d.id} style={styles.pinConfigCard}>
-                    <View style={styles.pinConfigHeader}>
-                      <Text style={styles.pinConfigTitle}>Pin {d.id}</Text>
-                    </View>
-
-                    <TextInput
-                      style={styles.pinNameInput}
-                      placeholder="Switch name"
-                      placeholderTextColor="#64748b"
-                      value={cfg.name}
-                      onChangeText={(v) => updatePinConfig(d.id, { name: v })}
-                    />
-
-                    <View style={styles.pinOptionRow}>
-                      <TouchableOpacity
-                        style={[
-                          styles.ruleOption,
-                          cfg.autoOn && styles.ruleOptionActive,
-                        ]}
-                        onPress={() =>
-                          updatePinConfig(d.id, { autoOn: !cfg.autoOn })
-                        }
-                      >
-                        <Text
-                          style={[
-                            styles.ruleText,
-                            cfg.autoOn && styles.ruleTextActive,
-                          ]}
-                        >
-                          Auto On
+                    <TouchableOpacity
+                      style={styles.pinConfigHeader}
+                      onPress={() => togglePinExpanded(d.id)}
+                      activeOpacity={0.8}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                      <View style={styles.pinConfigHeaderText}>
+                        <Text style={styles.pinConfigTitle}>
+                          {displayName} · Pin {d.id}
                         </Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={[
-                          styles.ruleOption,
-                          cfg.autoOff && styles.ruleOptionActive,
-                        ]}
-                        onPress={() =>
-                          updatePinConfig(d.id, { autoOff: !cfg.autoOff })
-                        }
-                      >
-                        <Text
-                          style={[
-                            styles.ruleText,
-                            cfg.autoOff && styles.ruleTextActive,
-                          ]}
-                        >
-                          Auto Off
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-
-                    {cfg.autoOff && (
-                      <View style={styles.durationRow}>
-                        {[120, 600, 1800].map((sec) => (
-                          <TouchableOpacity
-                            key={sec}
+                        {!isExpanded && (
+                          <Text
                             style={[
-                              styles.durationChip,
-                              cfg.offDelay === sec && styles.durationChipActive,
+                              styles.pinConfigSummary,
+                              (cfg.autoOn || cfg.autoOff) &&
+                                styles.pinConfigSummaryActive,
                             ]}
-                            onPress={() =>
-                              updatePinConfig(d.id, { offDelay: sec })
-                            }
+                          >
+                            {summaryText}
+                          </Text>
+                        )}
+                      </View>
+                      <View style={styles.pinConfigHeaderRight}>
+                        {isExpanded ? (
+                          <ChevronUp size={18} color="#cbd5e1" />
+                        ) : (
+                          <ChevronDown size={18} color="#cbd5e1" />
+                        )}
+                      </View>
+                    </TouchableOpacity>
+
+                    {isExpanded && (
+                      <View style={styles.pinConfigBody}>
+                        <TextInput
+                          style={styles.pinNameInput}
+                          placeholder="Switch name"
+                          placeholderTextColor="#64748b"
+                          value={cfg.name}
+                          onChangeText={(v) => updatePinConfig(d.id, { name: v })}
+                        />
+
+                        <View style={styles.wattRow}>
+                          <Text style={styles.wattLabel}>Power</Text>
+                          <View style={styles.wattInputWrap}>
+                            <TextInput
+                              style={styles.wattInput}
+                              keyboardType="numeric"
+                              placeholder="0"
+                              placeholderTextColor="#64748b"
+                              value={String(cfg.loadWatt ?? DEFAULT_LOAD_WATT)}
+                              onChangeText={(v) => {
+                                const digits = v.replace(/[^\d]/g, "");
+                                const num = digits ? Number(digits) : 0;
+                                updatePinConfig(d.id, {
+                                  loadWatt: clampWatt(num),
+                                });
+                              }}
+                            />
+                            <View style={styles.wattSuffix}>
+                              <Text style={styles.wattSuffixText}>W</Text>
+                            </View>
+                          </View>
+                        </View>
+
+                        <View style={styles.ruleTabs}>
+                          <TouchableOpacity
+                            style={[
+                              styles.ruleTab,
+                              activeTab === "on" && styles.ruleTabActive,
+                            ]}
+                            onPress={() => setRuleTab(d.id, "on")}
                           >
                             <Text
                               style={[
-                                styles.durationChipText,
-                                cfg.offDelay === sec &&
-                                  styles.durationChipTextActive,
+                                styles.ruleTabText,
+                                activeTab === "on" && styles.ruleTabTextActive,
                               ]}
                             >
-                              {sec === 120
-                                ? "2 min"
-                                : sec === 600
-                                  ? "10 min"
-                                  : "30 min"}
+                              Auto On
                             </Text>
                           </TouchableOpacity>
-                        ))}
+
+                          <TouchableOpacity
+                            style={[
+                              styles.ruleTab,
+                              activeTab === "off" && styles.ruleTabActive,
+                            ]}
+                            onPress={() => setRuleTab(d.id, "off")}
+                          >
+                            <Text
+                              style={[
+                                styles.ruleTabText,
+                                activeTab === "off" && styles.ruleTabTextActive,
+                              ]}
+                            >
+                              Auto Off
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        {activeTab === "off" && (
+                          <View>
+                            <View style={styles.durationRow}>
+                              {[120, 600, 1800].map((sec) => (
+                                <TouchableOpacity
+                                  key={sec}
+                                  style={[
+                                    styles.durationChip,
+                                    cfg.offDelay === sec &&
+                                      styles.durationChipActive,
+                                    !cfg.autoOff && styles.durationChipDisabled,
+                                  ]}
+                                  onPress={() =>
+                                    updatePinConfig(d.id, { offDelay: sec })
+                                  }
+                                >
+                                  <Text
+                                    style={[
+                                      styles.durationChipText,
+                                      cfg.offDelay === sec &&
+                                        styles.durationChipTextActive,
+                                      !cfg.autoOff &&
+                                        styles.durationChipTextDisabled,
+                                    ]}
+                                  >
+                                    {sec === 120
+                                      ? "2 min"
+                                      : sec === 600
+                                        ? "10 min"
+                                        : "30 min"}
+                                  </Text>
+                                </TouchableOpacity>
+                              ))}
+                            </View>
+                            <Text style={styles.ruleNote}>
+                              {displayName} will turn off automatically after no
+                              activity for {offDelayMinutes} minutes.
+                            </Text>
+                            <TouchableOpacity
+                              style={[
+                                styles.ruleEnableBtn,
+                                cfg.autoOff && styles.ruleEnableBtnActive,
+                              ]}
+                              onPress={() =>
+                                updatePinConfig(d.id, { autoOff: !cfg.autoOff })
+                              }
+                            >
+                              <Text
+                                style={[
+                                  styles.ruleEnableText,
+                                  cfg.autoOff && styles.ruleEnableTextActive,
+                                ]}
+                              >
+                                {cfg.autoOff ? "Enabled" : "Enable"}
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
+
+                        {activeTab === "on" && (
+                          <View style={styles.excludeCard}>
+                            <Text style={styles.excludeLabel}>
+                              Exclude Auto On Between
+                            </Text>
+                            <Text style={styles.ruleNote}>
+                              Exclude hours mean this switch ignores motion during
+                              that time. Useful if you don't want lights turning on
+                              at night and disturbing sleep.
+                            </Text>
+                            <View style={styles.excludeRow}>
+                              <View style={styles.excludeBlock}>
+                                <Text style={styles.excludeBlockLabel}>Start</Text>
+                                <ScrollView
+                                  horizontal
+                                  showsHorizontalScrollIndicator={false}
+                                  contentContainerStyle={styles.hourScroll}
+                                  contentOffset={{
+                                    x: getHourScrollOffset(
+                                      cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START
+                                    ),
+                                    y: 0,
+                                  }}
+                                  ref={(node) => {
+                                    hourScrollRefs.current[`${d.id}-start`] =
+                                      node;
+                                  }}
+                                >
+                                  {Array.from({ length: 24 }).map((_, hour) => (
+                                    <TouchableOpacity
+                                      key={`start-${hour}`}
+                                      style={[
+                                        styles.hourChip,
+                                        cfg.onExcludeStartHour === hour &&
+                                          styles.hourChipActive,
+                                        !cfg.autoOn &&
+                                          cfg.onExcludeStartHour === hour &&
+                                          styles.hourChipDisabled,
+                                      ]}
+                                      onPress={() =>
+                                        updatePinConfig(d.id, {
+                                          onExcludeStartHour: hour,
+                                        })
+                                      }
+                                      onPressIn={() =>
+                                        hourScrollRefs.current[
+                                          `${d.id}-start`
+                                        ]?.scrollTo({
+                                          x: getHourScrollOffset(hour),
+                                          animated: true,
+                                        })
+                                      }
+                                    >
+                                      <Text
+                                        style={[
+                                        styles.hourChipText,
+                                        cfg.onExcludeStartHour === hour &&
+                                          styles.hourChipTextActive,
+                                        !cfg.autoOn &&
+                                          cfg.onExcludeStartHour === hour &&
+                                          styles.hourChipTextDisabled,
+                                      ]}
+                                    >
+                                      {formatHourLabel(hour)}
+                                    </Text>
+                                  </TouchableOpacity>
+                                  ))}
+                                </ScrollView>
+                              </View>
+
+                              <View style={styles.excludeBlock}>
+                                <Text style={styles.excludeBlockLabel}>End</Text>
+                                <ScrollView
+                                  horizontal
+                                  showsHorizontalScrollIndicator={false}
+                                  contentContainerStyle={styles.hourScroll}
+                                  contentOffset={{
+                                    x: getHourScrollOffset(
+                                      cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END
+                                    ),
+                                    y: 0,
+                                  }}
+                                  ref={(node) => {
+                                    hourScrollRefs.current[`${d.id}-end`] = node;
+                                  }}
+                                >
+                                  {Array.from({ length: 24 }).map((_, hour) => (
+                                    <TouchableOpacity
+                                      key={`end-${hour}`}
+                                      style={[
+                                        styles.hourChip,
+                                        cfg.onExcludeEndHour === hour &&
+                                          styles.hourChipActive,
+                                        !cfg.autoOn &&
+                                          cfg.onExcludeEndHour === hour &&
+                                          styles.hourChipDisabled,
+                                      ]}
+                                      onPress={() =>
+                                        updatePinConfig(d.id, {
+                                          onExcludeEndHour: hour,
+                                        })
+                                      }
+                                      onPressIn={() =>
+                                        hourScrollRefs.current[
+                                          `${d.id}-end`
+                                        ]?.scrollTo({
+                                          x: getHourScrollOffset(hour),
+                                          animated: true,
+                                        })
+                                      }
+                                    >
+                                      <Text
+                                        style={[
+                                        styles.hourChipText,
+                                        cfg.onExcludeEndHour === hour &&
+                                          styles.hourChipTextActive,
+                                        !cfg.autoOn &&
+                                          cfg.onExcludeEndHour === hour &&
+                                          styles.hourChipTextDisabled,
+                                      ]}
+                                    >
+                                      {formatHourLabel(hour)}
+                                    </Text>
+                                  </TouchableOpacity>
+                                  ))}
+                                </ScrollView>
+                              </View>
+                            </View>
+                            <TouchableOpacity
+                              style={[
+                                styles.ruleEnableBtn,
+                                cfg.autoOn && styles.ruleEnableBtnActive,
+                              ]}
+                              onPress={() =>
+                                updatePinConfig(d.id, {
+                                  autoOn: !cfg.autoOn,
+                                  onExcludeStartHour:
+                                    cfg.onExcludeStartHour ??
+                                    DEFAULT_EXCLUDE_START,
+                                  onExcludeEndHour:
+                                    cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END,
+                                })
+                              }
+                            >
+                              <Text
+                                style={[
+                                  styles.ruleEnableText,
+                                  cfg.autoOn && styles.ruleEnableTextActive,
+                                ]}
+                              >
+                                {cfg.autoOn ? "Enabled" : "Enable"}
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
                       </View>
                     )}
                   </View>
@@ -1849,6 +2226,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             <TouchableOpacity
               style={styles.closeBigBtn}
               onPress={() => setShowPinConfigModal(false)}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             >
               <Text style={styles.closeBigBtnText}>Close</Text>
             </TouchableOpacity>
@@ -1949,17 +2327,6 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 8,
   },
-  pinConfigIconBtn: {
-    marginLeft: 6,
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "rgba(148, 163, 184, 0.35)",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(15, 23, 42, 0.5)",
-  },
   boardInfo: {
     flex: 1,
   },
@@ -2005,21 +2372,23 @@ const styles = StyleSheet.create({
   wifiContainer: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(91, 141, 239, 0.15)",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "rgba(91, 141, 239, 0.4)",
+    gap: 8,
+  },
+  actionChip: {
+    flexDirection: "row",
+    alignItems: "center",
     gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(91, 141, 239, 0.35)",
+    backgroundColor: "rgba(91, 141, 239, 0.12)",
   },
-  configureButton: {
-    paddingHorizontal: 4,
-  },
-  configureText: {
-    fontSize: 13,
-    color: "#5b8def",
-    fontWeight: "600",
+  actionChipText: {
+    fontSize: 12,
+    color: "#cbd5e1",
+    fontWeight: "700",
   },
   modalOverlay: {
     flex: 1,
@@ -2411,6 +2780,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#1f2937",
   },
+  pinRulesContainer: {
+    backgroundColor: "transparent",
+    borderRadius: 0,
+    padding: 0,
+    marginBottom: 16,
+    borderWidth: 0,
+  },
   settingsRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -2447,7 +2823,28 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+  },
+  pinConfigHeaderRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  pinConfigHeaderText: {
+    flex: 1,
+    paddingRight: 10,
+  },
+  pinConfigSummary: {
+    color: "#94a3b8",
+    fontSize: 11,
+    marginTop: 2,
+  },
+  pinConfigSummaryActive: {
+    color: "#86efac",
+  },
+  pinConfigBody: {
+    paddingTop: 2,
   },
   pinConfigTitle: {
     color: "#e2e8f0",
@@ -2609,5 +3006,162 @@ const styles = StyleSheet.create({
   },
   durationChipTextActive: {
     color: "#86efac",
+  },
+  durationChipDisabled: {
+    borderColor: "#475569",
+    backgroundColor: "rgba(148, 163, 184, 0.08)",
+  },
+  durationChipTextDisabled: {
+    color: "#94a3b8",
+  },
+  wattRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+    gap: 12,
+  },
+  wattLabel: {
+    color: "#94a3b8",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  wattInputWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#334155",
+    borderRadius: 10,
+    backgroundColor: "#0f172a",
+    overflow: "hidden",
+  },
+  wattInput: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    color: "#fff",
+    minWidth: 60,
+    textAlign: "right",
+  },
+  wattSuffix: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: "#111827",
+    borderLeftWidth: 1,
+    borderLeftColor: "#334155",
+  },
+  wattSuffixText: {
+    color: "#cbd5e1",
+    fontWeight: "700",
+    fontSize: 12,
+  },
+  ruleTabs: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  ruleTab: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#0b1220",
+    alignItems: "center",
+  },
+  ruleTabActive: {
+    borderColor: "#2563eb",
+    backgroundColor: "rgba(37, 99, 235, 0.18)",
+  },
+  ruleTabText: {
+    color: "#cbd5e1",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  ruleTabTextActive: {
+    color: "#bfdbfe",
+  },
+  ruleEnableBtn: {
+    marginTop: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#0b1220",
+    alignItems: "center",
+  },
+  ruleEnableBtnActive: {
+    borderColor: "#22c55e",
+    backgroundColor: "rgba(34, 197, 94, 0.18)",
+  },
+  ruleEnableText: {
+    color: "#cbd5e1",
+    fontWeight: "700",
+    fontSize: 13,
+  },
+  ruleEnableTextActive: {
+    color: "#86efac",
+  },
+  ruleNote: {
+    color: "#94a3b8",
+    fontSize: 12,
+    marginTop: 8,
+    lineHeight: 16,
+  },
+  excludeCard: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "#0f172a",
+    borderWidth: 1,
+    borderColor: "#1f2937",
+  },
+  excludeLabel: {
+    color: "#e2e8f0",
+    fontSize: 12,
+    fontWeight: "700",
+    marginBottom: 8,
+  },
+  excludeRow: {
+    gap: 12,
+  },
+  excludeBlock: {
+    gap: 6,
+  },
+  excludeBlockLabel: {
+    color: "#94a3b8",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  hourScroll: {
+    paddingRight: 4,
+    gap: 8,
+  },
+  hourChip: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#0b1220",
+    minWidth: HOUR_CHIP_MIN_WIDTH,
+    alignItems: "center",
+  },
+  hourChipActive: {
+    borderColor: "#f59e0b",
+    backgroundColor: "rgba(245, 158, 11, 0.18)",
+  },
+  hourChipDisabled: {
+    borderColor: "#475569",
+    backgroundColor: "rgba(148, 163, 184, 0.08)",
+  },
+  hourChipText: {
+    color: "#cbd5e1",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  hourChipTextActive: {
+    color: "#fde68a",
+  },
+  hourChipTextDisabled: {
+    color: "#94a3b8",
   },
 });
