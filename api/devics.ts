@@ -24,6 +24,8 @@ export interface NearByDevice {
   is_powered: boolean;
   room_name: string;
   room_icon: string;
+  sensors?: string[];
+  sensor_ids?: string[];
 }
 
 export interface AddDevice {
@@ -54,6 +56,8 @@ export interface WifiPayload {
     pin?: number;
     color?: number[];
     brightness?: number;
+    power?: number;
+    speed?: number;
   };
 }
 

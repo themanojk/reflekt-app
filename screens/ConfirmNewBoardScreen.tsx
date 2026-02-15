@@ -19,8 +19,49 @@ type Room = {
   icon?: string;
 };
 
+const normalizeSensors = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return Array.from(
+      new Set(
+        value
+          .map((v) => String(v || "").trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    );
+  }
+  if (typeof value === "string") {
+    return Array.from(
+      new Set(
+        value
+          .split(",")
+          .map((v) => v.trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    );
+  }
+  return [];
+};
+
+const extractSensorsFromAddResponse = (payload: any): string[] => {
+  const candidates = [
+    payload?.sensors,
+    payload?.sensor_ids,
+    payload?.device?.sensors,
+    payload?.device?.sensor_ids,
+    payload?.data?.sensors,
+    payload?.data?.sensor_ids,
+    payload?.result?.sensors,
+    payload?.result?.sensor_ids,
+  ];
+  for (const c of candidates) {
+    const list = normalizeSensors(c);
+    if (list.length) return list;
+  }
+  return [];
+};
+
 export default function ConfirmNewBoardScreen({ navigation, route }: any) {
-  const { pendingDeviceId } = route.params || {};
+  const { pendingDeviceId, bleTransportId } = route.params || {};
   const [rooms, setRooms] = useState<Room[]>([]);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
@@ -34,6 +75,10 @@ export default function ConfirmNewBoardScreen({ navigation, route }: any) {
         const localRooms = await getRoomsLocal();
         if (mounted && localRooms.length) {
           setRooms(localRooms as Room[]);
+          if (!selectedRoomId) {
+            setSelectedRoomId(localRooms[0].id);
+            setSelectedRoom(localRooms[0] as Room);
+          }
         }
         const byRoom = await fetchDevicesByRoomForUser();
         if (mounted && Array.isArray(byRoom)) {
@@ -46,7 +91,12 @@ export default function ConfirmNewBoardScreen({ navigation, route }: any) {
           nextRooms.forEach((r) => {
             if (r?.id) unique.set(r.id, r);
           });
-          setRooms(Array.from(unique.values()));
+          const roomsList = Array.from(unique.values());
+          setRooms(roomsList);
+          if (!selectedRoomId && roomsList.length) {
+            setSelectedRoomId(roomsList[0].id);
+            setSelectedRoom(roomsList[0]);
+          }
         }
       } catch {
         // ignore; local rooms are already used
@@ -74,12 +124,13 @@ export default function ConfirmNewBoardScreen({ navigation, route }: any) {
     if (saving) return;
     setSaving(true);
     try {
-      await addDevice({
+      const addRes = await addDevice({
         title: boardName.trim(),
         room_id: selectedRoomId,
         device_id: pendingDeviceId,
         os: Platform.OS,
       });
+      const sensors = extractSensorsFromAddResponse(addRes);
       navigation.reset({
         index: 1,
         routes: [
@@ -91,10 +142,11 @@ export default function ConfirmNewBoardScreen({ navigation, route }: any) {
               deviceId: pendingDeviceId,
               roomIcon: selectedRoom?.icon || "",
               status: true,
-              iosBleId: Platform.OS === "ios" ? undefined : undefined,
-              bleId: pendingDeviceId,
+              iosBleId: Platform.OS === "ios" ? (bleTransportId || pendingDeviceId) : undefined,
+              bleId: bleTransportId || pendingDeviceId,
               service_id: "",
               roomName: selectedRoom?.name || "",
+              sensors,
             },
           },
         ],

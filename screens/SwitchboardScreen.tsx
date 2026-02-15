@@ -21,6 +21,7 @@ import {
   markPinConfigSynced,
   upsertPinConfigLocal,
 } from "@/db/pin_configs";
+import { getSwitchboardsLocal } from "@/db/switchboards.local";
 import BLEManagerService from "@/services/bleManager";
 import {
   addIgnoredSensor,
@@ -134,6 +135,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     status,
     iosBleId,
     bleId,
+    sensors: initialSensors,
   } = route.params;
   const [devices, setDevices] = useState<Device[]>([]);
   const [activeDevice, setActiveDevice] = useState<BleDevice>();
@@ -161,7 +163,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [pendingSensor, setPendingSensor] = useState<string | null>(null);
   const [sensorStep, setSensorStep] = useState<"prompt" | "attached">("prompt");
   const [ignoredSensors, setIgnoredSensors] = useState<string[]>([]);
-  const [attachedSensors, setAttachedSensors] = useState<string[]>([]);
+  const [attachedSensors, setAttachedSensors] = useState<string[]>(
+    Array.isArray(initialSensors) ? initialSensors : [],
+  );
   const [pinConfigs, setPinConfigs] = useState<Record<number, any>>({});
   const [expandedPinId, setExpandedPinId] = useState<number | null>(null);
   const [ruleTabs, setRuleTabs] = useState<Record<number, "on" | "off">>({});
@@ -179,6 +183,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const mountedRef = React.useRef(true);
 
   const IconComponent = ROOM_ICONS[roomIcon] ?? ROOM_ICONS["home"];
+  const bleLog = (...args: any[]) =>
+    console.log(`[SwitchboardBLE][${deviceId}]`, ...args);
 
   const levelToPercent = (level: number) =>
     FAN_SPEED_LEVELS[Math.max(0, Math.min(5, Math.round(level)))];
@@ -187,12 +193,23 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     return () => {
       // on unmount
       mountedRef.current = false;
+      bleLog("Unmount: tearing down BLE listeners");
       monitorRef.current?.remove?.();
       monitorRef.current?.unsubscribe?.();
       disconnectRef.current?.remove?.();
       disconnectRef.current?.unsubscribe?.();
     };
   }, []);
+
+  useEffect(() => {
+    bleLog("Screen mount params", {
+      status,
+      bleId,
+      iosBleId,
+      service_id,
+      switchboardName,
+    });
+  }, [bleId, iosBleId, service_id, status, switchboardName]);
 
   useEffect(() => {
     getIgnoredSensors(deviceId).then(setIgnoredSensors);
@@ -253,6 +270,12 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   useEffect(() => {
     // BLE online should reflect actual BLE connection state
+    const nextOnline = !!activeDevice && services.length > 0;
+    bleLog("State sync", {
+      activeDeviceId: activeDevice?.id,
+      servicesCount: services.length,
+      nextOnline,
+    });
     if (!activeDevice || !services.length) {
       setIsOnline(false);
     } else {
@@ -265,12 +288,18 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   }, [deviceId, serviceId]);
 
   useEffect(() => {
-    if (!activeDevice || !services.length || !isOnline) return;
+    if (!activeDevice || !services.length) return;
     teardownBle();
+    bleLog("Subscribing to BLE data", {
+      activeDeviceId: activeDevice.id,
+      serviceId: services[0],
+    });
 
     const onReceived = (data: any) => {
       if (!data || typeof data !== "string") return;
       const raw = data.trim();
+      console.log("Printing Raw data");
+      console.log(raw);
       if (raw.startsWith("SENSORS:")) {
         const list = raw
           .replace("SENSORS:", "")
@@ -331,6 +360,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     };
 
     const onError = (err: any) => {
+      bleLog("BLE monitor error", err?.message || err);
       teardownBle();
       if (mountedRef.current) {
         setIsOnline(false);
@@ -350,6 +380,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     try {
       // @ts-ignore – many ble managers follow this pattern
       const dsub = bleManager.onDeviceDisconnected?.(activeDevice.id, () => {
+        bleLog("Device disconnected callback", { activeDeviceId: activeDevice.id });
         teardownBle();
         if (mountedRef.current) {
           setIsOnline(false);
@@ -366,12 +397,16 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     } catch {}
 
     return () => {
+      bleLog("BLE subscription cleanup", {
+        activeDeviceId: activeDevice?.id,
+        serviceId: services?.[0],
+      });
       teardownBle();
       disconnectRef.current?.remove?.();
       disconnectRef.current?.unsubscribe?.();
       disconnectRef.current = null;
     };
-  }, [activeDevice, services, isOnline]);
+  }, [activeDevice, services]);
 
   const onReceivedOverWifi = (pins: any) => {
     const pinsData = pins;
@@ -392,6 +427,23 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const loadSwitchboardData = async () => {
     setLoading(true);
+
+    // Load sensors from local DB if not provided via route params
+    if (!attachedSensors.length) {
+      try {
+        const allBoards = await getSwitchboardsLocal();
+        const thisBoard = allBoards.find(
+          (b) => b.id.toUpperCase() === deviceId.toUpperCase(),
+        );
+        if (thisBoard?.sensors) {
+          const parsed = thisBoard.sensors
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          if (parsed.length) setAttachedSensors(parsed);
+        }
+      } catch {}
+    }
 
     try {
       // 1️⃣ service_id is ALWAYS available
@@ -525,8 +577,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           autoOff: !!c.auto_off,
           offDelay: c.off_delay || 600,
           loadWatt: c.load_watt ?? DEFAULT_LOAD_WATT,
-          onExcludeStartHour:
-            c.on_exclude_start_hour ?? DEFAULT_EXCLUDE_START,
+          onExcludeStartHour: c.on_exclude_start_hour ?? DEFAULT_EXCLUDE_START,
           onExcludeEndHour: c.on_exclude_end_hour ?? DEFAULT_EXCLUDE_END,
         };
         baseline[c.pin] = JSON.stringify(map[c.pin]);
@@ -565,8 +616,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             load_watt: c.load_watt ?? DEFAULT_LOAD_WATT,
             on_exclude_start_hour:
               c.on_exclude_start_hour ?? DEFAULT_EXCLUDE_START,
-            on_exclude_end_hour:
-              c.on_exclude_end_hour ?? DEFAULT_EXCLUDE_END,
+            on_exclude_end_hour: c.on_exclude_end_hour ?? DEFAULT_EXCLUDE_END,
             pending_sync: 0,
           });
         }
@@ -593,8 +643,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           load_watt: cfg.load_watt ?? DEFAULT_LOAD_WATT,
           on_exclude_start_hour:
             cfg.on_exclude_start_hour ?? DEFAULT_EXCLUDE_START,
-          on_exclude_end_hour:
-            cfg.on_exclude_end_hour ?? DEFAULT_EXCLUDE_END,
+          on_exclude_end_hour: cfg.on_exclude_end_hour ?? DEFAULT_EXCLUDE_END,
         });
         await markPinConfigSynced(cfg.device_mac, cfg.pin);
       } catch {
@@ -618,7 +667,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     });
   };
 
-
   const togglePinExpanded = (pin: number) => {
     setExpandedPinId((prev) => (prev === pin ? null : pin));
   };
@@ -639,8 +687,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       auto_off: cfg.autoOff ? 1 : 0,
       off_delay: cfg.offDelay || 600,
       load_watt: cfg.loadWatt ?? DEFAULT_LOAD_WATT,
-      on_exclude_start_hour:
-        cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
+      on_exclude_start_hour: cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
       on_exclude_end_hour: cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END,
       pending_sync: 1,
     });
@@ -654,8 +701,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         auto_off: !!cfg.autoOff,
         off_delay: cfg.offDelay || 600,
         load_watt: cfg.loadWatt ?? DEFAULT_LOAD_WATT,
-        on_exclude_start_hour:
-          cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
+        on_exclude_start_hour: cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
         on_exclude_end_hour: cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END,
       });
       await markPinConfigSynced(deviceId, pin);
@@ -714,7 +760,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           } catch {
             // keep pending
           }
-        })()
+        })(),
       );
 
       if (targetSensor) {
@@ -736,7 +782,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             } catch {
               // ignore rule errors
             }
-          })()
+          })(),
         );
       }
     }
@@ -760,16 +806,18 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   };
 
   const handleAvailableSensors = async (list: string[]) => {
+    console.log("Handle available sensors");
     if (!list.length) return;
     const unique = Array.from(new Set(list.map((s) => s.toUpperCase())));
     setAvailableSensors(unique);
-
+    console.log(list);
     for (const mac of unique) {
       if (ignoredSensors.includes(mac)) {
         continue;
       }
       try {
         const res = await checkSensorAttachment(mac);
+        console.log(res, mac);
         if (!res?.attached) {
           setPendingSensor(mac);
           setShowSensorModal(true);
@@ -797,6 +845,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     if (!pendingSensor) return;
     try {
       const apiRes = await attachSensorToDevice(deviceId, pendingSensor);
+      const attached = String(pendingSensor).trim().toUpperCase();
+      if (attached) {
+        setAttachedSensors((prev) => Array.from(new Set([...prev, attached])));
+      }
       if (services.length && activeDevice) {
         const cmd = `SENSOR_ATTACH:${pendingSensor}`;
         await bleManager.sendData(activeDevice, cmd, services[0]);
@@ -862,8 +914,16 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const getBleConnection = async (macAddress: string) => {
     try {
-      if (connectingBleRef.current) return;
+      if (connectingBleRef.current) {
+        bleLog("Connection skipped: another BLE connect is in progress");
+        return;
+      }
       connectingBleRef.current = true;
+      bleLog("Starting getBleConnection", {
+        macAddress,
+        routeBleId: bleId,
+        routeIosBleId: iosBleId,
+      });
       let transportId = (bleId || iosBleId || "").toString();
       if (!transportId) {
         try {
@@ -889,17 +949,30 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       if (!transportId) transportId = (macAddress || "").toString();
 
       const targetId = transportId.toLowerCase();
+      bleLog("Resolved target transport id", { targetId });
       await bleManager.stopScan();
-      await bleManager.cancelById(targetId);
       const already = await bleManager.getAlreadyConnected();
+      bleLog("Already connected devices", {
+        count: already.length,
+        ids: already.map((d) => d.id),
+      });
 
       let connected: BleDevice | null =
         already.find((d) => d.id.toLowerCase() === targetId) || null;
-      if (activeDevice && activeDevice.id?.toLowerCase() === targetId) {
+      if (
+        activeDevice &&
+        activeDevice.id?.toLowerCase() === targetId &&
+        services.length > 0
+      ) {
+        bleLog("Skipping connect: already active with services", {
+          activeDeviceId: activeDevice.id,
+          servicesCount: services.length,
+        });
         connectingBleRef.current = false;
         return;
       }
       if (!connected) {
+        bleLog("Connecting via connectSafely", { targetId });
         connected = await bleManager.connectSafely(targetId, {
           retries: 1,
           connectTimeoutMs: 5000,
@@ -910,13 +983,20 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       }
 
       if (connected) {
-        setIsOnline(true);
+        bleLog("Connected to BLE device", { connectedId: connected.id });
         setActiveDevice(connected);
         const serviceIds = await bleManager.getCustomServiceId(connected);
+        bleLog("Resolved custom services", {
+          connectedId: connected.id,
+          serviceIds,
+        });
         setServices(serviceIds);
+        setIsOnline(serviceIds.length > 0);
+      } else {
+        bleLog("Failed to connect: connected device is null");
       }
     } catch (err) {
-      // no-op
+      bleLog("getBleConnection failed", err);
     } finally {
       connectingBleRef.current = false;
     }
@@ -939,7 +1019,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     }
 
     try {
-      const text = `PIN:${pin}:STATUS:${command}`;
+      const text = `PIN:${pin};STATUS:${command}`;
       await bleManager.sendData(activeDevice, text, services[0]);
       return true;
     } catch (e) {
@@ -1053,11 +1133,11 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
     if (!services.length || !activeDevice) {
       // Wi-Fi fallback
-      // const payload: WifiPayload = {
-      //   mac_address: deviceId,
-      //   data: { cmd: 'speed', pin: device.id, speed: clamped }
-      // };
-      // await sendCommandOverWifi(payload);
+      const payload: WifiPayload = {
+        mac_address: deviceId,
+        data: { cmd: "fan_speed", pin: device.id, power: val },
+      };
+      await sendCommandOverWifi(payload);
       return;
     }
 
@@ -1233,6 +1313,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           <View style={styles.boardInfo}>
             <Text style={styles.boardName}>
               {switchboardName || "Main Panel"}
+            </Text>
+            <Text style={styles.boardMacText}>
+              DIS MAC: {String(deviceId || "N/A").toUpperCase()}
             </Text>
             <View style={styles.boardStatus}>
               {isOnline && (
@@ -1872,7 +1955,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                   cfg.name?.trim() || d.name?.trim() || `Pin ${d.id}`;
                 const offDelayMinutes = Math.max(
                   1,
-                  Math.round((cfg.offDelay || 0) / 60)
+                  Math.round((cfg.offDelay || 0) / 60),
                 );
                 const isExpanded = expandedPinId === d.id;
                 const activeTab =
@@ -1883,18 +1966,19 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                   summaryItems.push(
                     `Auto On exclude: ${formatExcludeSummary(
                       cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
-                      cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END
-                    )}`
+                      cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END,
+                    )}`,
                   );
                 }
                 if (cfg.autoOff) {
-                  summaryItems.push(
-                    `Auto Off: ${offDelayMinutes} min`
-                  );
+                  summaryItems.push(`Auto Off: ${offDelayMinutes} min`);
                 }
-                const summaryText = summaryItems.length
-                  ? summaryItems.join(" • ")
-                  : "No rules enabled";
+                const summaryText =
+                  attachedSensors.length === 0
+                    ? ""
+                    : summaryItems.length
+                      ? summaryItems.join(" • ")
+                      : "No rules enabled";
                 return (
                   <View key={d.id} style={styles.pinConfigCard}>
                     <TouchableOpacity
@@ -1935,7 +2019,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                           placeholder="Switch name"
                           placeholderTextColor="#64748b"
                           value={cfg.name}
-                          onChangeText={(v) => updatePinConfig(d.id, { name: v })}
+                          onChangeText={(v) =>
+                            updatePinConfig(d.id, { name: v })
+                          }
                         />
 
                         <View style={styles.wattRow}>
@@ -1961,43 +2047,47 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                           </View>
                         </View>
 
-                        <View style={styles.ruleTabs}>
-                          <TouchableOpacity
-                            style={[
-                              styles.ruleTab,
-                              activeTab === "on" && styles.ruleTabActive,
-                            ]}
-                            onPress={() => setRuleTab(d.id, "on")}
-                          >
-                            <Text
+                        {attachedSensors.length > 0 && (
+                          <View style={styles.ruleTabs}>
+                            <TouchableOpacity
                               style={[
-                                styles.ruleTabText,
-                                activeTab === "on" && styles.ruleTabTextActive,
+                                styles.ruleTab,
+                                activeTab === "on" && styles.ruleTabActive,
                               ]}
+                              onPress={() => setRuleTab(d.id, "on")}
                             >
-                              Auto On
-                            </Text>
-                          </TouchableOpacity>
+                              <Text
+                                style={[
+                                  styles.ruleTabText,
+                                  activeTab === "on" &&
+                                    styles.ruleTabTextActive,
+                                ]}
+                              >
+                                Auto On
+                              </Text>
+                            </TouchableOpacity>
 
-                          <TouchableOpacity
-                            style={[
-                              styles.ruleTab,
-                              activeTab === "off" && styles.ruleTabActive,
-                            ]}
-                            onPress={() => setRuleTab(d.id, "off")}
-                          >
-                            <Text
+                            <TouchableOpacity
                               style={[
-                                styles.ruleTabText,
-                                activeTab === "off" && styles.ruleTabTextActive,
+                                styles.ruleTab,
+                                activeTab === "off" && styles.ruleTabActive,
                               ]}
+                              onPress={() => setRuleTab(d.id, "off")}
                             >
-                              Auto Off
-                            </Text>
-                          </TouchableOpacity>
-                        </View>
+                              <Text
+                                style={[
+                                  styles.ruleTabText,
+                                  activeTab === "off" &&
+                                    styles.ruleTabTextActive,
+                                ]}
+                              >
+                                Auto Off
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
 
-                        {activeTab === "off" && (
+                        {attachedSensors.length > 0 && activeTab === "off" && (
                           <View>
                             <View style={styles.durationRow}>
                               {[120, 600, 1800].map((sec) => (
@@ -2056,26 +2146,29 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                           </View>
                         )}
 
-                        {activeTab === "on" && (
+                        {attachedSensors.length > 0 && activeTab === "on" && (
                           <View style={styles.excludeCard}>
                             <Text style={styles.excludeLabel}>
                               Exclude Auto On Between
                             </Text>
                             <Text style={styles.ruleNote}>
-                              Exclude hours mean this switch ignores motion during
-                              that time. Useful if you don't want lights turning on
-                              at night and disturbing sleep.
+                              Exclude hours mean this switch ignores motion
+                              during that time. Useful if you don't want lights
+                              turning on at night and disturbing sleep.
                             </Text>
                             <View style={styles.excludeRow}>
                               <View style={styles.excludeBlock}>
-                                <Text style={styles.excludeBlockLabel}>Start</Text>
+                                <Text style={styles.excludeBlockLabel}>
+                                  Start
+                                </Text>
                                 <ScrollView
                                   horizontal
                                   showsHorizontalScrollIndicator={false}
                                   contentContainerStyle={styles.hourScroll}
                                   contentOffset={{
                                     x: getHourScrollOffset(
-                                      cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START
+                                      cfg.onExcludeStartHour ??
+                                        DEFAULT_EXCLUDE_START,
                                     ),
                                     y: 0,
                                   }}
@@ -2111,35 +2204,39 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                                     >
                                       <Text
                                         style={[
-                                        styles.hourChipText,
-                                        cfg.onExcludeStartHour === hour &&
-                                          styles.hourChipTextActive,
-                                        !cfg.autoOn &&
+                                          styles.hourChipText,
                                           cfg.onExcludeStartHour === hour &&
-                                          styles.hourChipTextDisabled,
-                                      ]}
-                                    >
-                                      {formatHourLabel(hour)}
-                                    </Text>
-                                  </TouchableOpacity>
+                                            styles.hourChipTextActive,
+                                          !cfg.autoOn &&
+                                            cfg.onExcludeStartHour === hour &&
+                                            styles.hourChipTextDisabled,
+                                        ]}
+                                      >
+                                        {formatHourLabel(hour)}
+                                      </Text>
+                                    </TouchableOpacity>
                                   ))}
                                 </ScrollView>
                               </View>
 
                               <View style={styles.excludeBlock}>
-                                <Text style={styles.excludeBlockLabel}>End</Text>
+                                <Text style={styles.excludeBlockLabel}>
+                                  End
+                                </Text>
                                 <ScrollView
                                   horizontal
                                   showsHorizontalScrollIndicator={false}
                                   contentContainerStyle={styles.hourScroll}
                                   contentOffset={{
                                     x: getHourScrollOffset(
-                                      cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END
+                                      cfg.onExcludeEndHour ??
+                                        DEFAULT_EXCLUDE_END,
                                     ),
                                     y: 0,
                                   }}
                                   ref={(node) => {
-                                    hourScrollRefs.current[`${d.id}-end`] = node;
+                                    hourScrollRefs.current[`${d.id}-end`] =
+                                      node;
                                   }}
                                 >
                                   {Array.from({ length: 24 }).map((_, hour) => (
@@ -2169,17 +2266,17 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                                     >
                                       <Text
                                         style={[
-                                        styles.hourChipText,
-                                        cfg.onExcludeEndHour === hour &&
-                                          styles.hourChipTextActive,
-                                        !cfg.autoOn &&
+                                          styles.hourChipText,
                                           cfg.onExcludeEndHour === hour &&
-                                          styles.hourChipTextDisabled,
-                                      ]}
-                                    >
-                                      {formatHourLabel(hour)}
-                                    </Text>
-                                  </TouchableOpacity>
+                                            styles.hourChipTextActive,
+                                          !cfg.autoOn &&
+                                            cfg.onExcludeEndHour === hour &&
+                                            styles.hourChipTextDisabled,
+                                        ]}
+                                      >
+                                        {formatHourLabel(hour)}
+                                      </Text>
+                                    </TouchableOpacity>
                                   ))}
                                 </ScrollView>
                               </View>
@@ -2335,6 +2432,12 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     color: "#fff",
     marginBottom: 8,
+  },
+  boardMacText: {
+    fontSize: 11,
+    color: "#94a3b8",
+    marginBottom: 10,
+    fontWeight: "500",
   },
   boardStatus: {
     flexDirection: "row",

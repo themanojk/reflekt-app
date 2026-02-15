@@ -15,6 +15,7 @@ export interface SwitchboardLocal {
   device_id?: string | undefined;
 
   firmware_version?: string | null;
+  sensors?: string; // comma-separated sensor MACs
   updatedAt?: number;
 }
 
@@ -26,8 +27,8 @@ export async function upsertSwitchboardLocal(sb: SwitchboardLocal) {
   console.log("Calling upsert");
   await db.runAsync(
     `INSERT OR REPLACE INTO switchboards
-     (id, name, room_name, room_id, service_id, icon, color, updatedAt)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+     (id, name, room_name, room_id, service_id, icon, color, sensors, updatedAt)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       sb.id,
       sb.name,
@@ -36,6 +37,7 @@ export async function upsertSwitchboardLocal(sb: SwitchboardLocal) {
       sb.service_id,
       sb.icon,
       sb.color,
+      sb.sensors || "",
       Date.now(),
     ],
   );

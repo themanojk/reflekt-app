@@ -98,4 +98,9 @@ export function initDB() {
       "ALTER TABLE pin_configs ADD COLUMN load_watt INTEGER DEFAULT 0"
     );
   } catch {}
+  try {
+    db.execSync(
+      "ALTER TABLE switchboards ADD COLUMN sensors TEXT DEFAULT ''"
+    );
+  } catch {}
 }

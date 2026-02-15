@@ -16,7 +16,7 @@ import {
   State,
   Subscription,
 } from "react-native-ble-plx";
-import { DATA_CHAR_UUID, STANDARD_SERVICE_UUIDS } from "../constants";
+import { DATA_CHAR_UUID, ESP_SERVICE_UUID as DEFAULT_ESP_SERVICE_UUID, STANDARD_SERVICE_UUIDS } from "../constants";
 import { getScanId } from "./bleIds";
 
 const Buffer = require("buffer").Buffer;
@@ -57,8 +57,22 @@ class BLEManagerService {
     this.mapServiceIds();
   }
 
+  private normalizeServiceIds(ids: string[]): string[] {
+    return Array.from(
+      new Set(
+        (ids || [])
+          .map((id) => String(id || "").trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    );
+  }
+
   mapServiceIds = async () => {
-    this.ESP_SERVICE_UUID = await getESPServiceIds();
+    const cached = this.normalizeServiceIds(await getESPServiceIds());
+    this.ESP_SERVICE_UUID =
+      cached.length > 0
+        ? cached
+        : this.normalizeServiceIds(DEFAULT_ESP_SERVICE_UUID);
   };
 
   private handleAppStateChange = (nextState: AppStateStatus) => {
