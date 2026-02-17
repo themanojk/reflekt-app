@@ -137,6 +137,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     bleId,
     sensors: initialSensors,
   } = route.params;
+  const initialDeviceMac = String(deviceId || "").trim().toUpperCase();
+  const [resolvedDeviceMac, setResolvedDeviceMac] = useState(initialDeviceMac);
   const [devices, setDevices] = useState<Device[]>([]);
   const [activeDevice, setActiveDevice] = useState<BleDevice>();
   const [services, setServices] = useState<string[]>([]);
@@ -184,7 +186,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const IconComponent = ROOM_ICONS[roomIcon] ?? ROOM_ICONS["home"];
   const bleLog = (...args: any[]) =>
-    console.log(`[SwitchboardBLE][${deviceId}]`, ...args);
+    console.log(`[SwitchboardBLE][${resolvedDeviceMac || initialDeviceMac}]`, ...args);
 
   const levelToPercent = (level: number) =>
     FAN_SPEED_LEVELS[Math.max(0, Math.min(5, Math.round(level)))];
@@ -212,8 +214,36 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   }, [bleId, iosBleId, service_id, status, switchboardName]);
 
   useEffect(() => {
-    getIgnoredSensors(deviceId).then(setIgnoredSensors);
-  }, [deviceId]);
+    let cancelled = false;
+    const resolveCanonicalMac = async () => {
+      const routeMac = String(deviceId || "").trim().toUpperCase();
+      let resolved = routeMac;
+      const transportId = String(bleId || iosBleId || "").trim();
+
+      if (transportId) {
+        try {
+          const cached = await AsyncStorage.getItem(`ble:canonical:${transportId}`);
+          const normalized = String(cached || "").trim().toUpperCase();
+          if (normalized) {
+            resolved = normalized;
+          }
+        } catch {}
+      }
+
+      if (!cancelled) {
+        setResolvedDeviceMac(resolved || routeMac);
+      }
+    };
+
+    resolveCanonicalMac();
+    return () => {
+      cancelled = true;
+    };
+  }, [bleId, iosBleId, deviceId]);
+
+  useEffect(() => {
+    getIgnoredSensors(resolvedDeviceMac).then(setIgnoredSensors);
+  }, [resolvedDeviceMac]);
 
   useEffect(() => {
     Animated.loop(
@@ -285,7 +315,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   useEffect(() => {
     loadSwitchboardData();
-  }, [deviceId, serviceId]);
+  }, [resolvedDeviceMac, serviceId]);
 
   useEffect(() => {
     if (!activeDevice || !services.length) return;
@@ -433,7 +463,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       try {
         const allBoards = await getSwitchboardsLocal();
         const thisBoard = allBoards.find(
-          (b) => b.id.toUpperCase() === deviceId.toUpperCase(),
+          (b) => b.id.toUpperCase() === resolvedDeviceMac.toUpperCase(),
         );
         if (thisBoard?.sensors) {
           const parsed = thisBoard.sensors
@@ -471,7 +501,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           });
         });
       } else {
-        const cachedLayout = await getLastLayout(deviceId);
+        const cachedLayout = await getLastLayout(resolvedDeviceMac);
         if (cachedLayout?.length) {
           setDevices((prev) => {
             const prevById = new Map(prev.map((d) => [d.id, d]));
@@ -493,7 +523,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       }
 
       // 4️⃣ BACKGROUND API SYNC (always)
-      getLayout(deviceId)
+      getLayout(resolvedDeviceMac)
         .then(async ({ serviceId: updatedServiceId }) => {
           if (updatedServiceId && updatedServiceId !== serviceId) {
             setServiceId(updatedServiceId);
@@ -502,7 +532,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           const updatedButtons = await getLayoutButtonsByServiceId(sid);
           if (updatedButtons.length) {
             await setLastLayout(
-              deviceId,
+              resolvedDeviceMac,
               updatedButtons.map((b) => ({
                 pin: b.pin,
                 label: b.label,
@@ -532,7 +562,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
       // 5️⃣ Non-blocking side calls
       loadWifiStatusData();
-      getBleConnection(deviceId);
+      getBleConnection(resolvedDeviceMac);
     } catch (err) {
     } finally {
       setLoading(false);
@@ -541,7 +571,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const loadWifiStatusData = async () => {
     try {
-      const wifiStatus = await getDeviceStatusOverWifi(deviceId);
+      const wifiStatus = await getDeviceStatusOverWifi(resolvedDeviceMac);
       if (wifiStatus) {
         setIsWifiOnline(wifiStatus?.status?.online);
         if (wifiStatus?.status?.online) {
@@ -566,7 +596,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   };
 
   const loadPinConfigs = async () => {
-    const local = await getPinConfigsByDevice(deviceId);
+    const local = await getPinConfigsByDevice(resolvedDeviceMac);
     if (local.length) {
       const map: Record<number, any> = {};
       const baseline: Record<number, string> = {};
@@ -589,7 +619,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     await syncPendingPinConfigs();
 
     try {
-      const res = await fetchPinConfigs(deviceId);
+      const res = await fetchPinConfigs(resolvedDeviceMac);
       const list = res?.configs || [];
       if (list.length) {
         const map: Record<number, any> = {};
@@ -607,7 +637,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           };
           baseline[c.pin] = JSON.stringify(map[c.pin]);
           await upsertPinConfigLocal({
-            device_mac: deviceId,
+            device_mac: resolvedDeviceMac,
             pin: c.pin,
             name: c.name || "",
             auto_on: c.auto_on ? 1 : 0,
@@ -680,7 +710,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     if (!cfg) return;
 
     await upsertPinConfigLocal({
-      device_mac: deviceId,
+      device_mac: resolvedDeviceMac,
       pin,
       name: cfg.name || "",
       auto_on: cfg.autoOn ? 1 : 0,
@@ -694,7 +724,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
     try {
       await savePinConfig({
-        device_mac: deviceId,
+        device_mac: resolvedDeviceMac,
         pin,
         name: cfg.name || "",
         auto_on: !!cfg.autoOn,
@@ -704,7 +734,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         on_exclude_start_hour: cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
         on_exclude_end_hour: cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END,
       });
-      await markPinConfigSynced(deviceId, pin);
+      await markPinConfigSynced(resolvedDeviceMac, pin);
       showToast("Changes saved and applied.");
     } catch {
       showToast("Saved offline. Will sync when online.");
@@ -731,7 +761,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       saveTasks.push(
         (async () => {
           await upsertPinConfigLocal({
-            device_mac: deviceId,
+            device_mac: resolvedDeviceMac,
             pin: d.id,
             name: cfg.name || "",
             auto_on: cfg.autoOn ? 1 : 0,
@@ -745,7 +775,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           });
           try {
             await savePinConfig({
-              device_mac: deviceId,
+              device_mac: resolvedDeviceMac,
               pin: d.id,
               name: cfg.name || "",
               auto_on: !!cfg.autoOn,
@@ -756,7 +786,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
               on_exclude_end_hour: cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END,
             });
-            await markPinConfigSynced(deviceId, d.id);
+            await markPinConfigSynced(resolvedDeviceMac, d.id);
           } catch {
             // keep pending
           }
@@ -844,7 +874,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const attachSensor = async () => {
     if (!pendingSensor) return;
     try {
-      const apiRes = await attachSensorToDevice(deviceId, pendingSensor);
+      const apiRes = await attachSensorToDevice(resolvedDeviceMac, pendingSensor);
       const attached = String(pendingSensor).trim().toUpperCase();
       if (attached) {
         setAttachedSensors((prev) => Array.from(new Set([...prev, attached])));
@@ -866,14 +896,14 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const ignoreSensor = async () => {
     if (!pendingSensor) return;
-    await addIgnoredSensor(deviceId, pendingSensor);
+    await addIgnoredSensor(resolvedDeviceMac, pendingSensor);
     setIgnoredSensors((prev) => Array.from(new Set([...prev, pendingSensor])));
     setShowSensorModal(false);
     setPendingSensor(null);
   };
 
   const resetIgnoredSensors = async () => {
-    await clearIgnoredSensors(deviceId);
+    await clearIgnoredSensors(resolvedDeviceMac);
     setIgnoredSensors([]);
   };
 
@@ -892,7 +922,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           style: "destructive",
           onPress: async () => {
             try {
-              await detachSensorFromDevice(deviceId, targetMac);
+              await detachSensorFromDevice(resolvedDeviceMac, targetMac);
               if (services.length && activeDevice) {
                 const cmd = `SENSOR_DETACH:${targetMac}`;
                 await bleManager.sendData(activeDevice, cmd, services[0]);
@@ -1008,7 +1038,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   ): Promise<boolean> => {
     if (!services.length || !activeDevice) {
       const payload: WifiPayload = {
-        mac_address: deviceId,
+        mac_address: resolvedDeviceMac,
         data: {
           cmd: command,
           pin: pin,
@@ -1073,7 +1103,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       // @ts-ignore
       const arr = tempColor.match(/\d+/g).map(Number);
       const payload: WifiPayload = {
-        mac_address: deviceId,
+        mac_address: resolvedDeviceMac,
         data: {
           cmd: "color",
           color: arr,
@@ -1134,7 +1164,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     if (!services.length || !activeDevice) {
       // Wi-Fi fallback
       const payload: WifiPayload = {
-        mac_address: deviceId,
+        mac_address: resolvedDeviceMac,
         data: { cmd: "fan_speed", pin: device.id, power: val },
       };
       await sendCommandOverWifi(payload);
@@ -1315,7 +1345,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
               {switchboardName || "Main Panel"}
             </Text>
             <Text style={styles.boardMacText}>
-              DIS MAC: {String(deviceId || "N/A").toUpperCase()}
+              DIS MAC: {String(resolvedDeviceMac || "N/A").toUpperCase()}
             </Text>
             <View style={styles.boardStatus}>
               {isOnline && (

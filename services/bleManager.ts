@@ -207,7 +207,10 @@ class BLEManagerService {
     onDeviceFound: (device: Device) => void,
     opts: StartOpts & { serviceUUIDs?: string[] | null } = {},
   ): StartScanHandle {
-    // If already scanning, stop the previous one first (callable safety)
+    // sharedBleManager is process-wide; always hard-stop any prior scan first.
+    try {
+      this.manager.stopDeviceScan();
+    } catch {}
     if (this.isScanning) {
       try {
         this.stopScan();
