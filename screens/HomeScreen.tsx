@@ -732,6 +732,21 @@ export default function HomeScreen({ navigation }: any) {
     });
   };
 
+  const openSwitchboardFromHome = async (payload: {
+    switchboardId: string;
+    switchboardName: string;
+    deviceId: string;
+    status: boolean;
+    iosBleId?: string;
+    bleId?: string;
+    sensors?: string[];
+  }) => {
+    try {
+      await bleManager.disconnectAllConnectedDevices();
+    } catch {}
+    navigation.navigate("Switchboard", payload);
+  };
+
   const onlineCount = switchboards.filter((sb) => sb.is_online).length;
 
   return (
@@ -786,7 +801,7 @@ export default function HomeScreen({ navigation }: any) {
                     key={switchboard.id}
                     style={styles.switchboardCardHorizontal}
                     onPress={() =>
-                      navigation.navigate("Switchboard", {
+                      openSwitchboardFromHome({
                         switchboardId: switchboard.id,
                         switchboardName: switchboard.name,
                         deviceId: switchboard.id,
@@ -854,7 +869,7 @@ export default function HomeScreen({ navigation }: any) {
                         key={switchboard.id}
                         style={styles.switchboardCardHorizontal}
                         onPress={() =>
-                          navigation.navigate("Switchboard", {
+                          openSwitchboardFromHome({
                             switchboardId: switchboard.id,
                             switchboardName: switchboard.name,
                             deviceId: switchboard.id,

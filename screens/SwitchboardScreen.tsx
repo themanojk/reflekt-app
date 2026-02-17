@@ -23,6 +23,7 @@ import {
 } from "@/db/pin_configs";
 import { getSwitchboardsLocal } from "@/db/switchboards.local";
 import BLEManagerService from "@/services/bleManager";
+import { getCanonicalId } from "@/services/bleCanonicalId";
 import {
   addIgnoredSensor,
   clearIgnoredSensors,
@@ -32,7 +33,7 @@ import {
 } from "@/utils/storage";
 import { loadWifi, saveWifi } from "@/utils/wifiCreds";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { RouteProp } from "@react-navigation/native";
+import { RouteProp, useIsFocused } from "@react-navigation/native";
 import { Buffer } from "buffer";
 import {
   ChevronLeft,
@@ -47,6 +48,8 @@ import {
 } from "lucide-react-native";
 import React, { useEffect, useState } from "react";
 import {
+  AppState,
+  AppStateStatus,
   Alert,
   Animated,
   Easing,
@@ -126,6 +129,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const bleManagerRef = React.useRef<BLEManagerService>(null);
   if (!bleManagerRef.current) bleManagerRef.current = new BLEManagerService();
   const bleManager = bleManagerRef.current;
+  const isFocused = useIsFocused();
 
   const {
     switchboardName,
@@ -183,6 +187,13 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const monitorRef = React.useRef<Disposable | null>(null);
   const disconnectRef = React.useRef<Disposable | null>(null);
   const mountedRef = React.useRef(true);
+  const activeDeviceRef = React.useRef<BleDevice | undefined>(undefined);
+  const prevFocusedRef = React.useRef<boolean>(false);
+  const reconnectTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const reconnectAttemptsRef = React.useRef<number>(0);
+  const appStateRef = React.useRef<AppStateStatus>(AppState.currentState);
 
   const IconComponent = ROOM_ICONS[roomIcon] ?? ROOM_ICONS["home"];
   const bleLog = (...args: any[]) =>
@@ -195,6 +206,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     return () => {
       // on unmount
       mountedRef.current = false;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       bleLog("Unmount: tearing down BLE listeners");
       monitorRef.current?.remove?.();
       monitorRef.current?.unsubscribe?.();
@@ -298,7 +313,51 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     monitorRef.current = null;
   }, []);
 
+  const scheduleReconnect = React.useCallback(
+    (reason: string) => {
+      if (!mountedRef.current || !isFocused) return;
+      if (reconnectAttemptsRef.current >= 2) return;
+      if (reconnectTimerRef.current) return;
+      reconnectAttemptsRef.current += 1;
+      bleLog("Scheduling BLE reconnect", {
+        reason,
+        attempt: reconnectAttemptsRef.current,
+      });
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        if (!mountedRef.current || !isFocused) return;
+        getBleConnection(resolvedDeviceMac);
+      }, 900);
+    },
+    [isFocused, resolvedDeviceMac],
+  );
+
+  const disconnectBleConnection = React.useCallback(async () => {
+    try {
+      teardownBle();
+      disconnectRef.current?.remove?.();
+      disconnectRef.current?.unsubscribe?.();
+      disconnectRef.current = null;
+
+      if (activeDeviceRef.current) {
+        bleLog("Disconnecting BLE device", {
+          activeDeviceId: activeDeviceRef.current.id,
+        });
+        await bleManager.cancelDeviceConnection(activeDeviceRef.current);
+      }
+    } catch (e) {
+      bleLog("disconnectBleConnection error", e);
+    } finally {
+      if (mountedRef.current) {
+        setActiveDevice(undefined);
+        setServices([]);
+        setIsOnline(false);
+      }
+    }
+  }, [bleManager, teardownBle]);
+
   useEffect(() => {
+    activeDeviceRef.current = activeDevice;
     // BLE online should reflect actual BLE connection state
     const nextOnline = !!activeDevice && services.length > 0;
     bleLog("State sync", {
@@ -316,6 +375,22 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   useEffect(() => {
     loadSwitchboardData();
   }, [resolvedDeviceMac, serviceId]);
+
+  useEffect(() => {
+    const wasFocused = prevFocusedRef.current;
+    if (isFocused && !wasFocused) {
+      prevFocusedRef.current = true;
+      if (resolvedDeviceMac) {
+        bleLog("Switchboard focused; ensuring BLE connection");
+        getBleConnection(resolvedDeviceMac);
+      }
+      return;
+    }
+    if (!isFocused && wasFocused) {
+      prevFocusedRef.current = false;
+      disconnectBleConnection();
+    }
+  }, [isFocused, resolvedDeviceMac, disconnectBleConnection]);
 
   useEffect(() => {
     if (!activeDevice || !services.length) return;
@@ -562,7 +637,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
       // 5️⃣ Non-blocking side calls
       loadWifiStatusData();
-      getBleConnection(resolvedDeviceMac);
     } catch (err) {
     } finally {
       setLoading(false);
@@ -955,28 +1029,64 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         routeIosBleId: iosBleId,
       });
       let transportId = (bleId || iosBleId || "").toString();
+      let hasTransportCandidate = !!transportId;
+      const normalizedMac = String(macAddress || "").trim().toUpperCase();
+
+      const validateTransportForCanonical = async (candidateId: string) => {
+        const candidate = String(candidateId || "").trim();
+        if (!candidate) return false;
+        try {
+          const mappedCanonical = await AsyncStorage.getItem(
+            `ble:canonical:${candidate}`,
+          );
+          return (
+            String(mappedCanonical || "").trim().toUpperCase() === normalizedMac
+          );
+        } catch {
+          return false;
+        }
+      };
+
       if (!transportId) {
         try {
           const direct = await AsyncStorage.getItem(
-            `ble:byCanonical:${macAddress.toUpperCase()}`,
+            `ble:byCanonical:${normalizedMac}`,
           );
-          if (direct) {
+          if (direct && (await validateTransportForCanonical(direct))) {
             transportId = direct;
+            hasTransportCandidate = true;
+          } else if (direct) {
+            bleLog("Ignoring stale direct canonical->transport mapping", {
+              canonical: normalizedMac,
+              mappedTransport: direct,
+            });
+            await AsyncStorage.removeItem(`ble:byCanonical:${normalizedMac}`);
           }
-          const keys = await AsyncStorage.getAllKeys();
-          const canonicalKeys = keys.filter((k) =>
-            k.startsWith("ble:canonical:"),
-          );
-          for (const k of canonicalKeys) {
-            const val = await AsyncStorage.getItem(k);
-            if (val && val.toUpperCase() === macAddress.toUpperCase()) {
-              transportId = k.replace("ble:canonical:", "");
-              break;
+
+          if (!transportId) {
+            const keys = await AsyncStorage.getAllKeys();
+            const canonicalKeys = keys.filter((k) =>
+              k.startsWith("ble:canonical:"),
+            );
+            for (const k of canonicalKeys) {
+              const val = await AsyncStorage.getItem(k);
+              if (String(val || "").trim().toUpperCase() !== normalizedMac) {
+                continue;
+              }
+              const candidate = k.replace("ble:canonical:", "");
+              if (candidate && (await validateTransportForCanonical(candidate))) {
+                transportId = candidate;
+                hasTransportCandidate = true;
+                break;
+              }
             }
           }
         } catch {}
       }
-      if (!transportId) transportId = (macAddress || "").toString();
+      if (!transportId) {
+        transportId = (macAddress || "").toString();
+        hasTransportCandidate = false;
+      }
 
       const targetId = transportId.toLowerCase();
       bleLog("Resolved target transport id", { targetId });
@@ -987,8 +1097,26 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         ids: already.map((d) => d.id),
       });
 
+      const candidateIds = Array.from(
+        new Set(
+          [
+            targetId,
+            transportId,
+            // only try canonical MAC directly when no transport mapping is available
+            ...(hasTransportCandidate ? [] : [macAddress]),
+          ]
+            .map((id) => String(id || "").trim().toLowerCase())
+            .filter(Boolean),
+        ),
+      );
       let connected: BleDevice | null =
-        already.find((d) => d.id.toLowerCase() === targetId) || null;
+        already.find((d) =>
+          candidateIds.some(
+            (candidate) =>
+              String(d.id || "").toLowerCase() === candidate.toLowerCase(),
+          ),
+        ) || null;
+      const isFirstAttempt = reconnectAttemptsRef.current === 0;
       if (
         activeDevice &&
         activeDevice.id?.toLowerCase() === targetId &&
@@ -1002,35 +1130,175 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         return;
       }
       if (!connected) {
-        bleLog("Connecting via connectSafely", { targetId });
-        connected = await bleManager.connectSafely(targetId, {
-          retries: 1,
-          connectTimeoutMs: 5000,
-          autoConnect: false,
-          skipScan: true,
-          scanTimeoutMs: 8000,
+        for (const candidate of candidateIds) {
+          bleLog("Connecting via connectSafely (direct)", { candidate });
+          connected = await bleManager.connectSafely(candidate, {
+            retries: 1,
+            connectTimeoutMs: 3500,
+            autoConnect: false,
+            skipScan: true,
+            scanTimeoutMs: 2500,
+          });
+          if (connected) break;
+        }
+      }
+
+      if (!connected && !isFirstAttempt) {
+        bleLog("Trying discovery fallback to resolve live transport id by DIS MAC", {
+          canonicalMac: normalizedMac,
         });
+        let discoveredTransportId: string | null = null;
+        let discoveredDevice: BleDevice | null = null;
+        try {
+          const { stop, done } = bleManager.startScan_new(
+            (dev) => {
+              (async () => {
+                try {
+                  const canonical = await getCanonicalId(dev, {
+                    disconnectAfter: false,
+                  });
+                  if (
+                    String(canonical || "").trim().toUpperCase() === normalizedMac
+                  ) {
+                    discoveredTransportId = dev.id;
+                    discoveredDevice = dev as BleDevice;
+                    bleLog("Discovery fallback matched canonical MAC", {
+                      canonical: normalizedMac,
+                      transportId: dev.id,
+                    });
+                    stop();
+                  }
+                } catch {}
+              })();
+            },
+            { stopAfterMs: 5000 },
+          );
+          await done;
+        } catch (e) {
+          bleLog("Discovery fallback scan failed", e);
+        }
+
+        if (discoveredTransportId) {
+          try {
+            await AsyncStorage.setItem(
+              `ble:byCanonical:${normalizedMac}`,
+              discoveredTransportId,
+            );
+          } catch {}
+          if (discoveredDevice) {
+            try {
+              bleLog("Connecting using discovered device instance", {
+                discoveredTransportId,
+              });
+              const isConn = await discoveredDevice.isConnected();
+              if (!isConn) {
+                await discoveredDevice.connect();
+              }
+              await discoveredDevice.discoverAllServicesAndCharacteristics();
+              connected = discoveredDevice;
+            } catch (e) {
+              bleLog("Discovered-device connect path failed; retrying by id", e);
+            }
+          }
+
+          if (!connected) {
+            bleLog("Connecting using discovery-resolved transport", {
+              discoveredTransportId,
+            });
+            connected = await bleManager.connectSafely(discoveredTransportId, {
+              retries: 2,
+              connectTimeoutMs: 7000,
+              autoConnect: false,
+              skipScan: true,
+              scanTimeoutMs: 8000,
+            });
+          }
+        }
+      }
+
+      if (!connected && !isFirstAttempt) {
+        for (const candidate of candidateIds) {
+          bleLog("Retrying connect via scan-assisted connectSafely", {
+            candidate,
+          });
+          connected = await bleManager.connectSafely(candidate, {
+            retries: 1,
+            connectTimeoutMs: 5000,
+            autoConnect: false,
+            skipScan: false,
+            scanTimeoutMs: 4500,
+          });
+          if (connected) break;
+        }
+      }
+
+      if (!connected && isFirstAttempt) {
+        bleLog("Fast path connect failed on first attempt; deferring heavy fallback");
+        scheduleReconnect("first_attempt_fast_fail");
+        return;
       }
 
       if (connected) {
         bleLog("Connected to BLE device", { connectedId: connected.id });
+        // Show BLE online as soon as link is up; service resolution follows immediately.
+        setIsOnline(true);
+        try {
+          await connected.discoverAllServicesAndCharacteristics();
+        } catch (e) {
+          bleLog("Service discovery failed on first attempt", e);
+        }
         setActiveDevice(connected);
-        const serviceIds = await bleManager.getCustomServiceId(connected);
+        let serviceIds = await bleManager.getCustomServiceId(connected);
+        if (!serviceIds.length) {
+          bleLog("No custom services found; retrying discovery once");
+          try {
+            await connected.discoverAllServicesAndCharacteristics();
+            serviceIds = await bleManager.getCustomServiceId(connected);
+          } catch (e) {
+            bleLog("Service discovery retry failed", e);
+          }
+        }
         bleLog("Resolved custom services", {
           connectedId: connected.id,
           serviceIds,
         });
         setServices(serviceIds);
         setIsOnline(serviceIds.length > 0);
+        reconnectAttemptsRef.current = 0;
       } else {
         bleLog("Failed to connect: connected device is null");
+        scheduleReconnect("connected_null");
       }
     } catch (err) {
       bleLog("getBleConnection failed", err);
+      scheduleReconnect("connect_error");
     } finally {
       connectingBleRef.current = false;
     }
   };
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (nextState) => {
+      const prevState = appStateRef.current;
+      appStateRef.current = nextState;
+
+      if (nextState === "background" && isFocused) {
+        bleLog("App moved to background on Switchboard; disconnecting BLE");
+        disconnectBleConnection();
+        return;
+      }
+
+      const resumed =
+        (prevState === "background" || prevState === "inactive") &&
+        nextState === "active";
+      if (resumed && isFocused) {
+        bleLog("App resumed on Switchboard; reconnecting BLE");
+        getBleConnection(resolvedDeviceMac);
+      }
+    });
+
+    return () => sub.remove();
+  }, [disconnectBleConnection, isFocused, resolvedDeviceMac]);
 
   const sendDataToESP = async (
     pin: number,

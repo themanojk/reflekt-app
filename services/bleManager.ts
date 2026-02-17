@@ -573,6 +573,28 @@ class BLEManagerService {
     } catch {}
   };
 
+  async disconnectAllConnectedDevices() {
+    try {
+      const [allConnected, espConnected] = await Promise.all([
+        this.manager.connectedDevices([]).catch(() => [] as Device[]),
+        this.getAlreadyConnected().catch(() => [] as Device[]),
+      ]);
+      const ids = Array.from(
+        new Set(
+          [...allConnected, ...espConnected]
+            .map((d) => String(d?.id || "").trim())
+            .filter(Boolean),
+        ),
+      );
+      for (const id of ids) {
+        try {
+          await this.manager.cancelDeviceConnection(id);
+        } catch {}
+      }
+      this.connectedDeviceIds.clear();
+    } catch {}
+  }
+
   async connectSafely(
     deviceId: string,
     {
@@ -601,7 +623,7 @@ class BLEManagerService {
     for (let attempt = 0; attempt < retries; attempt++) {
       try {
         const device = await this.manager.connectToDevice(
-          deviceId.toUpperCase(),
+          deviceId,
           {
             autoConnect: false,
             timeout: undefined,
