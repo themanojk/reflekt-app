@@ -1,8 +1,10 @@
 import { getLayout } from '@/api/devics';
+import { fetchServiceIds } from '@/api/service';
 import Toast from '@/components/Toast';
 import { DATA_CHAR_UUID } from '@/constants';
 import { getCanonicalId } from '@/services/bleCanonicalId';
 import BLEManagerService from '@/services/bleManager';
+import { setESPServiceIds } from '@/utils/storage';
 import { loadWifi, saveWifi } from '@/utils/wifiCreds';
 import { Buffer } from 'buffer';
 import { Bluetooth, User } from 'lucide-react-native';
@@ -47,6 +49,21 @@ export default function AddSwitchboardAdminScreen({ navigation, route }: any) {
     visible: false,
     message: '',
   });
+
+  useEffect(() => {
+    const refreshServiceIds = async () => {
+      try {
+        const ids = await fetchServiceIds();
+        if (ids.length) {
+          await setESPServiceIds(ids);
+          await bleManager.mapServiceIds();
+        }
+      } catch {
+        // offline fallback: scanner uses cached IDs
+      }
+    };
+    refreshServiceIds();
+  }, []);
 
   const showToast = (msg: string) => {
     setToast({ visible: true, message: msg });

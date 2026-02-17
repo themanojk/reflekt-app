@@ -3,7 +3,10 @@ import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
+  Easing,
   Platform,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -13,13 +16,28 @@ import {
 } from "react-native";
 import { Device as BleDevice, Device } from "react-native-ble-plx";
 import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
+import { useFocusEffect } from "@react-navigation/native";
 
-import { AddDevice, addDevice, getLayout } from "@/api/devics";
+import {
+  AddDevice,
+  addDevice,
+  fetchDevicesByRoomForUser,
+  getLayout,
+} from "@/api/devics";
+import { fetchServiceIds } from "@/api/service";
 import Toast from "@/components/Toast";
 import { DATA_CHAR_UUID } from "@/constants";
 import { getCanonicalId } from "@/services/bleCanonicalId";
 import BLEManagerService from "@/services/bleManager";
-import { clearPendingSwitchboardDeviceId, storeBleDevice } from "@/utils/storage";
+import { getLayoutButtonsByServiceId } from "@/db/layout_buttons";
+import {
+  clearPendingSwitchboardDeviceId,
+  getRoomsByRoomCache,
+  setESPServiceIds,
+  setLastLayout,
+  setRoomsByRoomCache,
+  storeBleDevice,
+} from "@/utils/storage";
 import { loadWifi, saveWifi } from "@/utils/wifiCreds";
 import { Buffer } from "buffer";
 
@@ -33,6 +51,64 @@ type Row = {
   canonicalId?: string; // <-- added directly on the row
 };
 
+const formatRssi = (rssi: number | null) =>
+  typeof rssi === "number" ? `${rssi} dBm` : "N/A";
+
+const estimateDistanceMeters = (rssi: number | null): string => {
+  if (typeof rssi !== "number") return "N/A";
+  const txPowerAt1m = -59;
+  const pathLossExponent = 2.2;
+  const distance = Math.pow(
+    10,
+    (txPowerAt1m - rssi) / (10 * pathLossExponent),
+  );
+  const safeDistance = Number.isFinite(distance)
+    ? Math.max(0.05, Math.min(distance, 99.9))
+    : 99.9;
+  return `${safeDistance.toFixed(safeDistance < 10 ? 2 : 1)} m`;
+};
+
+const normalizeSensors = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return Array.from(
+      new Set(
+        value
+          .map((v) => String(v || "").trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    );
+  }
+  if (typeof value === "string") {
+    return Array.from(
+      new Set(
+        value
+          .split(",")
+          .map((v) => v.trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    );
+  }
+  return [];
+};
+
+const extractSensorsFromAddResponse = (payload: any): string[] => {
+  const candidates = [
+    payload?.sensors,
+    payload?.sensor_ids,
+    payload?.device?.sensors,
+    payload?.device?.sensor_ids,
+    payload?.data?.sensors,
+    payload?.data?.sensor_ids,
+    payload?.result?.sensors,
+    payload?.result?.sensor_ids,
+  ];
+  for (const c of candidates) {
+    const list = normalizeSensors(c);
+    if (list.length) return list;
+  }
+  return [];
+};
+
 export default function AddSwitchboardScreen({ navigation, route }: any) {
   const bleManagerRef = React.useRef<BLEManagerService | null>(null);
   if (!bleManagerRef.current) {
@@ -43,6 +119,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
   const [_connectingId, setConnectingId] = useState<string | null>(null);
   const [step, setStep] = useState<Step>("scan");
   const [scanning, setScanning] = useState(true);
+  const [pullRefreshing, setPullRefreshing] = useState(false);
   const [devices, setDevices] = useState<Row[]>([]);
   const [device, setDevice] = useState<BleDevice>();
   const [_selectedDevice, setSelectedDevice] = useState<BleDevice | null>(null);
@@ -58,6 +135,114 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
     visible: false,
     message: "",
   });
+  const [existingDeviceIds, setExistingDeviceIds] = useState<Set<string>>(new Set());
+  const sortedDevices = React.useMemo(
+    () =>
+      [...devices].sort((a, b) => {
+        const aRssi =
+          typeof a.rssi === "number" ? a.rssi : Number.NEGATIVE_INFINITY;
+        const bRssi =
+          typeof b.rssi === "number" ? b.rssi : Number.NEGATIVE_INFINITY;
+        return bRssi - aRssi;
+      }),
+    [devices],
+  );
+
+  useEffect(() => {
+    const refreshServiceIds = async () => {
+      try {
+        const ids = await fetchServiceIds();
+        if (ids.length) {
+          await setESPServiceIds(ids);
+          await bleManager.mapServiceIds();
+        }
+      } catch {
+        // offline fallback: scanner uses cached IDs
+      }
+    };
+    refreshServiceIds();
+  }, [bleManager]);
+
+  // Scan ring animation
+  const ring1 = React.useRef(new Animated.Value(0)).current;
+  const ring2 = React.useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!scanning) {
+      ring1.setValue(0);
+      ring2.setValue(0);
+      return;
+    }
+    const createRing = (anim: Animated.Value, delay: number) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(anim, {
+            toValue: 1,
+            duration: 1800,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }),
+          Animated.timing(anim, { toValue: 0, duration: 0, useNativeDriver: true }),
+        ])
+      );
+    const a1 = createRing(ring1, 0);
+    const a2 = createRing(ring2, 900);
+    a1.start();
+    a2.start();
+    return () => { a1.stop(); a2.stop(); };
+  }, [scanning]);
+
+  const refreshExistingDeviceIds = React.useCallback(async () => {
+    try {
+      const byRoom = await fetchDevicesByRoomForUser();
+      if (Array.isArray(byRoom)) {
+        await setRoomsByRoomCache(byRoom);
+        const serverIds = new Set<string>();
+        byRoom.forEach((r: any) => {
+          (r?.devices || []).forEach((d: any) => {
+            const id = String(d?.device_id || "")
+              .trim()
+              .toUpperCase();
+            if (id) serverIds.add(id);
+          });
+        });
+        setExistingDeviceIds(serverIds);
+        return;
+      }
+    } catch (e) {
+      console.warn("[ADD_BOARD_SCAN] server existing-device fetch failed", e);
+    }
+    try {
+      const cachedByRoom = await getRoomsByRoomCache();
+      if (Array.isArray(cachedByRoom)) {
+        const cachedIds = new Set<string>();
+        cachedByRoom.forEach((r: any) => {
+          (r?.devices || []).forEach((d: any) => {
+            const id = String(d?.device_id || "")
+              .trim()
+              .toUpperCase();
+            if (id) cachedIds.add(id);
+          });
+        });
+        setExistingDeviceIds(cachedIds);
+        return;
+      }
+    } catch {}
+
+    setExistingDeviceIds(new Set());
+  }, []);
+
+  useEffect(() => {
+    refreshExistingDeviceIds();
+  }, [refreshExistingDeviceIds]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      refreshExistingDeviceIds();
+      return () => {};
+    }, [refreshExistingDeviceIds]),
+  );
 
   const showToast = (msg: string) => {
     setToast({ visible: true, message: msg });
@@ -76,6 +261,13 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
   }, [prefillName]);
 
   const onDeviceFound = React.useCallback(async (device: Device) => {
+    console.log(
+      "[ADD_BOARD_SCAN] seen",
+      device.id,
+      device.name,
+      "rssi=",
+      device.rssi,
+    );
     let canonicalId = device.id;
 
     try {
@@ -85,7 +277,16 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
     setDevices((prev) => {
       const idx = prev.findIndex((d) => d.canonicalId === canonicalId);
 
-      if (idx >= 0) return prev; // ❗ ignore repeated advertisements
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = {
+          ...next[idx],
+          name: device.name ?? next[idx].name,
+          rssi: device.rssi ?? next[idx].rssi,
+          device,
+        };
+        return next;
+      }
 
       return [
         ...prev,
@@ -117,6 +318,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
     if (scanning) return; // prevent double taps
     setScanning(true);
     try {
+      await refreshExistingDeviceIds();
       const { done } = bleManager.startScan_new(onDeviceFound, {
         stopAfterMs: 30000,
       });
@@ -124,7 +326,27 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
     } finally {
       setScanning(false);
     }
-  }, [bleManager, onDeviceFound, scanning]);
+  }, [bleManager, onDeviceFound, refreshExistingDeviceIds, scanning]);
+
+  const handleBleIconRefresh = React.useCallback(() => {
+    if (scanning) return;
+    setDevices([]);
+    runScan();
+  }, [scanning, runScan]);
+
+  const handlePullToRefresh = React.useCallback(async () => {
+    if (scanning) {
+      setPullRefreshing(false);
+      return;
+    }
+    setDevices([]);
+    setPullRefreshing(true);
+    try {
+      await runScan();
+    } finally {
+      setPullRefreshing(false);
+    }
+  }, [scanning, runScan]);
 
   useEffect(() => {
     if (step !== "scan") return;
@@ -134,6 +356,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
     const start = async () => {
       setScanning(true);
       try {
+        await refreshExistingDeviceIds();
         const { done } = bleManager.startScan_new(onDeviceFound, {
           stopAfterMs: 30000,
         });
@@ -149,7 +372,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
       cancelled = true;
       bleManager.stopScan();
     };
-  }, [step]);
+  }, [step, refreshExistingDeviceIds]);
 
   useEffect(() => {
     loadWifiCreds();
@@ -165,6 +388,20 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
       console.log("Error while fetching layout", err);
       return null;
     }
+  };
+
+  const resolveCanonicalId = async (
+    bleDevice: BleDevice,
+    fallback?: string | null,
+  ) => {
+    let canonical = fallback || bleDevice.id;
+    try {
+      canonical = await getCanonicalId(bleDevice, {
+        disconnectAfter: false,
+        skipCache: true,
+      });
+    } catch {}
+    return canonical || bleDevice.id;
   };
 
   const sendWifiConfigToESP = async (device: BleDevice) => {
@@ -196,7 +433,8 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
 
     try {
       await bleManager.connect(device);
-      const layout = await getDeviceLayout(canonicalId);
+      const canonical = await resolveCanonicalId(device, canonicalId);
+      const layout = await getDeviceLayout(canonical);
 
       if (!layout) {
         showToast("Unrecognized device");
@@ -204,7 +442,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
         if (layout?.serviceId) {
           setServiceIdFromLayout(layout.serviceId);
         }
-        setSelectedCanonicalId(canonicalId || null);
+        setSelectedCanonicalId(canonical || null);
         await storeBleDevice(device.id);
         setSelectedDevice(device);
         setName(device.id);
@@ -228,17 +466,43 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
       return;
     }
     setLoading(true);
+    let canonicalId = selectedCanonicalId;
+    if (!canonicalId || canonicalId === device.id) {
+      canonicalId = await resolveCanonicalId(device, canonicalId);
+      setSelectedCanonicalId(canonicalId);
+    }
+    const deviceMac = canonicalId || device.id;
     const body: AddDevice = {
       title: name,
       room_id: roomId,
-      device_id: device.id,
+      device_id: deviceMac,
       os: Platform.OS,
     };
     console.log("Body", body);
 
     try {
-      await addDevice(body);
+      const addRes = await addDevice(body);
+      const sensors = extractSensorsFromAddResponse(addRes);
       await sendWifiConfigToESP(device);
+      let layout: any = null;
+      try {
+        layout = await getLayout(deviceMac);
+      } catch {}
+      const sid = serviceIdFromLayout || layout?.serviceId || "";
+      if (sid) {
+        const buttons = await getLayoutButtonsByServiceId(sid);
+        if (buttons.length) {
+          await setLastLayout(
+            deviceMac,
+            buttons.map((b) => ({
+              pin: b.pin,
+              label: b.label,
+              type: b.type,
+              command: b.command,
+            })),
+          );
+        }
+      }
       Alert.alert(
         "Success",
         `Switchboard "${name.trim()}" added successfully!`
@@ -251,13 +515,14 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
             name: "Switchboard",
             params: {
               switchboardName: name.trim(),
-              deviceId: selectedCanonicalId || device.id,
+              deviceId: deviceMac,
               roomIcon: roomIcon || "",
               status: true,
               iosBleId: Platform.OS === "ios" ? device.id : undefined,
               bleId: device.id,
-              service_id: serviceIdFromLayout || "",
+              service_id: serviceIdFromLayout || layout?.serviceId || "",
               roomName: roomName || "",
+              sensors,
             },
           },
         ],
@@ -288,10 +553,49 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
           <View style={styles.placeholder} />
         </View>
 
+        <ScrollView
+          contentContainerStyle={styles.scanScrollContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={pullRefreshing}
+              onRefresh={handlePullToRefresh}
+              tintColor="#fff"
+            />
+          }
+        >
         <View style={styles.scanContent}>
-          <View style={styles.scanIcon}>
-            <Bluetooth size={64} color="#3b82f6" />
-          </View>
+          <TouchableOpacity
+            style={styles.scanIconWrapper}
+            onPress={handleBleIconRefresh}
+            activeOpacity={0.8}
+            disabled={scanning}
+          >
+            {scanning && (
+              <>
+                <Animated.View
+                  style={[
+                    styles.scanRing,
+                    {
+                      opacity: ring1.interpolate({ inputRange: [0, 1], outputRange: [0.6, 0] }),
+                      transform: [{ scale: ring1.interpolate({ inputRange: [0, 1], outputRange: [1, 2.2] }) }],
+                    },
+                  ]}
+                />
+                <Animated.View
+                  style={[
+                    styles.scanRing,
+                    {
+                      opacity: ring2.interpolate({ inputRange: [0, 1], outputRange: [0.6, 0] }),
+                      transform: [{ scale: ring2.interpolate({ inputRange: [0, 1], outputRange: [1, 2.2] }) }],
+                    },
+                  ]}
+                />
+              </>
+            )}
+            <View style={styles.scanIcon}>
+              <Bluetooth size={28} color="#3b82f6" />
+            </View>
+          </TouchableOpacity>
 
           <Text style={styles.scanTitle}>
             {scanning ? "Scanning for devices..." : "Nearby Devices"}
@@ -301,14 +605,6 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
               ? "Please wait while we search for switchboards"
               : "Select a switchboard to connect"}
           </Text>
-
-          {scanning && (
-            <ActivityIndicator
-              size="large"
-              color="#3b82f6"
-              style={styles.loader}
-            />
-          )}
 
           {!scanning && devices.length === 0 && (
             <View style={styles.emptyState}>
@@ -327,31 +623,44 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
             </View>
           )}
 
-          {devices.length > 0 && (
+          {sortedDevices.length > 0 && (
             <ScrollView style={styles.deviceList}>
-              {devices.map((device) => (
-                <TouchableOpacity
-                  key={device.id}
-                  style={styles.deviceCard}
-                  onPress={() => handleDeviceSelect(device)}
-                >
-                  <View style={styles.deviceInfo}>
-                    <Bluetooth size={24} color="#3b82f6" />
-                    <View style={styles.deviceDetails}>
-                      <Text style={styles.deviceName}>
-                        {device.id.slice(0, 20)}
-                      </Text>
-                      <Text style={styles.deviceName}>
-                        {device.canonicalId}
-                      </Text>
-                      <Text style={styles.deviceSignal}>
-                        Signal: {device.rssi ? Math.abs(device.rssi) : ""} dBm
-                      </Text>
+              {sortedDevices.map((dev) => {
+                const isAdded = existingDeviceIds.has(
+                  String(dev.canonicalId || dev.id).toUpperCase()
+                );
+                return (
+                  <TouchableOpacity
+                    key={dev.id}
+                    style={[styles.deviceCard, isAdded && styles.deviceCardAdded]}
+                    onPress={() => !isAdded && handleDeviceSelect(dev)}
+                    activeOpacity={isAdded ? 1 : 0.7}
+                    disabled={isAdded}
+                  >
+                    <View style={styles.deviceInfo}>
+                      <Bluetooth size={20} color={isAdded ? "#475569" : "#3b82f6"} />
+                      <View style={styles.deviceDetails}>
+                        <Text style={[styles.deviceName, isAdded && styles.deviceNameAdded]}>
+                          {dev.canonicalId || dev.id}
+                        </Text>
+                        <Text style={styles.deviceSignal}>
+                          Signal: {formatRssi(dev.rssi)}
+                        </Text>
+                        <Text style={styles.deviceSignal}>
+                          Approx distance: {estimateDistanceMeters(dev.rssi)}
+                        </Text>
+                      </View>
                     </View>
-                  </View>
-                  <Text style={styles.connectText}>Connect</Text>
-                </TouchableOpacity>
-              ))}
+                    {isAdded ? (
+                      <View style={styles.addedTag}>
+                        <Text style={styles.addedTagText}>Added</Text>
+                      </View>
+                    ) : (
+                      <Text style={styles.connectText}>Connect</Text>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
             </ScrollView>
           )}
 
@@ -365,6 +674,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
             <Text style={styles.manualButtonText}>Refresh</Text>
           </TouchableOpacity>
         </View>
+        </ScrollView>
       </View>
     );
   }
@@ -513,32 +823,47 @@ const styles = StyleSheet.create({
   scanContent: {
     flex: 1,
     padding: 24,
+    paddingTop: 12,
     alignItems: "center",
   },
-  scanIcon: {
+  scanScrollContent: {
+    flexGrow: 1,
+  },
+  scanIconWrapper: {
     width: 120,
     height: 120,
-    borderRadius: 60,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 8,
+    marginBottom: 10,
+  },
+  scanRing: {
+    position: "absolute",
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    borderWidth: 2,
+    borderColor: "#3b82f6",
+  },
+  scanIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     backgroundColor: "#1e3a8a",
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 48,
-    marginBottom: 24,
   },
   scanTitle: {
-    fontSize: 22,
+    fontSize: 18,
     fontWeight: "bold",
     color: "#fff",
-    marginBottom: 8,
+    marginBottom: 4,
   },
   scanSubtitle: {
-    fontSize: 14,
+    fontSize: 13,
     color: "#94a3b8",
     textAlign: "center",
-    marginBottom: 24,
-  },
-  loader: {
-    marginVertical: 24,
+    marginBottom: 12,
   },
   emptyState: {
     alignItems: "center",
@@ -562,7 +887,7 @@ const styles = StyleSheet.create({
   },
   deviceList: {
     width: "100%",
-    marginTop: 16,
+    marginTop: 8,
   },
   deviceCard: {
     backgroundColor: "#1e293b",
@@ -591,6 +916,24 @@ const styles = StyleSheet.create({
   deviceSignal: {
     fontSize: 12,
     color: "#94a3b8",
+  },
+  deviceCardAdded: {
+    opacity: 0.5,
+    borderColor: "#1e293b",
+  },
+  deviceNameAdded: {
+    color: "#64748b",
+  },
+  addedTag: {
+    backgroundColor: "#1e293b",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  addedTagText: {
+    color: "#64748b",
+    fontSize: 12,
+    fontWeight: "600",
   },
   connectText: {
     fontSize: 14,

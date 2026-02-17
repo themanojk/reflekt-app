@@ -1,6 +1,7 @@
 import { fetchDevicesByMac, fetchDevicesByRoomForUser } from "@/api/devics";
 import { useDebouncedCallback } from "@/callbacks/useDeboundcedCallback";
 import { getRoomsLocal } from "@/db/rooms.local";
+import { getSwitchboardsLocal } from "@/db/switchboards.local";
 import {
   addIgnoredSwitchboard,
   getIgnoredSwitchboards,
@@ -14,10 +15,13 @@ import { syncAppData } from "@/db_sync/app_sync";
 import { getCanonicalId } from "@/services/bleCanonicalId";
 import BLEManagerService from "@/services/bleManager";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
-import { Plus, User } from "lucide-react-native";
+import { MapPin, Plus, User, Wifi } from "lucide-react-native";
 import React, { useCallback, useEffect, useState } from "react";
 import {
+  AppState,
+  AppStateStatus,
   Animated,
+  Dimensions,
   Easing,
   Image,
   Modal,
@@ -46,7 +50,35 @@ interface Switchboard {
   color: string;
   is_online: boolean;
   icon: string;
+  sensors?: string[];
 }
+
+const normalizeSensors = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return Array.from(
+      new Set(
+        value
+          .map((v) =>
+            String(v || "")
+              .trim()
+              .toUpperCase(),
+          )
+          .filter(Boolean),
+      ),
+    );
+  }
+  if (typeof value === "string") {
+    return Array.from(
+      new Set(
+        value
+          .split(",")
+          .map((v) => v.trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    );
+  }
+  return [];
+};
 
 const SWITCHBOARD_COLORS = [
   "#5b8def",
@@ -66,6 +98,89 @@ type Row = {
   iosBleId?: string;
 };
 
+const isMacAddress = (value: string) =>
+  /^[0-9A-F]{2}(:[0-9A-F]{2}){5}$/i.test(String(value || "").trim());
+
+const formatRssi = (rssi: number | null) =>
+  typeof rssi === "number" ? `${rssi} dBm` : "N/A";
+
+const estimateDistanceMeters = (rssi: number | null): string => {
+  if (typeof rssi !== "number") return "N/A";
+  const txPowerAt1m = -59;
+  const pathLossExponent = 2.2;
+  const distance = Math.pow(
+    10,
+    (txPowerAt1m - rssi) / (10 * pathLossExponent),
+  );
+  const safeDistance = Number.isFinite(distance)
+    ? Math.max(0.05, Math.min(distance, 99.9))
+    : 99.9;
+  return `${safeDistance.toFixed(safeDistance < 10 ? 2 : 1)} m`;
+};
+
+const estimateDistanceValue = (rssi: number | null): number | null => {
+  if (typeof rssi !== "number") return null;
+  const txPowerAt1m = -59;
+  const pathLossExponent = 2.2;
+  const distance = Math.pow(
+    10,
+    (txPowerAt1m - rssi) / (10 * pathLossExponent),
+  );
+  if (!Number.isFinite(distance)) return null;
+  return Math.max(0.05, Math.min(distance, 99.9));
+};
+
+const getSignalMeta = (rssi: number | null) => {
+  if (typeof rssi !== "number") {
+    return {
+      label: "Unknown",
+      color: "#94a3b8",
+    };
+  }
+  if (rssi >= -60) {
+    return {
+      label: "Good",
+      color: "#34d399",
+    };
+  }
+  if (rssi >= -75) {
+    return {
+      label: "Medium",
+      color: "#fbbf24",
+    };
+  }
+  return {
+    label: "Weak",
+    color: "#f87171",
+  };
+};
+
+const getDistanceMeta = (rssi: number | null) => {
+  const distance = estimateDistanceValue(rssi);
+  if (distance == null) {
+    return {
+      label: "Unknown",
+      color: "#94a3b8",
+    };
+  }
+  if (distance <= 2) {
+    return {
+      label: "Near",
+      color: "#34d399",
+    };
+  }
+  if (distance <= 6) {
+    return {
+      label: "Medium",
+      color: "#fbbf24",
+    };
+  }
+  return {
+    label: "Far",
+    color: "#f87171",
+  };
+};
+
 export default function HomeScreen({ navigation }: any) {
   const bleManagerRef = React.useRef<BLEManagerService | null>(null);
   if (!bleManagerRef.current) bleManagerRef.current = new BLEManagerService();
@@ -78,10 +193,18 @@ export default function HomeScreen({ navigation }: any) {
   >([]);
   const [devices, setDevices] = useState<Row[]>([]);
   const [switchboards, setSwitchboards] = useState<Switchboard[]>([]);
+  const [localBoardIds, setLocalBoardIds] = useState<Set<string>>(new Set());
+  const [localBoardIdsLoaded, setLocalBoardIdsLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [boardsLoaded, setBoardsLoaded] = useState(false);
   const [ignoredSwitchboards, setIgnoredSwitchboards] = useState<string[]>([]);
   const [newBoardModalVisible, setNewBoardModalVisible] = useState(false);
-  const [candidateDevice, setCandidateDevice] = useState<Row | null>(null);
+  const [suppressNewBoardPopupForSession, setSuppressNewBoardPopupForSession] =
+    useState(false);
+  const [candidateDevices, setCandidateDevices] = useState<Row[]>([]);
+  const [activeCarouselIndex, setActiveCarouselIndex] = useState(0);
+  const scanningRef = React.useRef(false);
+  const appStateRef = React.useRef<AppStateStatus>(AppState.currentState);
   const boardAnim = React.useRef(new Animated.Value(0)).current;
   const newBoardSheetY = React.useRef(new Animated.Value(0)).current;
   const dismissedBoardRef = React.useRef<{ id: string; at: number } | null>(
@@ -98,27 +221,72 @@ export default function HomeScreen({ navigation }: any) {
     }
   }, []);
 
+  const refreshLocalBoardIds = useCallback(async () => {
+    setLocalBoardIdsLoaded(false);
+    try {
+      const localBoards = await getSwitchboardsLocal();
+      const ids = new Set(
+        localBoards
+          .map((b) => String(b.id || "").trim().toUpperCase())
+          .filter(Boolean),
+      );
+      setLocalBoardIds(ids);
+    } catch (e) {
+      console.warn("Failed to load local switchboards for popup filtering", e);
+      setLocalBoardIds(new Set());
+    } finally {
+      setLocalBoardIdsLoaded(true);
+    }
+  }, []);
+
   const onDeviceFound = React.useCallback(async (device: BleDevice) => {
     console.log("Discovered device:", device.id, device.name);
-    // Canonical id from DIS serial (WiFi MAC). Use for all platforms.
-    let canonicalId = device.id;
+    // Canonical id must be a stable board MAC from DIS serial (2A25).
+    let canonicalId: string | null = null;
     try {
       canonicalId = await getCanonicalId(device);
       console.log(`Canonical ID for device ${device.id} is ${canonicalId}`);
     } catch (e) {
-      console.warn("canonicalId lookup failed; fallback to device.id", e);
-      canonicalId = device.id;
+      console.warn(
+        "canonicalId lookup failed; trying transport-id fallback",
+        e,
+      );
+    }
+
+    let normalizedCanonical = String(canonicalId || "")
+      .trim()
+      .toUpperCase();
+    if (!isMacAddress(normalizedCanonical)) {
+      const transportAsMac = String(device.id || "")
+        .trim()
+        .toUpperCase();
+      if (isMacAddress(transportAsMac)) {
+        console.warn(
+          `Using transport MAC fallback for ${device.id}: ${transportAsMac}`,
+        );
+        normalizedCanonical = transportAsMac;
+      }
+    }
+
+    if (!isMacAddress(normalizedCanonical)) {
+      console.warn(
+        `Invalid canonical/transport MAC for ${device.id} (canonical="${canonicalId}"); skipping`,
+      );
+      return;
     }
 
     setDevices((prev) => {
-      const idx = prev.findIndex((r) => r.canonicalId === canonicalId);
+      const idx = prev.findIndex(
+        (r) =>
+          String(r.canonicalId || "").toUpperCase() === normalizedCanonical,
+      );
       if (idx >= 0) {
         const cur = prev[idx];
         const next = [...prev];
         next[idx] = {
           ...cur,
           device,
-          id: canonicalId,
+          id: normalizedCanonical,
           name: device.name ?? cur.name,
           rssi: device.rssi ?? cur.rssi,
           iosBleId: Platform.OS === "ios" ? device.id : cur.iosBleId,
@@ -128,18 +296,19 @@ export default function HomeScreen({ navigation }: any) {
       return [
         ...prev,
         {
-          id: canonicalId,
+          id: normalizedCanonical,
           name: device.name ?? null,
           rssi: device.rssi ?? null,
           device,
-          canonicalId,
+          canonicalId: normalizedCanonical,
         },
       ];
     });
   }, []);
 
   const runScan = useCallback(async () => {
-    if (scanning) return;
+    if (scanningRef.current) return;
+    scanningRef.current = true;
     setScanning(true);
     try {
       const { done } = bleManager.startScan_new(onDeviceFound, {
@@ -147,9 +316,10 @@ export default function HomeScreen({ navigation }: any) {
       });
       await done;
     } finally {
+      scanningRef.current = false;
       setScanning(false);
     }
-  }, [bleManager, onDeviceFound, scanning]);
+  }, [bleManager, onDeviceFound]);
 
   useFocusEffect(
     useCallback(() => {
@@ -161,7 +331,31 @@ export default function HomeScreen({ navigation }: any) {
         console.log("FocusEffect cleanup – stopping scan");
         bleManager.stopScan();
       };
-    }, [runScan])
+    }, [runScan]),
+  );
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (nextState) => {
+      const prevState = appStateRef.current;
+      appStateRef.current = nextState;
+      const resumed =
+        (prevState === "background" || prevState === "inactive") &&
+        nextState === "active";
+      if (!resumed) return;
+      if (!isFocused) return;
+
+      console.log("App resumed on HomeScreen; refreshing BLE + rooms");
+      runScan();
+      loadRooms();
+    });
+    return () => sub.remove();
+  }, [isFocused, runScan, loadRooms]);
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshLocalBoardIds();
+      return () => {};
+    }, [refreshLocalBoardIds]),
   );
 
   // useEffect(() => {
@@ -177,7 +371,7 @@ export default function HomeScreen({ navigation }: any) {
   //   };
   // }, [runScan]);
 
-  const loadRooms = async () => {
+  const loadRooms = useCallback(async () => {
     setLoading(true);
 
     try {
@@ -206,6 +400,7 @@ export default function HomeScreen({ navigation }: any) {
                 ],
               is_online: !!d.online,
               icon: r.room?.icon || d.room_icon,
+              sensors: Array.isArray(d.sensors) ? d.sensors : [],
             })),
           }));
           setRoomsWithBoards(mapped);
@@ -231,6 +426,7 @@ export default function HomeScreen({ navigation }: any) {
                 ],
               is_online: !!d.online,
               icon: r.room?.icon || d.room_icon,
+              sensors: Array.isArray(d.sensors) ? d.sensors : [],
             })),
           }));
           setRoomsWithBoards(mapped);
@@ -239,16 +435,55 @@ export default function HomeScreen({ navigation }: any) {
       }
     } finally {
       setLoading(false);
+      setBoardsLoaded(true);
     }
-  };
+  }, []);
 
   const fetchDevicesDebounced = useDebouncedCallback(
     async (ids: string[]) => {
       try {
-        const foundDevices = await fetchDevicesByMac(ids);
+        console.log("fetchDevicesByMac called with IDs:", ids);
+        const [foundDevices, byRoom] = await Promise.all([
+          fetchDevicesByMac(ids),
+          fetchDevicesByRoomForUser().catch(() => []),
+        ]);
+        console.log(
+          "fetchDevicesByMac response:",
+          JSON.stringify(foundDevices),
+        );
+
+        if (!foundDevices || !Array.isArray(foundDevices)) {
+          console.log("fetchDevicesByMac returned empty/invalid, using cache");
+          const cached = await getNearbyDevicesCache();
+          if (cached && Array.isArray(cached)) {
+            setSwitchboards(cached);
+          }
+          setBoardsLoaded(true);
+          return;
+        }
+
+        const sensorsByDeviceId = new Map<string, string[]>();
+        if (Array.isArray(byRoom)) {
+          byRoom.forEach((r: any) => {
+            (r?.devices || []).forEach((d: any) => {
+              const key = String(d?.device_id || "").toUpperCase();
+              if (!key) return;
+              const sensors = normalizeSensors(d?.sensors || d?.sensor_ids);
+              if (sensors.length) sensorsByDeviceId.set(key, sensors);
+            });
+          });
+        }
 
         const nearByDevices: Switchboard[] = [];
         foundDevices.forEach((device) => {
+          const responseSensors = normalizeSensors(
+            (device as any).sensors || (device as any).sensor_ids,
+          );
+          const sensors =
+            responseSensors.length > 0
+              ? responseSensors
+              : sensorsByDeviceId.get(String(device.device_id).toUpperCase()) ||
+                [];
           const obj: Switchboard = {
             id: device.device_id,
             name: device.title,
@@ -259,28 +494,42 @@ export default function HomeScreen({ navigation }: any) {
               ],
             is_online: true,
             icon: device.room_icon,
+            sensors,
           };
           nearByDevices.push(obj);
         });
 
+        console.log(
+          "Setting switchboards (nearby):",
+          nearByDevices.length,
+          nearByDevices.map((d) => d.id),
+        );
         setSwitchboards(nearByDevices);
+        setBoardsLoaded(true);
         await setNearbyDevicesCache(nearByDevices);
       } catch {
         const cached = await getNearbyDevicesCache();
         if (cached && Array.isArray(cached)) {
           setSwitchboards(cached);
         }
+        setBoardsLoaded(true);
       }
     },
     500,
     { leading: false, trailing: true },
-    [fetchDevicesByMac]
+    [fetchDevicesByMac],
   );
 
   useEffect(() => {
     syncAppData();
-    loadRooms();
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadRooms();
+      return () => {};
+    }, [loadRooms]),
+  );
 
   useEffect(() => {
     getIgnoredSwitchboards().then(setIgnoredSwitchboards);
@@ -296,35 +545,82 @@ export default function HomeScreen({ navigation }: any) {
 
   useEffect(() => {
     if (!isFocused) return;
-    if (scanning) return;
+    if (!localBoardIdsLoaded) return;
+    if (!boardsLoaded) return;
     if (!devices.length) return;
-    if (newBoardModalVisible) return;
+    if (suppressNewBoardPopupForSession) {
+      if (newBoardModalVisible) {
+        closeNewBoardSheet(false, false);
+      }
+      return;
+    }
 
-    const existing = new Set(
-      switchboards.map((s) => String(s.id).toUpperCase())
-    );
+    const existing = new Set<string>(localBoardIds);
+    switchboards.forEach((s) => existing.add(String(s.id).toUpperCase()));
     const ignored = new Set(ignoredSwitchboards.map((s) => s.toUpperCase()));
 
-    const fresh = devices.find((d) => {
+    console.log(
+      "All scanned devices:",
+      devices.map((d) => d.canonicalId || d.id),
+    );
+    console.log("Existing switchboards:", [...existing]);
+    console.log("Ignored switchboards:", [...ignored]);
+
+    const freshDevices = devices.filter((d) => {
       const id = String(d.canonicalId || d.id).toUpperCase();
-      return !existing.has(id) && !ignored.has(id);
+      if (existing.has(id)) {
+        console.log("Filtered (existing):", id);
+        return false;
+      }
+      if (ignored.has(id)) {
+        console.log("Filtered (ignored):", id);
+        return false;
+      }
+      const dismissed = dismissedBoardRef.current;
+      const freshId = String(d.canonicalId || d.id);
+      if (
+        dismissed &&
+        dismissed.id === freshId &&
+        Date.now() - dismissed.at < 120000
+      ) {
+        console.log("Filtered (dismissed):", id);
+        return false;
+      }
+      return true;
     });
 
-    if (fresh) {
-      const dismissed = dismissedBoardRef.current;
-      const freshId = String(fresh.canonicalId || fresh.id);
-      if (dismissed && dismissed.id === freshId && Date.now() - dismissed.at < 120000) {
-        return;
+    if (freshDevices.length > 0) {
+      const sortedFreshDevices = [...freshDevices].sort((a, b) => {
+        const aRssi =
+          typeof a.rssi === "number" ? a.rssi : Number.NEGATIVE_INFINITY;
+        const bRssi =
+          typeof b.rssi === "number" ? b.rssi : Number.NEGATIVE_INFINITY;
+        return bRssi - aRssi;
+      });
+      console.log(
+        "Fresh devices found:",
+        sortedFreshDevices.length,
+        sortedFreshDevices.map((d) => d.canonicalId || d.id),
+      );
+      setCandidateDevices(sortedFreshDevices);
+      if (!newBoardModalVisible) {
+        setActiveCarouselIndex(0);
+        setNewBoardModalVisible(true);
       }
-      setCandidateDevice(fresh);
-      setNewBoardModalVisible(true);
+    } else if (newBoardModalVisible) {
+      // All candidates are now existing/ignored — close the modal
+      console.log("No fresh devices left, closing modal");
+      closeNewBoardSheet(false, false);
     }
   }, [
     isFocused,
-    scanning,
+    localBoardIdsLoaded,
+    boardsLoaded,
     devices,
+    localBoardIds,
     switchboards,
     ignoredSwitchboards,
+    suppressNewBoardPopupForSession,
     newBoardModalVisible,
   ]);
 
@@ -358,21 +654,32 @@ export default function HomeScreen({ navigation }: any) {
     return () => loop.stop();
   }, [newBoardModalVisible, boardAnim]);
 
-  const closeNewBoardSheet = (markDismissed = false, keepCandidate = false) => {
+  const closeNewBoardSheet = (
+    markDismissed = false,
+    keepCandidate = false,
+    suppressForSession = false,
+  ) => {
+    if (suppressForSession) {
+      setSuppressNewBoardPopupForSession(true);
+    }
     Animated.timing(newBoardSheetY, {
       toValue: 280,
       duration: 180,
       useNativeDriver: true,
     }).start(() => {
       setNewBoardModalVisible(false);
-      if (markDismissed && candidateDevice) {
-        dismissedBoardRef.current = {
-          id: String(candidateDevice.canonicalId || candidateDevice.id),
-          at: Date.now(),
-        };
+      if (markDismissed && candidateDevices.length > 0) {
+        const current = candidateDevices[activeCarouselIndex];
+        if (current) {
+          dismissedBoardRef.current = {
+            id: String(current.canonicalId || current.id),
+            at: Date.now(),
+          };
+        }
       }
       if (!keepCandidate) {
-        setCandidateDevice(null);
+        setCandidateDevices([]);
+        setActiveCarouselIndex(0);
       }
       newBoardSheetY.setValue(280);
     });
@@ -389,7 +696,7 @@ export default function HomeScreen({ navigation }: any) {
         },
         onPanResponderRelease: (_, g) => {
           if (g.dy > 24) {
-            closeNewBoardSheet(true);
+            closeNewBoardSheet(true, false, true);
           } else {
             Animated.spring(newBoardSheetY, {
               toValue: 0,
@@ -398,27 +705,46 @@ export default function HomeScreen({ navigation }: any) {
           }
         },
       }),
-    [newBoardSheetY]
+    [newBoardSheetY],
   );
 
   const handleIgnoreNewBoard = async () => {
-    if (!candidateDevice) return;
-    const id = String(candidateDevice.canonicalId || candidateDevice.id);
+    const current = candidateDevices[activeCarouselIndex];
+    if (!current) return;
+    const id = String(current.canonicalId || current.id);
     await addIgnoredSwitchboard(id);
     setIgnoredSwitchboards((prev) => Array.from(new Set([...prev, id])));
     closeNewBoardSheet(true);
   };
 
   const handleAddNewBoard = async () => {
-    if (!candidateDevice) return;
+    const current = candidateDevices[activeCarouselIndex];
+    if (!current) return;
     setNewBoardModalVisible(false);
     newBoardSheetY.setValue(280);
-    const pendingId = String(candidateDevice.canonicalId || candidateDevice.id);
+    const pendingId = String(current.canonicalId || current.id);
     await setPendingSwitchboardDeviceId(pendingId);
-    setCandidateDevice(null);
+    setCandidateDevices([]);
+    setActiveCarouselIndex(0);
     navigation.navigate("ConfirmNewBoard", {
       pendingDeviceId: pendingId,
+      bleTransportId: current.device.id,
     });
+  };
+
+  const openSwitchboardFromHome = async (payload: {
+    switchboardId: string;
+    switchboardName: string;
+    deviceId: string;
+    status: boolean;
+    iosBleId?: string;
+    bleId?: string;
+    sensors?: string[];
+  }) => {
+    try {
+      await bleManager.disconnectAllConnectedDevices();
+    } catch {}
+    navigation.navigate("Switchboard", payload);
   };
 
   const onlineCount = switchboards.filter((sb) => sb.is_online).length;
@@ -441,8 +767,8 @@ export default function HomeScreen({ navigation }: any) {
               {new Date().getHours() < 12
                 ? "Good Morning"
                 : new Date().getHours() < 18
-                ? "Good Afternoon"
-                : "Good Evening"}
+                  ? "Good Afternoon"
+                  : "Good Evening"}
             </Text>
             <Text style={styles.subtitle}>Welcome back to your smart home</Text>
           </View>
@@ -471,44 +797,46 @@ export default function HomeScreen({ navigation }: any) {
                   switchboard.is_online ||
                   devices.some((d) => d.canonicalId === switchboard.id);
                 return (
-                <TouchableOpacity
-                  key={switchboard.id}
-                  style={styles.switchboardCardHorizontal}
-                  onPress={() =>
-                    navigation.navigate("Switchboard", {
-                      switchboardId: switchboard.id,
-                      switchboardName: switchboard.name,
-                      deviceId: switchboard.id,
-                      status: switchboard.is_online,
-                      iosBleId: devices.find(
-                        (d) => d.canonicalId === switchboard.id
-                      )?.iosBleId,
-                      bleId: devices.find(
-                        (d) => d.canonicalId === switchboard.id
-                      )?.device?.id,
-                    })
-                  }
-                >
-                  <View
-                    style={[
-                      styles.switchboardIcon,
-                      { backgroundColor: switchboard.color },
-                    ]}
-                  />
-                  <View
-                    style={[
-                      styles.statusDot,
-                      { backgroundColor: isOnline ? "#10b981" : "#64748b" },
-                    ]}
-                  />
-                  <Text style={styles.switchboardName} numberOfLines={1}>
-                    {switchboard.name}
-                  </Text>
-                  <Text style={styles.switchboardRoom}>
-                    {switchboard.room_name}
-                  </Text>
-                </TouchableOpacity>
-              )})}
+                  <TouchableOpacity
+                    key={switchboard.id}
+                    style={styles.switchboardCardHorizontal}
+                    onPress={() =>
+                      openSwitchboardFromHome({
+                        switchboardId: switchboard.id,
+                        switchboardName: switchboard.name,
+                        deviceId: switchboard.id,
+                        status: isOnline,
+                        iosBleId: devices.find(
+                          (d) => d.canonicalId === switchboard.id,
+                        )?.iosBleId,
+                        bleId: devices.find(
+                          (d) => d.canonicalId === switchboard.id,
+                        )?.device?.id,
+                        sensors: switchboard.sensors || [],
+                      })
+                    }
+                  >
+                    <View
+                      style={[
+                        styles.switchboardIcon,
+                        { backgroundColor: switchboard.color },
+                      ]}
+                    />
+                    <View
+                      style={[
+                        styles.statusDot,
+                        { backgroundColor: isOnline ? "#10b981" : "#64748b" },
+                      ]}
+                    />
+                    <Text style={styles.switchboardName} numberOfLines={1}>
+                      {switchboard.name}
+                    </Text>
+                    <Text style={styles.switchboardRoom}>
+                      {switchboard.room_name}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           </ScrollView>
         </View>
@@ -520,7 +848,8 @@ export default function HomeScreen({ navigation }: any) {
             <View key={room.id} style={styles.section}>
               <View style={styles.sectionHeader}>
                 <Text style={styles.sectionTitleSmall}>
-                  {room.name} · {room.switchboardCount || roomSwitchboards.length}
+                  {room.name} ·{" "}
+                  {room.switchboardCount || roomSwitchboards.length}
                 </Text>
               </View>
               <ScrollView
@@ -528,47 +857,53 @@ export default function HomeScreen({ navigation }: any) {
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.edgeScroll}
               >
-                <View style={[styles.switchboardRow, styles.switchboardRowPadded]}>
+                <View
+                  style={[styles.switchboardRow, styles.switchboardRowPadded]}
+                >
                   {roomSwitchboards.map((switchboard) => {
                     const isOnline =
                       switchboard.is_online ||
                       devices.some((d) => d.canonicalId === switchboard.id);
                     return (
-                    <TouchableOpacity
-                  key={switchboard.id}
-                  style={styles.switchboardCardHorizontal}
-                  onPress={() =>
-                    navigation.navigate("Switchboard", {
-                      switchboardId: switchboard.id,
-                      switchboardName: switchboard.name,
-                      deviceId: switchboard.id,
-                      status: switchboard.is_online,
-                      iosBleId: devices.find(
-                        (d) => d.canonicalId === switchboard.id
-                      )?.iosBleId,
-                      bleId: devices.find(
-                        (d) => d.canonicalId === switchboard.id
-                      )?.device?.id,
-                    })
-                  }
-                    >
-                      <View
-                        style={[
-                          styles.switchboardIcon,
-                          { backgroundColor: switchboard.color },
-                        ]}
-                      />
-                      <View
-                        style={[
-                          styles.statusDot,
-                          { backgroundColor: isOnline ? "#10b981" : "#64748b" },
-                        ]}
-                      />
-                      <Text style={styles.switchboardName} numberOfLines={1}>
-                        {switchboard.name}
-                      </Text>
-                    </TouchableOpacity>
-                  )})}
+                      <TouchableOpacity
+                        key={switchboard.id}
+                        style={styles.switchboardCardHorizontal}
+                        onPress={() =>
+                          openSwitchboardFromHome({
+                            switchboardId: switchboard.id,
+                            switchboardName: switchboard.name,
+                            deviceId: switchboard.id,
+                            status: isOnline,
+                            iosBleId: devices.find(
+                              (d) => d.canonicalId === switchboard.id,
+                            )?.iosBleId,
+                            bleId: devices.find(
+                              (d) => d.canonicalId === switchboard.id,
+                            )?.device?.id,
+                            sensors: switchboard.sensors || [],
+                          })
+                        }
+                      >
+                        <View
+                          style={[
+                            styles.switchboardIcon,
+                            { backgroundColor: switchboard.color },
+                          ]}
+                        />
+                        <View
+                          style={[
+                            styles.statusDot,
+                            {
+                              backgroundColor: isOnline ? "#10b981" : "#64748b",
+                            },
+                          ]}
+                        />
+                        <Text style={styles.switchboardName} numberOfLines={1}>
+                          {switchboard.name}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
                   <TouchableOpacity
                     style={styles.addSwitchboardCard}
                     onPress={() =>
@@ -600,34 +935,118 @@ export default function HomeScreen({ navigation }: any) {
       >
         <View style={styles.modalOverlay}>
           <Animated.View
-            style={[styles.bottomSheet, { transform: [{ translateY: newBoardSheetY }] }]}
+            style={[
+              styles.bottomSheet,
+              { transform: [{ translateY: newBoardSheetY }] },
+            ]}
           >
             <View style={styles.sheetHandle} {...newBoardPan.panHandlers}>
               <View style={styles.sheetHandleBar} />
             </View>
-            <Text style={styles.sheetTitle}>New Switchboard Found</Text>
-            <Text style={styles.sheetSubtitle}>
-              {candidateDevice?.canonicalId || candidateDevice?.id}
+            <Text style={styles.sheetTitle}>
+              {candidateDevices.length > 1
+                ? `${candidateDevices.length} New Switchboards Found`
+                : "New Switchboard Found"}
             </Text>
-            <Animated.View
-              style={{
-                alignItems: "center",
-                marginBottom: 10,
-                transform: [
-                  {
-                    translateY: boardAnim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [0, -8],
-                    }),
-                  },
-                ],
+            <ScrollView
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              onMomentumScrollEnd={(e) => {
+                const pageWidth = Dimensions.get("window").width - 40;
+                const index = Math.round(
+                  e.nativeEvent.contentOffset.x / pageWidth,
+                );
+                setActiveCarouselIndex(index);
               }}
+              style={{ flexGrow: 0 }}
             >
-              <Image
-                source={require("@/assets/images/board-image.png")}
-                style={styles.boardHero}
-              />
-            </Animated.View>
+              {candidateDevices.map((item) => {
+                const signalMeta = getSignalMeta(item.rssi);
+                const distanceMeta = getDistanceMeta(item.rssi);
+                return (
+                  <View
+                    key={item.canonicalId || item.id}
+                    style={styles.sheetPage}
+                  >
+                    <View style={styles.sheetDeviceCard}>
+                      <View style={styles.sheetTopRow}>
+                        <View style={styles.sheetMacBlock}>
+                          <Text style={styles.sheetMac}>{item.canonicalId || item.id}</Text>
+                          <View style={styles.sheetDistanceRow}>
+                            <MapPin
+                              size={14}
+                              color="#94a3b8"
+                              strokeWidth={2.3}
+                            />
+                            <Text
+                              style={[
+                                styles.sheetStatusText,
+                                styles.sheetDistanceText,
+                              ]}
+                            >
+                              {distanceMeta.label} · {estimateDistanceMeters(item.rssi)}
+                            </Text>
+                          </View>
+                        </View>
+                        <View
+                          style={[
+                            styles.sheetStatusPill,
+                          ]}
+                        >
+                          <Wifi
+                            size={14}
+                            color={signalMeta.color}
+                            strokeWidth={2.3}
+                          />
+                          <Text
+                            style={[
+                              styles.sheetStatusText,
+                              { color: signalMeta.color },
+                            ]}
+                          >
+                            {signalMeta.label} · {formatRssi(item.rssi)}
+                          </Text>
+                        </View>
+                      </View>
+                      <Animated.View
+                        style={[
+                          styles.boardHeroWrap,
+                          {
+                            transform: [
+                              {
+                                translateY: boardAnim.interpolate({
+                                  inputRange: [0, 1],
+                                  outputRange: [0, -6],
+                                }),
+                              },
+                            ],
+                          },
+                        ]}
+                      >
+                        <Image
+                          source={require("@/assets/images/board-image.png")}
+                          style={styles.boardHero}
+                        />
+                      </Animated.View>
+                    </View>
+                  </View>
+                );
+              })}
+            </ScrollView>
+            {candidateDevices.length > 1 && (
+              <View style={styles.carouselDots}>
+                {candidateDevices.map((_, i) => (
+                  <View
+                    key={i}
+                    style={[
+                      styles.carouselDot,
+                      i === activeCarouselIndex && styles.carouselDotActive,
+                    ]}
+                  />
+                ))}
+              </View>
+            )}
             <View style={styles.sheetActions}>
               <TouchableOpacity
                 style={[styles.sheetButton, styles.sheetButtonGhost]}
@@ -645,7 +1064,6 @@ export default function HomeScreen({ navigation }: any) {
           </Animated.View>
         </View>
       </Modal>
-
     </View>
   );
 }
@@ -833,16 +1251,72 @@ const styles = StyleSheet.create({
     color: "#e2e8f0",
     fontSize: 18,
     fontWeight: "700",
+    marginBottom: 12,
   },
-  sheetSubtitle: {
+  sheetPage: {
+    width: Dimensions.get("window").width - 40,
+    alignItems: "center",
+  },
+  sheetDeviceCard: {
+    width: "100%",
+    borderRadius: 16,
+    backgroundColor: "#111c31",
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 8,
+  },
+  sheetMac: {
+    color: "#e2e8f0",
+    fontSize: 13,
+    fontWeight: "700",
+    marginBottom: 5,
+  },
+  sheetTopRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 8,
+    alignItems: "flex-start",
+  },
+  sheetMacBlock: {
+    flex: 1,
+    minWidth: 0,
+  },
+  sheetDistanceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  sheetStatusPill: {
+    flexShrink: 0,
+    borderRadius: 999,
+    borderWidth: 0,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "rgba(15,23,42,0.45)",
+  },
+  sheetStatusText: {
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  sheetDistanceText: {
     color: "#94a3b8",
-    marginTop: 6,
-    marginBottom: 16,
+  },
+  boardHeroWrap: {
+    alignItems: "center",
+    marginTop: 2,
+  },
+  boardHero: {
+    width: 240,
+    height: 170,
+    resizeMode: "contain",
   },
   sheetActions: {
     flexDirection: "row",
     gap: 12,
-    marginTop: 8,
+    marginTop: 12,
     paddingBottom: 20,
   },
   sheetButton: {
@@ -866,9 +1340,23 @@ const styles = StyleSheet.create({
     color: "#0f172a",
     fontWeight: "700",
   },
-  boardHero: {
-    width: 240,
-    height: 170,
-    resizeMode: "contain",
+  carouselDots: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 8,
+  },
+  carouselDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#334155",
+  },
+  carouselDotActive: {
+    backgroundColor: "#5b8def",
+    width: 10,
+    height: 10,
+    borderRadius: 5,
   },
 });

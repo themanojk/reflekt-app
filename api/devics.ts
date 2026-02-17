@@ -24,6 +24,8 @@ export interface NearByDevice {
   is_powered: boolean;
   room_name: string;
   room_icon: string;
+  sensors?: string[];
+  sensor_ids?: string[];
 }
 
 export interface AddDevice {
@@ -54,6 +56,8 @@ export interface WifiPayload {
     pin?: number;
     color?: number[];
     brightness?: number;
+    power?: number;
+    speed?: number;
   };
 }
 
@@ -189,6 +193,9 @@ export async function savePinConfig(payload: {
   auto_on: boolean;
   auto_off: boolean;
   off_delay: number;
+  load_watt?: number;
+  on_exclude_start_hour?: number;
+  on_exclude_end_hour?: number;
 }) {
   return client.post(`/sensor/pin-config`, payload).then((res) => res.data);
 }

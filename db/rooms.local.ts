@@ -11,6 +11,15 @@ export async function getRoomsLocal(): Promise<RoomLocal[]> {
   return db.getAllAsync<RoomLocal>("SELECT * FROM rooms");
 }
 
+export async function upsertRoomLocal(room: RoomLocal): Promise<void> {
+  await db.runAsync(
+    `INSERT OR REPLACE INTO rooms
+     (id, name, icon, switchboardCount, updatedAt)
+     VALUES (?, ?, ?, ?, ?)`,
+    [room.id, room.name, room.icon, room.switchboardCount ?? 0, Date.now()]
+  );
+}
+
 export async function upsertRoomsFromServer(
   serverRooms: RoomLocal[]
 ): Promise<boolean> {

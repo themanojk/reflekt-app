@@ -6,6 +6,7 @@ import { ActivityIndicator, StyleSheet, View } from "react-native";
 import type { RootStackParamList } from "./constants/types";
 import { ROLES } from "./constants/types";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
+import { ToastProvider } from "./contexts/ToastContext";
 import { initDB } from "./db";
 import AddRoomScreen from "./screens/AddRoomScreen";
 import AddSwitchboardAdminScreen from "./screens/AddSwitchBoardAdminScreen";
@@ -94,8 +95,10 @@ function Navigation() {
 export default function App() {
   return (
     <AuthProvider>
-      <StatusBar style="light" />
-      <Navigation />
+      <ToastProvider>
+        <StatusBar style="light" />
+        <Navigation />
+      </ToastProvider>
     </AuthProvider>
   );
 }

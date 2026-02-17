@@ -48,6 +48,7 @@ export async function syncAppData(params?: SyncParams) {
           room_name: roomInfo.name ?? null,
           icon: roomInfo.icon ?? null,
           color: COLORS[Math.floor(Math.random() * COLORS.length)],
+          sensors: Array.isArray(d["sensors"]) ? d["sensors"].join(",") : "",
         });
       }
     } catch (e) {

@@ -13,6 +13,7 @@ import {
 import HingeSlider from "@/components/HingeSlider";
 import { DATA_CHAR_UUID, ROOM_ICONS } from "@/constants";
 import { RootStackParamList } from "@/constants/types";
+import { useToast } from "@/contexts/ToastContext";
 import { getLayoutButtonsByServiceId } from "@/db/layout_buttons";
 import {
   getPendingPinConfigs,
@@ -20,7 +21,9 @@ import {
   markPinConfigSynced,
   upsertPinConfigLocal,
 } from "@/db/pin_configs";
+import { getSwitchboardsLocal } from "@/db/switchboards.local";
 import BLEManagerService from "@/services/bleManager";
+import { getCanonicalId } from "@/services/bleCanonicalId";
 import {
   addIgnoredSensor,
   clearIgnoredSensors,
@@ -30,10 +33,12 @@ import {
 } from "@/utils/storage";
 import { loadWifi, saveWifi } from "@/utils/wifiCreds";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { RouteProp } from "@react-navigation/native";
+import { RouteProp, useIsFocused } from "@react-navigation/native";
 import { Buffer } from "buffer";
 import {
   ChevronLeft,
+  ChevronDown,
+  ChevronUp,
   Lightbulb,
   Power,
   Settings,
@@ -43,6 +48,8 @@ import {
 } from "lucide-react-native";
 import React, { useEffect, useState } from "react";
 import {
+  AppState,
+  AppStateStatus,
   Alert,
   Animated,
   Easing,
@@ -92,6 +99,25 @@ const COLOR_PALETTE = [
 ];
 
 const FAN_SPEED_LEVELS = [30, 45, 60, 75, 90, 100];
+const DEFAULT_EXCLUDE_START = 22;
+const DEFAULT_EXCLUDE_END = 7;
+const DEFAULT_LOAD_WATT = 0;
+const HOUR_CHIP_MIN_WIDTH = 64;
+const HOUR_CHIP_GAP = 8;
+
+const formatHourLabel = (hour: number) => {
+  const h = ((hour % 24) + 24) % 24;
+  const period = h >= 12 ? "PM" : "AM";
+  const display = h % 12 === 0 ? 12 : h % 12;
+  return `${display} ${period}`;
+};
+
+const clampWatt = (value: number) => Math.min(250, Math.max(0, value));
+const getHourScrollOffset = (hour: number) =>
+  Math.max(0, hour * (HOUR_CHIP_MIN_WIDTH + HOUR_CHIP_GAP) - 16);
+
+const formatExcludeSummary = (start: number, end: number) =>
+  `${formatHourLabel(start)} - ${formatHourLabel(end)}`;
 
 type Props = {
   route: RouteProp<RootStackParamList, "Switchboard">;
@@ -103,6 +129,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const bleManagerRef = React.useRef<BLEManagerService>(null);
   if (!bleManagerRef.current) bleManagerRef.current = new BLEManagerService();
   const bleManager = bleManagerRef.current;
+  const isFocused = useIsFocused();
 
   const {
     switchboardName,
@@ -112,7 +139,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     status,
     iosBleId,
     bleId,
+    sensors: initialSensors,
   } = route.params;
+  const initialDeviceMac = String(deviceId || "").trim().toUpperCase();
+  const [resolvedDeviceMac, setResolvedDeviceMac] = useState(initialDeviceMac);
   const [devices, setDevices] = useState<Device[]>([]);
   const [activeDevice, setActiveDevice] = useState<BleDevice>();
   const [services, setServices] = useState<string[]>([]);
@@ -139,8 +169,17 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [pendingSensor, setPendingSensor] = useState<string | null>(null);
   const [sensorStep, setSensorStep] = useState<"prompt" | "attached">("prompt");
   const [ignoredSensors, setIgnoredSensors] = useState<string[]>([]);
-  const [attachedSensors, setAttachedSensors] = useState<string[]>([]);
+  const [attachedSensors, setAttachedSensors] = useState<string[]>(
+    Array.isArray(initialSensors) ? initialSensors : [],
+  );
   const [pinConfigs, setPinConfigs] = useState<Record<number, any>>({});
+  const [expandedPinId, setExpandedPinId] = useState<number | null>(null);
+  const [ruleTabs, setRuleTabs] = useState<Record<number, "on" | "off">>({});
+  const hourScrollRefs = React.useRef<Record<string, ScrollView | null>>({});
+  const [pinConfigBaseline, setPinConfigBaseline] = useState<
+    Record<number, string>
+  >({});
+  const { showToast } = useToast();
   const rotation = React.useRef(new Animated.Value(0)).current;
   const [serviceId, setServiceId] = useState(service_id || "");
   const sheetTranslateY = React.useRef(new Animated.Value(0)).current;
@@ -148,8 +187,17 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const monitorRef = React.useRef<Disposable | null>(null);
   const disconnectRef = React.useRef<Disposable | null>(null);
   const mountedRef = React.useRef(true);
+  const activeDeviceRef = React.useRef<BleDevice | undefined>(undefined);
+  const prevFocusedRef = React.useRef<boolean>(false);
+  const reconnectTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const reconnectAttemptsRef = React.useRef<number>(0);
+  const appStateRef = React.useRef<AppStateStatus>(AppState.currentState);
 
   const IconComponent = ROOM_ICONS[roomIcon] ?? ROOM_ICONS["home"];
+  const bleLog = (...args: any[]) =>
+    console.log(`[SwitchboardBLE][${resolvedDeviceMac || initialDeviceMac}]`, ...args);
 
   const levelToPercent = (level: number) =>
     FAN_SPEED_LEVELS[Math.max(0, Math.min(5, Math.round(level)))];
@@ -158,6 +206,11 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     return () => {
       // on unmount
       mountedRef.current = false;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      bleLog("Unmount: tearing down BLE listeners");
       monitorRef.current?.remove?.();
       monitorRef.current?.unsubscribe?.();
       disconnectRef.current?.remove?.();
@@ -166,8 +219,46 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   }, []);
 
   useEffect(() => {
-    getIgnoredSensors(deviceId).then(setIgnoredSensors);
-  }, [deviceId]);
+    bleLog("Screen mount params", {
+      status,
+      bleId,
+      iosBleId,
+      service_id,
+      switchboardName,
+    });
+  }, [bleId, iosBleId, service_id, status, switchboardName]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const resolveCanonicalMac = async () => {
+      const routeMac = String(deviceId || "").trim().toUpperCase();
+      let resolved = routeMac;
+      const transportId = String(bleId || iosBleId || "").trim();
+
+      if (transportId) {
+        try {
+          const cached = await AsyncStorage.getItem(`ble:canonical:${transportId}`);
+          const normalized = String(cached || "").trim().toUpperCase();
+          if (normalized) {
+            resolved = normalized;
+          }
+        } catch {}
+      }
+
+      if (!cancelled) {
+        setResolvedDeviceMac(resolved || routeMac);
+      }
+    };
+
+    resolveCanonicalMac();
+    return () => {
+      cancelled = true;
+    };
+  }, [bleId, iosBleId, deviceId]);
+
+  useEffect(() => {
+    getIgnoredSensors(resolvedDeviceMac).then(setIgnoredSensors);
+  }, [resolvedDeviceMac]);
 
   useEffect(() => {
     Animated.loop(
@@ -179,6 +270,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       }),
     ).start();
   }, [rotation]);
+
+  useEffect(() => {
+    loadPinConfigs();
+  }, []);
 
   const closeSheet = React.useCallback(() => {
     Animated.timing(sheetTranslateY, {
@@ -218,8 +313,58 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     monitorRef.current = null;
   }, []);
 
+  const scheduleReconnect = React.useCallback(
+    (reason: string) => {
+      if (!mountedRef.current || !isFocused) return;
+      if (reconnectAttemptsRef.current >= 2) return;
+      if (reconnectTimerRef.current) return;
+      reconnectAttemptsRef.current += 1;
+      bleLog("Scheduling BLE reconnect", {
+        reason,
+        attempt: reconnectAttemptsRef.current,
+      });
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        if (!mountedRef.current || !isFocused) return;
+        getBleConnection(resolvedDeviceMac);
+      }, 900);
+    },
+    [isFocused, resolvedDeviceMac],
+  );
+
+  const disconnectBleConnection = React.useCallback(async () => {
+    try {
+      teardownBle();
+      disconnectRef.current?.remove?.();
+      disconnectRef.current?.unsubscribe?.();
+      disconnectRef.current = null;
+
+      if (activeDeviceRef.current) {
+        bleLog("Disconnecting BLE device", {
+          activeDeviceId: activeDeviceRef.current.id,
+        });
+        await bleManager.cancelDeviceConnection(activeDeviceRef.current);
+      }
+    } catch (e) {
+      bleLog("disconnectBleConnection error", e);
+    } finally {
+      if (mountedRef.current) {
+        setActiveDevice(undefined);
+        setServices([]);
+        setIsOnline(false);
+      }
+    }
+  }, [bleManager, teardownBle]);
+
   useEffect(() => {
+    activeDeviceRef.current = activeDevice;
     // BLE online should reflect actual BLE connection state
+    const nextOnline = !!activeDevice && services.length > 0;
+    bleLog("State sync", {
+      activeDeviceId: activeDevice?.id,
+      servicesCount: services.length,
+      nextOnline,
+    });
     if (!activeDevice || !services.length) {
       setIsOnline(false);
     } else {
@@ -229,15 +374,37 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   useEffect(() => {
     loadSwitchboardData();
-  }, [deviceId, serviceId]);
+  }, [resolvedDeviceMac, serviceId]);
 
   useEffect(() => {
-    if (!activeDevice || !services.length || !isOnline) return;
+    const wasFocused = prevFocusedRef.current;
+    if (isFocused && !wasFocused) {
+      prevFocusedRef.current = true;
+      if (resolvedDeviceMac) {
+        bleLog("Switchboard focused; ensuring BLE connection");
+        getBleConnection(resolvedDeviceMac);
+      }
+      return;
+    }
+    if (!isFocused && wasFocused) {
+      prevFocusedRef.current = false;
+      disconnectBleConnection();
+    }
+  }, [isFocused, resolvedDeviceMac, disconnectBleConnection]);
+
+  useEffect(() => {
+    if (!activeDevice || !services.length) return;
     teardownBle();
+    bleLog("Subscribing to BLE data", {
+      activeDeviceId: activeDevice.id,
+      serviceId: services[0],
+    });
 
     const onReceived = (data: any) => {
       if (!data || typeof data !== "string") return;
       const raw = data.trim();
+      console.log("Printing Raw data");
+      console.log(raw);
       if (raw.startsWith("SENSORS:")) {
         const list = raw
           .replace("SENSORS:", "")
@@ -298,6 +465,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     };
 
     const onError = (err: any) => {
+      bleLog("BLE monitor error", err?.message || err);
       teardownBle();
       if (mountedRef.current) {
         setIsOnline(false);
@@ -317,6 +485,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     try {
       // @ts-ignore – many ble managers follow this pattern
       const dsub = bleManager.onDeviceDisconnected?.(activeDevice.id, () => {
+        bleLog("Device disconnected callback", { activeDeviceId: activeDevice.id });
         teardownBle();
         if (mountedRef.current) {
           setIsOnline(false);
@@ -333,12 +502,16 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     } catch {}
 
     return () => {
+      bleLog("BLE subscription cleanup", {
+        activeDeviceId: activeDevice?.id,
+        serviceId: services?.[0],
+      });
       teardownBle();
       disconnectRef.current?.remove?.();
       disconnectRef.current?.unsubscribe?.();
       disconnectRef.current = null;
     };
-  }, [activeDevice, services, isOnline]);
+  }, [activeDevice, services]);
 
   const onReceivedOverWifi = (pins: any) => {
     const pinsData = pins;
@@ -359,6 +532,23 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const loadSwitchboardData = async () => {
     setLoading(true);
+
+    // Load sensors from local DB if not provided via route params
+    if (!attachedSensors.length) {
+      try {
+        const allBoards = await getSwitchboardsLocal();
+        const thisBoard = allBoards.find(
+          (b) => b.id.toUpperCase() === resolvedDeviceMac.toUpperCase(),
+        );
+        if (thisBoard?.sensors) {
+          const parsed = thisBoard.sensors
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          if (parsed.length) setAttachedSensors(parsed);
+        }
+      } catch {}
+    }
 
     try {
       // 1️⃣ service_id is ALWAYS available
@@ -386,7 +576,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           });
         });
       } else {
-        const cachedLayout = await getLastLayout(deviceId);
+        const cachedLayout = await getLastLayout(resolvedDeviceMac);
         if (cachedLayout?.length) {
           setDevices((prev) => {
             const prevById = new Map(prev.map((d) => [d.id, d]));
@@ -408,7 +598,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       }
 
       // 4️⃣ BACKGROUND API SYNC (always)
-      getLayout(deviceId)
+      getLayout(resolvedDeviceMac)
         .then(async ({ serviceId: updatedServiceId }) => {
           if (updatedServiceId && updatedServiceId !== serviceId) {
             setServiceId(updatedServiceId);
@@ -417,7 +607,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           const updatedButtons = await getLayoutButtonsByServiceId(sid);
           if (updatedButtons.length) {
             await setLastLayout(
-              deviceId,
+              resolvedDeviceMac,
               updatedButtons.map((b) => ({
                 pin: b.pin,
                 label: b.label,
@@ -447,7 +637,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
       // 5️⃣ Non-blocking side calls
       loadWifiStatusData();
-      getBleConnection(deviceId);
     } catch (err) {
     } finally {
       setLoading(false);
@@ -456,7 +645,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const loadWifiStatusData = async () => {
     try {
-      const wifiStatus = await getDeviceStatusOverWifi(deviceId);
+      const wifiStatus = await getDeviceStatusOverWifi(resolvedDeviceMac);
       if (wifiStatus) {
         setIsWifiOnline(wifiStatus?.status?.online);
         if (wifiStatus?.status?.online) {
@@ -481,45 +670,62 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   };
 
   const loadPinConfigs = async () => {
-    const local = await getPinConfigsByDevice(deviceId);
+    const local = await getPinConfigsByDevice(resolvedDeviceMac);
     if (local.length) {
       const map: Record<number, any> = {};
+      const baseline: Record<number, string> = {};
       local.forEach((c) => {
         map[c.pin] = {
           name: c.name,
           autoOn: !!c.auto_on,
           autoOff: !!c.auto_off,
           offDelay: c.off_delay || 600,
+          loadWatt: c.load_watt ?? DEFAULT_LOAD_WATT,
+          onExcludeStartHour: c.on_exclude_start_hour ?? DEFAULT_EXCLUDE_START,
+          onExcludeEndHour: c.on_exclude_end_hour ?? DEFAULT_EXCLUDE_END,
         };
+        baseline[c.pin] = JSON.stringify(map[c.pin]);
       });
       setPinConfigs(map);
+      setPinConfigBaseline(baseline);
     }
 
     await syncPendingPinConfigs();
 
     try {
-      const res = await fetchPinConfigs(deviceId);
+      const res = await fetchPinConfigs(resolvedDeviceMac);
       const list = res?.configs || [];
       if (list.length) {
         const map: Record<number, any> = {};
+        const baseline: Record<number, string> = {};
         for (const c of list) {
           map[c.pin] = {
             name: c.name || "",
             autoOn: !!c.auto_on,
             autoOff: !!c.auto_off,
             offDelay: c.off_delay || 600,
+            loadWatt: c.load_watt ?? DEFAULT_LOAD_WATT,
+            onExcludeStartHour:
+              c.on_exclude_start_hour ?? DEFAULT_EXCLUDE_START,
+            onExcludeEndHour: c.on_exclude_end_hour ?? DEFAULT_EXCLUDE_END,
           };
+          baseline[c.pin] = JSON.stringify(map[c.pin]);
           await upsertPinConfigLocal({
-            device_mac: deviceId,
+            device_mac: resolvedDeviceMac,
             pin: c.pin,
             name: c.name || "",
             auto_on: c.auto_on ? 1 : 0,
             auto_off: c.auto_off ? 1 : 0,
             off_delay: c.off_delay || 600,
+            load_watt: c.load_watt ?? DEFAULT_LOAD_WATT,
+            on_exclude_start_hour:
+              c.on_exclude_start_hour ?? DEFAULT_EXCLUDE_START,
+            on_exclude_end_hour: c.on_exclude_end_hour ?? DEFAULT_EXCLUDE_END,
             pending_sync: 0,
           });
         }
         setPinConfigs(map);
+        setPinConfigBaseline(baseline);
       }
     } catch {
       // offline: keep local
@@ -538,6 +744,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           auto_on: !!cfg.auto_on,
           auto_off: !!cfg.auto_off,
           off_delay: cfg.off_delay || 600,
+          load_watt: cfg.load_watt ?? DEFAULT_LOAD_WATT,
+          on_exclude_start_hour:
+            cfg.on_exclude_start_hour ?? DEFAULT_EXCLUDE_START,
+          on_exclude_end_hour: cfg.on_exclude_end_hour ?? DEFAULT_EXCLUDE_END,
         });
         await markPinConfigSynced(cfg.device_mac, cfg.pin);
       } catch {
@@ -553,9 +763,20 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         autoOn: false,
         autoOff: false,
         offDelay: 600,
+        loadWatt: DEFAULT_LOAD_WATT,
+        onExcludeStartHour: DEFAULT_EXCLUDE_START,
+        onExcludeEndHour: DEFAULT_EXCLUDE_END,
       };
       return { ...prev, [pin]: { ...current, ...patch } };
     });
+  };
+
+  const togglePinExpanded = (pin: number) => {
+    setExpandedPinId((prev) => (prev === pin ? null : pin));
+  };
+
+  const setRuleTab = (pin: number, tab: "on" | "off") => {
+    setRuleTabs((prev) => ({ ...prev, [pin]: tab }));
   };
 
   const savePinConfigFor = async (pin: number) => {
@@ -563,97 +784,144 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     if (!cfg) return;
 
     await upsertPinConfigLocal({
-      device_mac: deviceId,
+      device_mac: resolvedDeviceMac,
       pin,
       name: cfg.name || "",
       auto_on: cfg.autoOn ? 1 : 0,
       auto_off: cfg.autoOff ? 1 : 0,
       off_delay: cfg.offDelay || 600,
+      load_watt: cfg.loadWatt ?? DEFAULT_LOAD_WATT,
+      on_exclude_start_hour: cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
+      on_exclude_end_hour: cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END,
       pending_sync: 1,
     });
 
     try {
       await savePinConfig({
-        device_mac: deviceId,
+        device_mac: resolvedDeviceMac,
         pin,
         name: cfg.name || "",
         auto_on: !!cfg.autoOn,
         auto_off: !!cfg.autoOff,
         off_delay: cfg.offDelay || 600,
+        load_watt: cfg.loadWatt ?? DEFAULT_LOAD_WATT,
+        on_exclude_start_hour: cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
+        on_exclude_end_hour: cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END,
       });
-      await markPinConfigSynced(deviceId, pin);
-      Alert.alert("Saved", "Pin configuration saved.");
+      await markPinConfigSynced(resolvedDeviceMac, pin);
+      showToast("Changes saved and applied.");
     } catch {
-      Alert.alert("Saved offline", "Will sync when online.");
+      showToast("Saved offline. Will sync when online.");
     }
   };
 
   const saveAllPinConfigs = async () => {
     const targetSensor = attachedSensors[0];
+    const saveTasks: Promise<any>[] = [];
+    const changedPins: number[] = [];
     for (const d of devices) {
       const cfg = pinConfigs[d.id] || {
         name: d.name || "",
         autoOn: false,
         autoOff: false,
         offDelay: 600,
+        loadWatt: DEFAULT_LOAD_WATT,
+        onExcludeStartHour: DEFAULT_EXCLUDE_START,
+        onExcludeEndHour: DEFAULT_EXCLUDE_END,
       };
-      await upsertPinConfigLocal({
-        device_mac: deviceId,
-        pin: d.id,
-        name: cfg.name || "",
-        auto_on: cfg.autoOn ? 1 : 0,
-        auto_off: cfg.autoOff ? 1 : 0,
-        off_delay: cfg.offDelay || 600,
-        pending_sync: 1,
-      });
-      try {
-        await savePinConfig({
-          device_mac: deviceId,
-          pin: d.id,
-          name: cfg.name || "",
-          auto_on: !!cfg.autoOn,
-          auto_off: !!cfg.autoOff,
-          off_delay: cfg.offDelay || 600,
-        });
-        await markPinConfigSynced(deviceId, d.id);
-      } catch {
-        // keep pending
-      }
+      const signature = JSON.stringify(cfg);
+      if (pinConfigBaseline[d.id] === signature) continue;
+      changedPins.push(d.id);
+      saveTasks.push(
+        (async () => {
+          await upsertPinConfigLocal({
+            device_mac: resolvedDeviceMac,
+            pin: d.id,
+            name: cfg.name || "",
+            auto_on: cfg.autoOn ? 1 : 0,
+            auto_off: cfg.autoOff ? 1 : 0,
+            off_delay: cfg.offDelay || 600,
+            load_watt: cfg.loadWatt ?? DEFAULT_LOAD_WATT,
+            on_exclude_start_hour:
+              cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
+            on_exclude_end_hour: cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END,
+            pending_sync: 1,
+          });
+          try {
+            await savePinConfig({
+              device_mac: resolvedDeviceMac,
+              pin: d.id,
+              name: cfg.name || "",
+              auto_on: !!cfg.autoOn,
+              auto_off: !!cfg.autoOff,
+              off_delay: cfg.offDelay || 600,
+              load_watt: cfg.loadWatt ?? DEFAULT_LOAD_WATT,
+              on_exclude_start_hour:
+                cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
+              on_exclude_end_hour: cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END,
+            });
+            await markPinConfigSynced(resolvedDeviceMac, d.id);
+          } catch {
+            // keep pending
+          }
+        })(),
+      );
 
       if (targetSensor) {
-        try {
-          if (cfg.autoOn) {
-            await createSensorRule(targetSensor, d.id, "active", "on");
-          }
-          if (cfg.autoOff) {
-            await createSensorRule(
-              targetSensor,
-              d.id,
-              "inactive",
-              "off",
-              cfg.offDelay || 600,
-            );
-          }
-        } catch {
-          // ignore rule errors
-        }
+        saveTasks.push(
+          (async () => {
+            try {
+              if (cfg.autoOn) {
+                await createSensorRule(targetSensor, d.id, "active", "on");
+              }
+              if (cfg.autoOff) {
+                await createSensorRule(
+                  targetSensor,
+                  d.id,
+                  "inactive",
+                  "off",
+                  cfg.offDelay || 600,
+                );
+              }
+            } catch {
+              // ignore rule errors
+            }
+          })(),
+        );
       }
     }
-    Alert.alert("Saved", "Pin configuration saved.");
+    if (!saveTasks.length) {
+      showToast("No changes to save.");
+      return;
+    }
+    await Promise.all(saveTasks);
+    if (changedPins.length) {
+      setPinConfigBaseline((prev) => {
+        const next = { ...prev };
+        for (const pin of changedPins) {
+          const cfg = pinConfigs[pin];
+          if (cfg) next[pin] = JSON.stringify(cfg);
+        }
+        return next;
+      });
+    }
+    showToast("Changes saved and applied.");
     setShowPinConfigModal(false);
   };
 
   const handleAvailableSensors = async (list: string[]) => {
+    console.log("Handle available sensors");
     if (!list.length) return;
     const unique = Array.from(new Set(list.map((s) => s.toUpperCase())));
     setAvailableSensors(unique);
-
+    console.log(list);
     for (const mac of unique) {
       if (ignoredSensors.includes(mac)) {
         continue;
       }
       try {
         const res = await checkSensorAttachment(mac);
+        console.log(res, mac);
         if (!res?.attached) {
           setPendingSensor(mac);
           setShowSensorModal(true);
@@ -680,7 +948,11 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const attachSensor = async () => {
     if (!pendingSensor) return;
     try {
-      const apiRes = await attachSensorToDevice(deviceId, pendingSensor);
+      const apiRes = await attachSensorToDevice(resolvedDeviceMac, pendingSensor);
+      const attached = String(pendingSensor).trim().toUpperCase();
+      if (attached) {
+        setAttachedSensors((prev) => Array.from(new Set([...prev, attached])));
+      }
       if (services.length && activeDevice) {
         const cmd = `SENSOR_ATTACH:${pendingSensor}`;
         await bleManager.sendData(activeDevice, cmd, services[0]);
@@ -698,14 +970,14 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const ignoreSensor = async () => {
     if (!pendingSensor) return;
-    await addIgnoredSensor(deviceId, pendingSensor);
+    await addIgnoredSensor(resolvedDeviceMac, pendingSensor);
     setIgnoredSensors((prev) => Array.from(new Set([...prev, pendingSensor])));
     setShowSensorModal(false);
     setPendingSensor(null);
   };
 
   const resetIgnoredSensors = async () => {
-    await clearIgnoredSensors(deviceId);
+    await clearIgnoredSensors(resolvedDeviceMac);
     setIgnoredSensors([]);
   };
 
@@ -724,7 +996,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           style: "destructive",
           onPress: async () => {
             try {
-              await detachSensorFromDevice(deviceId, targetMac);
+              await detachSensorFromDevice(resolvedDeviceMac, targetMac);
               if (services.length && activeDevice) {
                 const cmd = `SENSOR_DETACH:${targetMac}`;
                 await bleManager.sendData(activeDevice, cmd, services[0]);
@@ -746,65 +1018,287 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const getBleConnection = async (macAddress: string) => {
     try {
-      if (connectingBleRef.current) return;
+      if (connectingBleRef.current) {
+        bleLog("Connection skipped: another BLE connect is in progress");
+        return;
+      }
       connectingBleRef.current = true;
+      bleLog("Starting getBleConnection", {
+        macAddress,
+        routeBleId: bleId,
+        routeIosBleId: iosBleId,
+      });
       let transportId = (bleId || iosBleId || "").toString();
+      let hasTransportCandidate = !!transportId;
+      const normalizedMac = String(macAddress || "").trim().toUpperCase();
+
+      const validateTransportForCanonical = async (candidateId: string) => {
+        const candidate = String(candidateId || "").trim();
+        if (!candidate) return false;
+        try {
+          const mappedCanonical = await AsyncStorage.getItem(
+            `ble:canonical:${candidate}`,
+          );
+          return (
+            String(mappedCanonical || "").trim().toUpperCase() === normalizedMac
+          );
+        } catch {
+          return false;
+        }
+      };
+
       if (!transportId) {
         try {
           const direct = await AsyncStorage.getItem(
-            `ble:byCanonical:${macAddress.toUpperCase()}`,
+            `ble:byCanonical:${normalizedMac}`,
           );
-          if (direct) {
+          if (direct && (await validateTransportForCanonical(direct))) {
             transportId = direct;
+            hasTransportCandidate = true;
+          } else if (direct) {
+            bleLog("Ignoring stale direct canonical->transport mapping", {
+              canonical: normalizedMac,
+              mappedTransport: direct,
+            });
+            await AsyncStorage.removeItem(`ble:byCanonical:${normalizedMac}`);
           }
-          const keys = await AsyncStorage.getAllKeys();
-          const canonicalKeys = keys.filter((k) =>
-            k.startsWith("ble:canonical:"),
-          );
-          for (const k of canonicalKeys) {
-            const val = await AsyncStorage.getItem(k);
-            if (val && val.toUpperCase() === macAddress.toUpperCase()) {
-              transportId = k.replace("ble:canonical:", "");
-              break;
+
+          if (!transportId) {
+            const keys = await AsyncStorage.getAllKeys();
+            const canonicalKeys = keys.filter((k) =>
+              k.startsWith("ble:canonical:"),
+            );
+            for (const k of canonicalKeys) {
+              const val = await AsyncStorage.getItem(k);
+              if (String(val || "").trim().toUpperCase() !== normalizedMac) {
+                continue;
+              }
+              const candidate = k.replace("ble:canonical:", "");
+              if (candidate && (await validateTransportForCanonical(candidate))) {
+                transportId = candidate;
+                hasTransportCandidate = true;
+                break;
+              }
             }
           }
         } catch {}
       }
-      if (!transportId) transportId = (macAddress || "").toString();
+      if (!transportId) {
+        transportId = (macAddress || "").toString();
+        hasTransportCandidate = false;
+      }
 
       const targetId = transportId.toLowerCase();
+      bleLog("Resolved target transport id", { targetId });
       await bleManager.stopScan();
-      await bleManager.cancelById(targetId);
       const already = await bleManager.getAlreadyConnected();
+      bleLog("Already connected devices", {
+        count: already.length,
+        ids: already.map((d) => d.id),
+      });
 
+      const candidateIds = Array.from(
+        new Set(
+          [
+            targetId,
+            transportId,
+            // only try canonical MAC directly when no transport mapping is available
+            ...(hasTransportCandidate ? [] : [macAddress]),
+          ]
+            .map((id) => String(id || "").trim().toLowerCase())
+            .filter(Boolean),
+        ),
+      );
       let connected: BleDevice | null =
-        already.find((d) => d.id.toLowerCase() === targetId) || null;
-      if (activeDevice && activeDevice.id?.toLowerCase() === targetId) {
+        already.find((d) =>
+          candidateIds.some(
+            (candidate) =>
+              String(d.id || "").toLowerCase() === candidate.toLowerCase(),
+          ),
+        ) || null;
+      const isFirstAttempt = reconnectAttemptsRef.current === 0;
+      if (
+        activeDevice &&
+        activeDevice.id?.toLowerCase() === targetId &&
+        services.length > 0
+      ) {
+        bleLog("Skipping connect: already active with services", {
+          activeDeviceId: activeDevice.id,
+          servicesCount: services.length,
+        });
         connectingBleRef.current = false;
         return;
       }
       if (!connected) {
-        connected = await bleManager.connectSafely(targetId, {
-          retries: 1,
-          connectTimeoutMs: 5000,
-          autoConnect: false,
-          skipScan: true,
-          scanTimeoutMs: 8000,
+        for (const candidate of candidateIds) {
+          bleLog("Connecting via connectSafely (direct)", { candidate });
+          connected = await bleManager.connectSafely(candidate, {
+            retries: 1,
+            connectTimeoutMs: 3500,
+            autoConnect: false,
+            skipScan: true,
+            scanTimeoutMs: 2500,
+          });
+          if (connected) break;
+        }
+      }
+
+      if (!connected && !isFirstAttempt) {
+        bleLog("Trying discovery fallback to resolve live transport id by DIS MAC", {
+          canonicalMac: normalizedMac,
         });
+        let discoveredTransportId: string | null = null;
+        let discoveredDevice: BleDevice | null = null;
+        try {
+          const { stop, done } = bleManager.startScan_new(
+            (dev) => {
+              (async () => {
+                try {
+                  const canonical = await getCanonicalId(dev, {
+                    disconnectAfter: false,
+                  });
+                  if (
+                    String(canonical || "").trim().toUpperCase() === normalizedMac
+                  ) {
+                    discoveredTransportId = dev.id;
+                    discoveredDevice = dev as BleDevice;
+                    bleLog("Discovery fallback matched canonical MAC", {
+                      canonical: normalizedMac,
+                      transportId: dev.id,
+                    });
+                    stop();
+                  }
+                } catch {}
+              })();
+            },
+            { stopAfterMs: 5000 },
+          );
+          await done;
+        } catch (e) {
+          bleLog("Discovery fallback scan failed", e);
+        }
+
+        if (discoveredTransportId) {
+          try {
+            await AsyncStorage.setItem(
+              `ble:byCanonical:${normalizedMac}`,
+              discoveredTransportId,
+            );
+          } catch {}
+          if (discoveredDevice) {
+            try {
+              bleLog("Connecting using discovered device instance", {
+                discoveredTransportId,
+              });
+              const isConn = await discoveredDevice.isConnected();
+              if (!isConn) {
+                await discoveredDevice.connect();
+              }
+              await discoveredDevice.discoverAllServicesAndCharacteristics();
+              connected = discoveredDevice;
+            } catch (e) {
+              bleLog("Discovered-device connect path failed; retrying by id", e);
+            }
+          }
+
+          if (!connected) {
+            bleLog("Connecting using discovery-resolved transport", {
+              discoveredTransportId,
+            });
+            connected = await bleManager.connectSafely(discoveredTransportId, {
+              retries: 2,
+              connectTimeoutMs: 7000,
+              autoConnect: false,
+              skipScan: true,
+              scanTimeoutMs: 8000,
+            });
+          }
+        }
+      }
+
+      if (!connected && !isFirstAttempt) {
+        for (const candidate of candidateIds) {
+          bleLog("Retrying connect via scan-assisted connectSafely", {
+            candidate,
+          });
+          connected = await bleManager.connectSafely(candidate, {
+            retries: 1,
+            connectTimeoutMs: 5000,
+            autoConnect: false,
+            skipScan: false,
+            scanTimeoutMs: 4500,
+          });
+          if (connected) break;
+        }
+      }
+
+      if (!connected && isFirstAttempt) {
+        bleLog("Fast path connect failed on first attempt; deferring heavy fallback");
+        scheduleReconnect("first_attempt_fast_fail");
+        return;
       }
 
       if (connected) {
+        bleLog("Connected to BLE device", { connectedId: connected.id });
+        // Show BLE online as soon as link is up; service resolution follows immediately.
         setIsOnline(true);
+        try {
+          await connected.discoverAllServicesAndCharacteristics();
+        } catch (e) {
+          bleLog("Service discovery failed on first attempt", e);
+        }
         setActiveDevice(connected);
-        const serviceIds = await bleManager.getCustomServiceId(connected);
+        let serviceIds = await bleManager.getCustomServiceId(connected);
+        if (!serviceIds.length) {
+          bleLog("No custom services found; retrying discovery once");
+          try {
+            await connected.discoverAllServicesAndCharacteristics();
+            serviceIds = await bleManager.getCustomServiceId(connected);
+          } catch (e) {
+            bleLog("Service discovery retry failed", e);
+          }
+        }
+        bleLog("Resolved custom services", {
+          connectedId: connected.id,
+          serviceIds,
+        });
         setServices(serviceIds);
+        setIsOnline(serviceIds.length > 0);
+        reconnectAttemptsRef.current = 0;
+      } else {
+        bleLog("Failed to connect: connected device is null");
+        scheduleReconnect("connected_null");
       }
     } catch (err) {
-      // no-op
+      bleLog("getBleConnection failed", err);
+      scheduleReconnect("connect_error");
     } finally {
       connectingBleRef.current = false;
     }
   };
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (nextState) => {
+      const prevState = appStateRef.current;
+      appStateRef.current = nextState;
+
+      if (nextState === "background" && isFocused) {
+        bleLog("App moved to background on Switchboard; disconnecting BLE");
+        disconnectBleConnection();
+        return;
+      }
+
+      const resumed =
+        (prevState === "background" || prevState === "inactive") &&
+        nextState === "active";
+      if (resumed && isFocused) {
+        bleLog("App resumed on Switchboard; reconnecting BLE");
+        getBleConnection(resolvedDeviceMac);
+      }
+    });
+
+    return () => sub.remove();
+  }, [disconnectBleConnection, isFocused, resolvedDeviceMac]);
 
   const sendDataToESP = async (
     pin: number,
@@ -812,7 +1306,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   ): Promise<boolean> => {
     if (!services.length || !activeDevice) {
       const payload: WifiPayload = {
-        mac_address: deviceId,
+        mac_address: resolvedDeviceMac,
         data: {
           cmd: command,
           pin: pin,
@@ -823,7 +1317,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     }
 
     try {
-      const text = `PIN:${pin}:STATUS:${command}`;
+      const text = `PIN:${pin};STATUS:${command}`;
       await bleManager.sendData(activeDevice, text, services[0]);
       return true;
     } catch (e) {
@@ -877,7 +1371,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       // @ts-ignore
       const arr = tempColor.match(/\d+/g).map(Number);
       const payload: WifiPayload = {
-        mac_address: deviceId,
+        mac_address: resolvedDeviceMac,
         data: {
           cmd: "color",
           color: arr,
@@ -937,11 +1431,11 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
     if (!services.length || !activeDevice) {
       // Wi-Fi fallback
-      // const payload: WifiPayload = {
-      //   mac_address: deviceId,
-      //   data: { cmd: 'speed', pin: device.id, speed: clamped }
-      // };
-      // await sendCommandOverWifi(payload);
+      const payload: WifiPayload = {
+        mac_address: resolvedDeviceMac,
+        data: { cmd: "fan_speed", pin: device.id, power: val },
+      };
+      await sendCommandOverWifi(payload);
       return;
     }
 
@@ -1021,14 +1515,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             />
           </View>
           <View style={styles.deviceInfo}>
-            <Text
-              style={[
-                styles.deviceButton,
-                isActive && styles.deviceButtonActive,
-              ]}
-            >
-              Button {device.position}
-            </Text>
             <Text
               style={[styles.deviceName, isActive && styles.deviceNameActive]}
             >
@@ -1126,6 +1612,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             <Text style={styles.boardName}>
               {switchboardName || "Main Panel"}
             </Text>
+            <Text style={styles.boardMacText}>
+              DIS MAC: {String(resolvedDeviceMac || "N/A").toUpperCase()}
+            </Text>
             <View style={styles.boardStatus}>
               {isOnline && (
                 <>
@@ -1155,21 +1644,26 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 </>
               )}
               <View style={styles.wifiContainer}>
-                <Wifi size={14} color="#5b8def" strokeWidth={2} />
                 <TouchableOpacity
-                  style={styles.configureButton}
+                  style={styles.actionChip}
                   onPress={openWifiModal}
+                  activeOpacity={0.85}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
-                  <Text style={styles.configureText}>Configure WiFi</Text>
+                  <Wifi size={14} color="#5b8def" strokeWidth={2} />
+                  <Text style={styles.actionChipText}>Wifi Config</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={styles.pinConfigIconBtn}
+                  style={styles.actionChip}
                   onPress={async () => {
-                    await loadPinConfigs();
                     setShowPinConfigModal(true);
+                    loadPinConfigs();
                   }}
+                  activeOpacity={0.85}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
                   <SlidersHorizontal size={14} color="#cbd5e1" />
+                  <Text style={styles.actionChipText}>Pin Config</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -1740,7 +2234,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           </View>
 
           <ScrollView style={styles.settingsBody}>
-            <View style={styles.settingsCard}>
+            <View style={styles.pinRulesContainer}>
               <Text style={styles.sectionLabel}>Pin Motion Rules</Text>
               <Text style={styles.pinRulesHint}>
                 Configure each pin: name, auto on/off, and timer.
@@ -1751,89 +2245,367 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                   autoOn: false,
                   autoOff: false,
                   offDelay: 600,
+                  onExcludeStartHour: DEFAULT_EXCLUDE_START,
+                  onExcludeEndHour: DEFAULT_EXCLUDE_END,
+                  loadWatt: DEFAULT_LOAD_WATT,
                 };
+                const displayName =
+                  cfg.name?.trim() || d.name?.trim() || `Pin ${d.id}`;
+                const offDelayMinutes = Math.max(
+                  1,
+                  Math.round((cfg.offDelay || 0) / 60),
+                );
+                const isExpanded = expandedPinId === d.id;
+                const activeTab =
+                  ruleTabs[d.id] ||
+                  (cfg.autoOn ? "on" : cfg.autoOff ? "off" : "on");
+                const summaryItems: string[] = [];
+                if (cfg.autoOn) {
+                  summaryItems.push(
+                    `Auto On exclude: ${formatExcludeSummary(
+                      cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
+                      cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END,
+                    )}`,
+                  );
+                }
+                if (cfg.autoOff) {
+                  summaryItems.push(`Auto Off: ${offDelayMinutes} min`);
+                }
+                const summaryText =
+                  attachedSensors.length === 0
+                    ? ""
+                    : summaryItems.length
+                      ? summaryItems.join(" • ")
+                      : "No rules enabled";
                 return (
                   <View key={d.id} style={styles.pinConfigCard}>
-                    <View style={styles.pinConfigHeader}>
-                      <Text style={styles.pinConfigTitle}>Pin {d.id}</Text>
-                    </View>
-
-                    <TextInput
-                      style={styles.pinNameInput}
-                      placeholder="Switch name"
-                      placeholderTextColor="#64748b"
-                      value={cfg.name}
-                      onChangeText={(v) => updatePinConfig(d.id, { name: v })}
-                    />
-
-                    <View style={styles.pinOptionRow}>
-                      <TouchableOpacity
-                        style={[
-                          styles.ruleOption,
-                          cfg.autoOn && styles.ruleOptionActive,
-                        ]}
-                        onPress={() =>
-                          updatePinConfig(d.id, { autoOn: !cfg.autoOn })
-                        }
-                      >
-                        <Text
-                          style={[
-                            styles.ruleText,
-                            cfg.autoOn && styles.ruleTextActive,
-                          ]}
-                        >
-                          Auto On
+                    <TouchableOpacity
+                      style={styles.pinConfigHeader}
+                      onPress={() => togglePinExpanded(d.id)}
+                      activeOpacity={0.8}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                      <View style={styles.pinConfigHeaderText}>
+                        <Text style={styles.pinConfigTitle}>
+                          {displayName} · Pin {d.id}
                         </Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={[
-                          styles.ruleOption,
-                          cfg.autoOff && styles.ruleOptionActive,
-                        ]}
-                        onPress={() =>
-                          updatePinConfig(d.id, { autoOff: !cfg.autoOff })
-                        }
-                      >
-                        <Text
-                          style={[
-                            styles.ruleText,
-                            cfg.autoOff && styles.ruleTextActive,
-                          ]}
-                        >
-                          Auto Off
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-
-                    {cfg.autoOff && (
-                      <View style={styles.durationRow}>
-                        {[120, 600, 1800].map((sec) => (
-                          <TouchableOpacity
-                            key={sec}
+                        {!isExpanded && (
+                          <Text
                             style={[
-                              styles.durationChip,
-                              cfg.offDelay === sec && styles.durationChipActive,
+                              styles.pinConfigSummary,
+                              (cfg.autoOn || cfg.autoOff) &&
+                                styles.pinConfigSummaryActive,
                             ]}
-                            onPress={() =>
-                              updatePinConfig(d.id, { offDelay: sec })
-                            }
                           >
-                            <Text
+                            {summaryText}
+                          </Text>
+                        )}
+                      </View>
+                      <View style={styles.pinConfigHeaderRight}>
+                        {isExpanded ? (
+                          <ChevronUp size={18} color="#cbd5e1" />
+                        ) : (
+                          <ChevronDown size={18} color="#cbd5e1" />
+                        )}
+                      </View>
+                    </TouchableOpacity>
+
+                    {isExpanded && (
+                      <View style={styles.pinConfigBody}>
+                        <TextInput
+                          style={styles.pinNameInput}
+                          placeholder="Switch name"
+                          placeholderTextColor="#64748b"
+                          value={cfg.name}
+                          onChangeText={(v) =>
+                            updatePinConfig(d.id, { name: v })
+                          }
+                        />
+
+                        <View style={styles.wattRow}>
+                          <Text style={styles.wattLabel}>Power</Text>
+                          <View style={styles.wattInputWrap}>
+                            <TextInput
+                              style={styles.wattInput}
+                              keyboardType="numeric"
+                              placeholder="0"
+                              placeholderTextColor="#64748b"
+                              value={String(cfg.loadWatt ?? DEFAULT_LOAD_WATT)}
+                              onChangeText={(v) => {
+                                const digits = v.replace(/[^\d]/g, "");
+                                const num = digits ? Number(digits) : 0;
+                                updatePinConfig(d.id, {
+                                  loadWatt: clampWatt(num),
+                                });
+                              }}
+                            />
+                            <View style={styles.wattSuffix}>
+                              <Text style={styles.wattSuffixText}>W</Text>
+                            </View>
+                          </View>
+                        </View>
+
+                        {attachedSensors.length > 0 && (
+                          <View style={styles.ruleTabs}>
+                            <TouchableOpacity
                               style={[
-                                styles.durationChipText,
-                                cfg.offDelay === sec &&
-                                  styles.durationChipTextActive,
+                                styles.ruleTab,
+                                activeTab === "on" && styles.ruleTabActive,
                               ]}
+                              onPress={() => setRuleTab(d.id, "on")}
                             >
-                              {sec === 120
-                                ? "2 min"
-                                : sec === 600
-                                  ? "10 min"
-                                  : "30 min"}
+                              <Text
+                                style={[
+                                  styles.ruleTabText,
+                                  activeTab === "on" &&
+                                    styles.ruleTabTextActive,
+                                ]}
+                              >
+                                Auto On
+                              </Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              style={[
+                                styles.ruleTab,
+                                activeTab === "off" && styles.ruleTabActive,
+                              ]}
+                              onPress={() => setRuleTab(d.id, "off")}
+                            >
+                              <Text
+                                style={[
+                                  styles.ruleTabText,
+                                  activeTab === "off" &&
+                                    styles.ruleTabTextActive,
+                                ]}
+                              >
+                                Auto Off
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
+
+                        {attachedSensors.length > 0 && activeTab === "off" && (
+                          <View>
+                            <View style={styles.durationRow}>
+                              {[120, 600, 1800].map((sec) => (
+                                <TouchableOpacity
+                                  key={sec}
+                                  style={[
+                                    styles.durationChip,
+                                    cfg.offDelay === sec &&
+                                      styles.durationChipActive,
+                                    !cfg.autoOff && styles.durationChipDisabled,
+                                  ]}
+                                  onPress={() =>
+                                    updatePinConfig(d.id, { offDelay: sec })
+                                  }
+                                >
+                                  <Text
+                                    style={[
+                                      styles.durationChipText,
+                                      cfg.offDelay === sec &&
+                                        styles.durationChipTextActive,
+                                      !cfg.autoOff &&
+                                        styles.durationChipTextDisabled,
+                                    ]}
+                                  >
+                                    {sec === 120
+                                      ? "2 min"
+                                      : sec === 600
+                                        ? "10 min"
+                                        : "30 min"}
+                                  </Text>
+                                </TouchableOpacity>
+                              ))}
+                            </View>
+                            <Text style={styles.ruleNote}>
+                              {displayName} will turn off automatically after no
+                              activity for {offDelayMinutes} minutes.
                             </Text>
-                          </TouchableOpacity>
-                        ))}
+                            <TouchableOpacity
+                              style={[
+                                styles.ruleEnableBtn,
+                                cfg.autoOff && styles.ruleEnableBtnActive,
+                              ]}
+                              onPress={() =>
+                                updatePinConfig(d.id, { autoOff: !cfg.autoOff })
+                              }
+                            >
+                              <Text
+                                style={[
+                                  styles.ruleEnableText,
+                                  cfg.autoOff && styles.ruleEnableTextActive,
+                                ]}
+                              >
+                                {cfg.autoOff ? "Enabled" : "Enable"}
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
+
+                        {attachedSensors.length > 0 && activeTab === "on" && (
+                          <View style={styles.excludeCard}>
+                            <Text style={styles.excludeLabel}>
+                              Exclude Auto On Between
+                            </Text>
+                            <Text style={styles.ruleNote}>
+                              Exclude hours mean this switch ignores motion
+                              during that time. Useful if you don't want lights
+                              turning on at night and disturbing sleep.
+                            </Text>
+                            <View style={styles.excludeRow}>
+                              <View style={styles.excludeBlock}>
+                                <Text style={styles.excludeBlockLabel}>
+                                  Start
+                                </Text>
+                                <ScrollView
+                                  horizontal
+                                  showsHorizontalScrollIndicator={false}
+                                  contentContainerStyle={styles.hourScroll}
+                                  contentOffset={{
+                                    x: getHourScrollOffset(
+                                      cfg.onExcludeStartHour ??
+                                        DEFAULT_EXCLUDE_START,
+                                    ),
+                                    y: 0,
+                                  }}
+                                  ref={(node) => {
+                                    hourScrollRefs.current[`${d.id}-start`] =
+                                      node;
+                                  }}
+                                >
+                                  {Array.from({ length: 24 }).map((_, hour) => (
+                                    <TouchableOpacity
+                                      key={`start-${hour}`}
+                                      style={[
+                                        styles.hourChip,
+                                        cfg.onExcludeStartHour === hour &&
+                                          styles.hourChipActive,
+                                        !cfg.autoOn &&
+                                          cfg.onExcludeStartHour === hour &&
+                                          styles.hourChipDisabled,
+                                      ]}
+                                      onPress={() =>
+                                        updatePinConfig(d.id, {
+                                          onExcludeStartHour: hour,
+                                        })
+                                      }
+                                      onPressIn={() =>
+                                        hourScrollRefs.current[
+                                          `${d.id}-start`
+                                        ]?.scrollTo({
+                                          x: getHourScrollOffset(hour),
+                                          animated: true,
+                                        })
+                                      }
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.hourChipText,
+                                          cfg.onExcludeStartHour === hour &&
+                                            styles.hourChipTextActive,
+                                          !cfg.autoOn &&
+                                            cfg.onExcludeStartHour === hour &&
+                                            styles.hourChipTextDisabled,
+                                        ]}
+                                      >
+                                        {formatHourLabel(hour)}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  ))}
+                                </ScrollView>
+                              </View>
+
+                              <View style={styles.excludeBlock}>
+                                <Text style={styles.excludeBlockLabel}>
+                                  End
+                                </Text>
+                                <ScrollView
+                                  horizontal
+                                  showsHorizontalScrollIndicator={false}
+                                  contentContainerStyle={styles.hourScroll}
+                                  contentOffset={{
+                                    x: getHourScrollOffset(
+                                      cfg.onExcludeEndHour ??
+                                        DEFAULT_EXCLUDE_END,
+                                    ),
+                                    y: 0,
+                                  }}
+                                  ref={(node) => {
+                                    hourScrollRefs.current[`${d.id}-end`] =
+                                      node;
+                                  }}
+                                >
+                                  {Array.from({ length: 24 }).map((_, hour) => (
+                                    <TouchableOpacity
+                                      key={`end-${hour}`}
+                                      style={[
+                                        styles.hourChip,
+                                        cfg.onExcludeEndHour === hour &&
+                                          styles.hourChipActive,
+                                        !cfg.autoOn &&
+                                          cfg.onExcludeEndHour === hour &&
+                                          styles.hourChipDisabled,
+                                      ]}
+                                      onPress={() =>
+                                        updatePinConfig(d.id, {
+                                          onExcludeEndHour: hour,
+                                        })
+                                      }
+                                      onPressIn={() =>
+                                        hourScrollRefs.current[
+                                          `${d.id}-end`
+                                        ]?.scrollTo({
+                                          x: getHourScrollOffset(hour),
+                                          animated: true,
+                                        })
+                                      }
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.hourChipText,
+                                          cfg.onExcludeEndHour === hour &&
+                                            styles.hourChipTextActive,
+                                          !cfg.autoOn &&
+                                            cfg.onExcludeEndHour === hour &&
+                                            styles.hourChipTextDisabled,
+                                        ]}
+                                      >
+                                        {formatHourLabel(hour)}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  ))}
+                                </ScrollView>
+                              </View>
+                            </View>
+                            <TouchableOpacity
+                              style={[
+                                styles.ruleEnableBtn,
+                                cfg.autoOn && styles.ruleEnableBtnActive,
+                              ]}
+                              onPress={() =>
+                                updatePinConfig(d.id, {
+                                  autoOn: !cfg.autoOn,
+                                  onExcludeStartHour:
+                                    cfg.onExcludeStartHour ??
+                                    DEFAULT_EXCLUDE_START,
+                                  onExcludeEndHour:
+                                    cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END,
+                                })
+                              }
+                            >
+                              <Text
+                                style={[
+                                  styles.ruleEnableText,
+                                  cfg.autoOn && styles.ruleEnableTextActive,
+                                ]}
+                              >
+                                {cfg.autoOn ? "Enabled" : "Enable"}
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
                       </View>
                     )}
                   </View>
@@ -1849,6 +2621,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             <TouchableOpacity
               style={styles.closeBigBtn}
               onPress={() => setShowPinConfigModal(false)}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             >
               <Text style={styles.closeBigBtnText}>Close</Text>
             </TouchableOpacity>
@@ -1949,17 +2722,6 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 8,
   },
-  pinConfigIconBtn: {
-    marginLeft: 6,
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "rgba(148, 163, 184, 0.35)",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(15, 23, 42, 0.5)",
-  },
   boardInfo: {
     flex: 1,
   },
@@ -1968,6 +2730,12 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     color: "#fff",
     marginBottom: 8,
+  },
+  boardMacText: {
+    fontSize: 11,
+    color: "#94a3b8",
+    marginBottom: 10,
+    fontWeight: "500",
   },
   boardStatus: {
     flexDirection: "row",
@@ -2005,21 +2773,23 @@ const styles = StyleSheet.create({
   wifiContainer: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(91, 141, 239, 0.15)",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "rgba(91, 141, 239, 0.4)",
+    gap: 8,
+  },
+  actionChip: {
+    flexDirection: "row",
+    alignItems: "center",
     gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(91, 141, 239, 0.35)",
+    backgroundColor: "rgba(91, 141, 239, 0.12)",
   },
-  configureButton: {
-    paddingHorizontal: 4,
-  },
-  configureText: {
-    fontSize: 13,
-    color: "#5b8def",
-    fontWeight: "600",
+  actionChipText: {
+    fontSize: 12,
+    color: "#cbd5e1",
+    fontWeight: "700",
   },
   modalOverlay: {
     flex: 1,
@@ -2411,6 +3181,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#1f2937",
   },
+  pinRulesContainer: {
+    backgroundColor: "transparent",
+    borderRadius: 0,
+    padding: 0,
+    marginBottom: 16,
+    borderWidth: 0,
+  },
   settingsRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -2447,7 +3224,28 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+  },
+  pinConfigHeaderRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  pinConfigHeaderText: {
+    flex: 1,
+    paddingRight: 10,
+  },
+  pinConfigSummary: {
+    color: "#94a3b8",
+    fontSize: 11,
+    marginTop: 2,
+  },
+  pinConfigSummaryActive: {
+    color: "#86efac",
+  },
+  pinConfigBody: {
+    paddingTop: 2,
   },
   pinConfigTitle: {
     color: "#e2e8f0",
@@ -2609,5 +3407,162 @@ const styles = StyleSheet.create({
   },
   durationChipTextActive: {
     color: "#86efac",
+  },
+  durationChipDisabled: {
+    borderColor: "#475569",
+    backgroundColor: "rgba(148, 163, 184, 0.08)",
+  },
+  durationChipTextDisabled: {
+    color: "#94a3b8",
+  },
+  wattRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+    gap: 12,
+  },
+  wattLabel: {
+    color: "#94a3b8",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  wattInputWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#334155",
+    borderRadius: 10,
+    backgroundColor: "#0f172a",
+    overflow: "hidden",
+  },
+  wattInput: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    color: "#fff",
+    minWidth: 60,
+    textAlign: "right",
+  },
+  wattSuffix: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: "#111827",
+    borderLeftWidth: 1,
+    borderLeftColor: "#334155",
+  },
+  wattSuffixText: {
+    color: "#cbd5e1",
+    fontWeight: "700",
+    fontSize: 12,
+  },
+  ruleTabs: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  ruleTab: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#0b1220",
+    alignItems: "center",
+  },
+  ruleTabActive: {
+    borderColor: "#2563eb",
+    backgroundColor: "rgba(37, 99, 235, 0.18)",
+  },
+  ruleTabText: {
+    color: "#cbd5e1",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  ruleTabTextActive: {
+    color: "#bfdbfe",
+  },
+  ruleEnableBtn: {
+    marginTop: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#0b1220",
+    alignItems: "center",
+  },
+  ruleEnableBtnActive: {
+    borderColor: "#22c55e",
+    backgroundColor: "rgba(34, 197, 94, 0.18)",
+  },
+  ruleEnableText: {
+    color: "#cbd5e1",
+    fontWeight: "700",
+    fontSize: 13,
+  },
+  ruleEnableTextActive: {
+    color: "#86efac",
+  },
+  ruleNote: {
+    color: "#94a3b8",
+    fontSize: 12,
+    marginTop: 8,
+    lineHeight: 16,
+  },
+  excludeCard: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "#0f172a",
+    borderWidth: 1,
+    borderColor: "#1f2937",
+  },
+  excludeLabel: {
+    color: "#e2e8f0",
+    fontSize: 12,
+    fontWeight: "700",
+    marginBottom: 8,
+  },
+  excludeRow: {
+    gap: 12,
+  },
+  excludeBlock: {
+    gap: 6,
+  },
+  excludeBlockLabel: {
+    color: "#94a3b8",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  hourScroll: {
+    paddingRight: 4,
+    gap: 8,
+  },
+  hourChip: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#0b1220",
+    minWidth: HOUR_CHIP_MIN_WIDTH,
+    alignItems: "center",
+  },
+  hourChipActive: {
+    borderColor: "#f59e0b",
+    backgroundColor: "rgba(245, 158, 11, 0.18)",
+  },
+  hourChipDisabled: {
+    borderColor: "#475569",
+    backgroundColor: "rgba(148, 163, 184, 0.08)",
+  },
+  hourChipText: {
+    color: "#cbd5e1",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  hourChipTextActive: {
+    color: "#fde68a",
+  },
+  hourChipTextDisabled: {
+    color: "#94a3b8",
   },
 });

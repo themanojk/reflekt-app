@@ -70,6 +70,9 @@ export function initDB() {
     auto_on INTEGER,
     auto_off INTEGER,
     off_delay INTEGER,
+    load_watt INTEGER DEFAULT 0,
+    on_exclude_start_hour INTEGER DEFAULT 22,
+    on_exclude_end_hour INTEGER DEFAULT 7,
     updatedAt INTEGER,
     pending_sync INTEGER DEFAULT 0
     );
@@ -78,4 +81,26 @@ export function initDB() {
     ON pin_configs(device_mac);
 
   `);
+
+  // Lightweight migration for older installs
+  try {
+    db.execSync(
+      "ALTER TABLE pin_configs ADD COLUMN on_exclude_start_hour INTEGER DEFAULT 22"
+    );
+  } catch {}
+  try {
+    db.execSync(
+      "ALTER TABLE pin_configs ADD COLUMN on_exclude_end_hour INTEGER DEFAULT 7"
+    );
+  } catch {}
+  try {
+    db.execSync(
+      "ALTER TABLE pin_configs ADD COLUMN load_watt INTEGER DEFAULT 0"
+    );
+  } catch {}
+  try {
+    db.execSync(
+      "ALTER TABLE switchboards ADD COLUMN sensors TEXT DEFAULT ''"
+    );
+  } catch {}
 }
