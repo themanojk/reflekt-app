@@ -564,6 +564,12 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
           }
         >
         <View style={styles.scanContent}>
+          <View style={styles.hintBox}>
+            <Text style={styles.hintText}>
+              Tip: On Home screen, long press a switchboard to remove it.
+            </Text>
+          </View>
+
           <TouchableOpacity
             style={styles.scanIconWrapper}
             onPress={handleBleIconRefresh}
@@ -694,6 +700,12 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
       </View>
 
       <ScrollView style={styles.content}>
+        <View style={styles.hintBox}>
+          <Text style={styles.hintText}>
+            Tip: On Home screen, long press a switchboard to remove it.
+          </Text>
+        </View>
+
         <Text style={styles.label}>Switchboard Name</Text>
         <TextInput
           style={styles.input}
@@ -775,6 +787,24 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 24,
+  },
+  hintBox: {
+    width: "100%",
+    backgroundColor: "#111827",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#374151",
+    borderLeftWidth: 3,
+    borderLeftColor: "#60a5fa",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
+  },
+  hintText: {
+    color: "#cbd5e1",
+    fontSize: 12,
+    fontWeight: "400",
+    lineHeight: 18,
   },
   label: {
     fontSize: 16,

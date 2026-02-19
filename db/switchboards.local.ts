@@ -53,3 +53,22 @@ export async function getSwitchboardsByRoomId(
     [roomId],
   );
 }
+
+export async function updateSwitchboardSensorsLocal(
+  deviceId: string,
+  sensors: string[],
+) {
+  const normalized = Array.from(
+    new Set(
+      (Array.isArray(sensors) ? sensors : [])
+        .map((s) => String(s || "").trim().toUpperCase())
+        .filter(Boolean),
+    ),
+  );
+  await db.runAsync(
+    `UPDATE switchboards
+     SET sensors = ?, updatedAt = ?
+     WHERE UPPER(id) = UPPER(?)`,
+    [normalized.join(","), Date.now(), deviceId],
+  );
+}

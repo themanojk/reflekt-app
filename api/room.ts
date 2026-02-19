@@ -14,3 +14,7 @@ export async function addRoom(name: string, icon: string): Promise<Room> {
 export async function getRooms(): Promise<Room[]> {
   return client.get("/rooms").then((res) => res.data);
 }
+
+export async function removeRoom(roomId: string) {
+  return client.delete(`/rooms/${encodeURIComponent(roomId)}`).then((res) => res.data);
+}
