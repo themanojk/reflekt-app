@@ -126,6 +126,12 @@ export async function fetchDevicesByRoomForUser() {
   return client.get(`/devices/by-room`).then((res) => res.data);
 }
 
+export async function removeSwitchboard(deviceId: string) {
+  return client
+    .delete(`/devices/remove/${encodeURIComponent(deviceId)}`)
+    .then((res) => res.data);
+}
+
 export async function getDeviceStatusOverWifi(macAddress: string) {
   return client
     .get(`/devices/macAddress?mac_address=${macAddress}`)

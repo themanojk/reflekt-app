@@ -83,6 +83,56 @@ export async function getNearbyDevicesCache(): Promise<any[] | null> {
   return raw ? JSON.parse(raw) : null;
 }
 
+export async function updateDeviceSensorsInCachedLists(
+  deviceId: string,
+  sensors: string[],
+) {
+  const id = String(deviceId || "").trim().toUpperCase();
+  if (!id) return;
+  const normalizedSensors = Array.from(
+    new Set(
+      (Array.isArray(sensors) ? sensors : [])
+        .map((s) => String(s || "").trim().toUpperCase())
+        .filter(Boolean),
+    ),
+  );
+
+  const nearby = await getNearbyDevicesCache();
+  if (Array.isArray(nearby)) {
+    const next = nearby.map((d) => {
+      const did = String(d?.id || d?.device_id || "").trim().toUpperCase();
+      if (did !== id) return d;
+      return {
+        ...d,
+        sensors: normalizedSensors,
+        sensor_ids: normalizedSensors,
+      };
+    });
+    await setNearbyDevicesCache(next);
+  }
+
+  const byRoom = await getRoomsByRoomCache();
+  if (Array.isArray(byRoom)) {
+    const next = byRoom.map((roomBlock: any) => {
+      const devices = Array.isArray(roomBlock?.devices)
+        ? roomBlock.devices.map((d: any) => {
+            const did = String(d?.id || d?.device_id || "")
+              .trim()
+              .toUpperCase();
+            if (did !== id) return d;
+            return {
+              ...d,
+              sensors: normalizedSensors,
+              sensor_ids: normalizedSensors,
+            };
+          })
+        : [];
+      return { ...roomBlock, devices };
+    });
+    await setRoomsByRoomCache(next);
+  }
+}
+
 export async function setLastPins(deviceId: string, pins: Record<number, boolean>) {
   await AsyncStorage.setItem(
     `${LAST_PINS_PREFIX}${deviceId}`,

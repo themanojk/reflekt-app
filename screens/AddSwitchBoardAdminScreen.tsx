@@ -40,6 +40,7 @@ export default function AddSwitchboardAdminScreen({ navigation, route }: any) {
   const [scanning, setScanning] = useState(false);
   const [devices, setDevices] = useState<Row[]>([]);
   const [device, setDevice] = useState<BleDevice>();
+  const [selectedCanonicalId, setSelectedCanonicalId] = useState<string | null>(null);
   const [_selectedDevice, setSelectedDevice] = useState<BleDevice | null>(null);
   const [name, setName] = useState('');
   const [wifiSSID, setWifiSSID] = useState('');
@@ -262,6 +263,7 @@ export default function AddSwitchboardAdminScreen({ navigation, route }: any) {
       } else {
         setSelectedDevice(device);
         setName(device.id);
+        setSelectedCanonicalId(String(canonicalId || device.id).trim().toUpperCase());
         setStep('form');
         setDevice(device);
       }
@@ -291,10 +293,13 @@ export default function AddSwitchboardAdminScreen({ navigation, route }: any) {
       Alert.alert('Error', `Failed to add "${name.trim()}" switchboard!`);
     } finally {
       setLoading(false);
+      const nextDeviceId = String(selectedCanonicalId || device.id).trim().toUpperCase();
       navigation.navigate("Switchboard", {
         switchboardId: device.id,
         switchboardName: "Test",
-        deviceId: device.id
+        deviceId: nextDeviceId,
+        bleId: device.id,
+        iosBleId: Platform.OS === "ios" ? device.id : undefined,
       })
     }
   };

@@ -1,4 +1,10 @@
-import { fetchDevicesByMac, fetchDevicesByRoomForUser } from "@/api/devics";
+import {
+  fetchDevicesByMac,
+  fetchDevicesByRoomForUser,
+  getDeviceStatusOverWifi,
+  removeSwitchboard,
+} from "@/api/devics";
+import { removeRoom } from "@/api/room";
 import { useDebouncedCallback } from "@/callbacks/useDeboundcedCallback";
 import { getRoomsLocal } from "@/db/rooms.local";
 import { getSwitchboardsLocal } from "@/db/switchboards.local";
@@ -12,6 +18,7 @@ import {
   setRoomsByRoomCache,
 } from "@/utils/storage";
 import { syncAppData } from "@/db_sync/app_sync";
+import DeleteWarningModal from "@/components/DeleteWarningModal";
 import { getCanonicalId } from "@/services/bleCanonicalId";
 import BLEManagerService from "@/services/bleManager";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
@@ -52,6 +59,22 @@ interface Switchboard {
   icon: string;
   sensors?: string[];
 }
+
+type DeleteDetails = {
+  label: string;
+  value: string;
+  highlight?: boolean;
+};
+
+type DeleteContext =
+  | {
+      type: "room";
+      room: Room;
+    }
+  | {
+      type: "switchboard";
+      board: Switchboard;
+    };
 
 const normalizeSensors = (value: unknown): string[] => {
   if (Array.isArray(value)) {
@@ -108,10 +131,7 @@ const estimateDistanceMeters = (rssi: number | null): string => {
   if (typeof rssi !== "number") return "N/A";
   const txPowerAt1m = -59;
   const pathLossExponent = 2.2;
-  const distance = Math.pow(
-    10,
-    (txPowerAt1m - rssi) / (10 * pathLossExponent),
-  );
+  const distance = Math.pow(10, (txPowerAt1m - rssi) / (10 * pathLossExponent));
   const safeDistance = Number.isFinite(distance)
     ? Math.max(0.05, Math.min(distance, 99.9))
     : 99.9;
@@ -122,10 +142,7 @@ const estimateDistanceValue = (rssi: number | null): number | null => {
   if (typeof rssi !== "number") return null;
   const txPowerAt1m = -59;
   const pathLossExponent = 2.2;
-  const distance = Math.pow(
-    10,
-    (txPowerAt1m - rssi) / (10 * pathLossExponent),
-  );
+  const distance = Math.pow(10, (txPowerAt1m - rssi) / (10 * pathLossExponent));
   if (!Number.isFinite(distance)) return null;
   return Math.max(0.05, Math.min(distance, 99.9));
 };
@@ -203,12 +220,48 @@ export default function HomeScreen({ navigation }: any) {
     useState(false);
   const [candidateDevices, setCandidateDevices] = useState<Row[]>([]);
   const [activeCarouselIndex, setActiveCarouselIndex] = useState(0);
+  const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+  const [deleteModalTitle, setDeleteModalTitle] = useState("");
+  const [deleteModalMessage, setDeleteModalMessage] = useState("");
+  const [deleteModalWarning, setDeleteModalWarning] = useState("");
+  const [deleteModalDetails, setDeleteModalDetails] = useState<DeleteDetails[]>(
+    [],
+  );
+  const [deleteModalLoading, setDeleteModalLoading] = useState(false);
+  const [deleteModalProcessing, setDeleteModalProcessing] = useState(false);
+  const [deleteModalError, setDeleteModalError] = useState("");
+  const [deleteContext, setDeleteContext] = useState<DeleteContext | null>(
+    null,
+  );
   const scanningRef = React.useRef(false);
   const appStateRef = React.useRef<AppStateStatus>(AppState.currentState);
   const boardAnim = React.useRef(new Animated.Value(0)).current;
   const newBoardSheetY = React.useRef(new Animated.Value(0)).current;
   const dismissedBoardRef = React.useRef<{ id: string; at: number } | null>(
     null,
+  );
+  const bleNearbyIds = React.useMemo(
+    () =>
+      new Set(
+        devices
+          .map((d) =>
+            String(d.canonicalId || d.id || "")
+              .trim()
+              .toUpperCase(),
+          )
+          .filter(Boolean),
+      ),
+    [devices],
+  );
+
+  const isBoardOnline = React.useCallback(
+    (boardId: string, wifiOnline?: boolean) => {
+      const normalized = String(boardId || "")
+        .trim()
+        .toUpperCase();
+      return !!wifiOnline || bleNearbyIds.has(normalized);
+    },
+    [bleNearbyIds],
   );
 
   const fetchAlreadyConnected = useCallback(async () => {
@@ -227,7 +280,11 @@ export default function HomeScreen({ navigation }: any) {
       const localBoards = await getSwitchboardsLocal();
       const ids = new Set(
         localBoards
-          .map((b) => String(b.id || "").trim().toUpperCase())
+          .map((b) =>
+            String(b.id || "")
+              .trim()
+              .toUpperCase(),
+          )
           .filter(Boolean),
       );
       setLocalBoardIds(ids);
@@ -306,11 +363,27 @@ export default function HomeScreen({ navigation }: any) {
     });
   }, []);
 
+  const getActiveSwitchCount = React.useCallback(async (deviceId: string) => {
+    try {
+      const wifiStatus = await getDeviceStatusOverWifi(deviceId);
+      const pins = wifiStatus?.status?.pins;
+      if (!pins || typeof pins !== "object") return 0;
+      return Object.values(pins).reduce((acc, value) => {
+        if (value === 1 || value === "1" || value === true) return acc + 1;
+        return acc;
+      }, 0);
+    } catch {
+      return 0;
+    }
+  }, []);
+
   const runScan = useCallback(async () => {
     if (scanningRef.current) return;
     scanningRef.current = true;
     setScanning(true);
     try {
+      // Reset to current scan window so BLE availability is always fresh.
+      setDevices([]);
       const { done } = bleManager.startScan_new(onDeviceFound, {
         stopAfterMs: 30000,
       });
@@ -492,7 +565,7 @@ export default function HomeScreen({ navigation }: any) {
               SWITCHBOARD_COLORS[
                 Math.floor(Math.random() * SWITCHBOARD_COLORS.length)
               ],
-            is_online: true,
+            is_online: !!(device as any).online,
             icon: device.room_icon,
             sensors,
           };
@@ -732,6 +805,132 @@ export default function HomeScreen({ navigation }: any) {
     });
   };
 
+  const closeDeleteModal = React.useCallback(
+    (force = false) => {
+      if (deleteModalProcessing && !force) return;
+      setDeleteModalVisible(false);
+      setDeleteModalLoading(false);
+      setDeleteModalError("");
+      setDeleteModalTitle("");
+      setDeleteModalMessage("");
+      setDeleteModalWarning("");
+      setDeleteModalDetails([]);
+      setDeleteContext(null);
+    },
+    [deleteModalProcessing],
+  );
+
+  const handleRemoveSwitchboard = React.useCallback(
+    async (board: Switchboard) => {
+      setDeleteContext({ type: "switchboard", board });
+      setDeleteModalVisible(true);
+      setDeleteModalLoading(true);
+      setDeleteModalError("");
+      setDeleteModalTitle("Remove Switchboard");
+      setDeleteModalMessage(
+        `Do you want to remove "${board.name}" from your app?`,
+      );
+
+      const activeSwitches = await getActiveSwitchCount(board.id);
+
+      setDeleteModalDetails([
+        { label: "Switchboard", value: board.name || "-" },
+        { label: "MAC", value: board.id },
+        { label: "Room", value: board.room_name || "-" },
+        {
+          label: "Active Switches",
+          value: String(activeSwitches),
+          highlight: activeSwitches > 0,
+        },
+      ]);
+      setDeleteModalWarning(
+        activeSwitches > 0
+          ? "Warning: This switchboard currently has running switches."
+          : "",
+      );
+      setDeleteModalLoading(false);
+    },
+    [getActiveSwitchCount],
+  );
+
+  const handleRemoveRoom = React.useCallback(
+    async (room: Room, roomSwitchboards: Switchboard[]) => {
+      setDeleteContext({ type: "room", room });
+      setDeleteModalVisible(true);
+      setDeleteModalLoading(true);
+      setDeleteModalError("");
+      setDeleteModalTitle("Remove Room");
+      setDeleteModalMessage(
+        `This will remove room "${room.name}" and all switchboards mapped to it.`,
+      );
+
+      const checks = await Promise.all(
+        roomSwitchboards.map(async (board) => {
+          const activeSwitches = await getActiveSwitchCount(board.id);
+          return { board, activeSwitches };
+        }),
+      );
+      const activeBoards = checks.filter((c) => c.activeSwitches > 0);
+      const totalActiveSwitches = checks.reduce(
+        (sum, item) => sum + item.activeSwitches,
+        0,
+      );
+
+      setDeleteModalDetails([
+        { label: "Room", value: room.name || "-" },
+        { label: "Total Switchboards", value: String(roomSwitchboards.length) },
+        {
+          label: "Boards With Active Switches",
+          value: String(activeBoards.length),
+          highlight: activeBoards.length > 0,
+        },
+        {
+          label: "Total Active Switches",
+          value: String(totalActiveSwitches),
+          highlight: totalActiveSwitches > 0,
+        },
+      ]);
+      setDeleteModalWarning(
+        totalActiveSwitches > 0
+          ? "Warning: One or more switchboards in this room currently have running switches."
+          : "",
+      );
+      setDeleteModalLoading(false);
+    },
+    [getActiveSwitchCount],
+  );
+
+  const confirmDelete = React.useCallback(async () => {
+    if (!deleteContext) return;
+    setDeleteModalProcessing(true);
+    setDeleteModalError("");
+    try {
+      if (deleteContext.type === "switchboard") {
+        await removeSwitchboard(deleteContext.board.id);
+      } else {
+        await removeRoom(deleteContext.room.id);
+      }
+      await Promise.all([loadRooms(), refreshLocalBoardIds()]);
+      runScan();
+      closeDeleteModal(true);
+    } catch (e: any) {
+      setDeleteModalError(
+        e?.response?.data?.err ||
+          (deleteContext.type === "switchboard"
+            ? "Unable to remove switchboard"
+            : "Unable to remove room"),
+      );
+    } finally {
+      setDeleteModalProcessing(false);
+    }
+  }, [
+    deleteContext,
+    closeDeleteModal,
+    loadRooms,
+    refreshLocalBoardIds,
+    runScan,
+  ]);
+
   const openSwitchboardFromHome = async (payload: {
     switchboardId: string;
     switchboardName: string;
@@ -747,7 +946,9 @@ export default function HomeScreen({ navigation }: any) {
     navigation.navigate("Switchboard", payload);
   };
 
-  const onlineCount = switchboards.filter((sb) => sb.is_online).length;
+  const onlineCount = switchboards.filter((sb) =>
+    isBoardOnline(sb.id, sb.is_online),
+  ).length;
 
   return (
     <View style={styles.container}>
@@ -793,13 +994,16 @@ export default function HomeScreen({ navigation }: any) {
           >
             <View style={[styles.switchboardRow, styles.switchboardRowPadded]}>
               {switchboards.map((switchboard) => {
-                const isOnline =
-                  switchboard.is_online ||
-                  devices.some((d) => d.canonicalId === switchboard.id);
+                const isOnline = isBoardOnline(
+                  switchboard.id,
+                  switchboard.is_online,
+                );
                 return (
                   <TouchableOpacity
                     key={switchboard.id}
                     style={styles.switchboardCardHorizontal}
+                    onLongPress={() => handleRemoveSwitchboard(switchboard)}
+                    delayLongPress={500}
                     onPress={() =>
                       openSwitchboardFromHome({
                         switchboardId: switchboard.id,
@@ -846,12 +1050,17 @@ export default function HomeScreen({ navigation }: any) {
           const roomSwitchboards = item.devices;
           return (
             <View key={room.id} style={styles.section}>
-              <View style={styles.sectionHeader}>
+              <TouchableOpacity
+                style={styles.sectionHeader}
+                onLongPress={() => handleRemoveRoom(room, roomSwitchboards)}
+                delayLongPress={500}
+                activeOpacity={1}
+              >
                 <Text style={styles.sectionTitleSmall}>
                   {room.name} ·{" "}
                   {room.switchboardCount || roomSwitchboards.length}
                 </Text>
-              </View>
+              </TouchableOpacity>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
@@ -861,13 +1070,17 @@ export default function HomeScreen({ navigation }: any) {
                   style={[styles.switchboardRow, styles.switchboardRowPadded]}
                 >
                   {roomSwitchboards.map((switchboard) => {
-                    const isOnline =
-                      switchboard.is_online ||
-                      devices.some((d) => d.canonicalId === switchboard.id);
+                    const isOnline = isBoardOnline(
+                      switchboard.id,
+                      switchboard.is_online,
+                    );
+
                     return (
                       <TouchableOpacity
                         key={switchboard.id}
                         style={styles.switchboardCardHorizontal}
+                        onLongPress={() => handleRemoveSwitchboard(switchboard)}
+                        delayLongPress={500}
                         onPress={() =>
                           openSwitchboardFromHome({
                             switchboardId: switchboard.id,
@@ -972,7 +1185,9 @@ export default function HomeScreen({ navigation }: any) {
                     <View style={styles.sheetDeviceCard}>
                       <View style={styles.sheetTopRow}>
                         <View style={styles.sheetMacBlock}>
-                          <Text style={styles.sheetMac}>{item.canonicalId || item.id}</Text>
+                          <Text style={styles.sheetMac}>
+                            {item.canonicalId || item.id}
+                          </Text>
                           <View style={styles.sheetDistanceRow}>
                             <MapPin
                               size={14}
@@ -985,15 +1200,12 @@ export default function HomeScreen({ navigation }: any) {
                                 styles.sheetDistanceText,
                               ]}
                             >
-                              {distanceMeta.label} · {estimateDistanceMeters(item.rssi)}
+                              {distanceMeta.label} ·{" "}
+                              {estimateDistanceMeters(item.rssi)}
                             </Text>
                           </View>
                         </View>
-                        <View
-                          style={[
-                            styles.sheetStatusPill,
-                          ]}
-                        >
+                        <View style={[styles.sheetStatusPill]}>
                           <Wifi
                             size={14}
                             color={signalMeta.color}
@@ -1064,6 +1276,19 @@ export default function HomeScreen({ navigation }: any) {
           </Animated.View>
         </View>
       </Modal>
+      <DeleteWarningModal
+        visible={deleteModalVisible}
+        title={deleteModalTitle}
+        message={deleteModalMessage}
+        warningText={deleteModalWarning}
+        details={deleteModalDetails}
+        loading={deleteModalLoading}
+        processing={deleteModalProcessing}
+        errorText={deleteModalError}
+        confirmLabel="Remove"
+        onCancel={closeDeleteModal}
+        onConfirm={confirmDelete}
+      />
     </View>
   );
 }

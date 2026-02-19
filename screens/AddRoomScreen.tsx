@@ -60,6 +60,14 @@ export default function AddRoomScreen({ navigation }: any) {
         <View style={styles.placeholder} />
       </View>
 
+      <View style={styles.hintContainer}>
+        <View style={styles.hintBox}>
+          <Text style={styles.hintText}>
+            Tip: On Home screen, long press a room to remove it.
+          </Text>
+        </View>
+      </View>
+
       <ScrollView style={styles.content}>
         <Text style={styles.label}>Room Name</Text>
         <TextInput
@@ -148,6 +156,27 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 24,
+  },
+  hintContainer: {
+    paddingHorizontal: 24,
+    paddingTop: 12,
+  },
+  hintBox: {
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#374151',
+    borderLeftWidth: 3,
+    borderLeftColor: '#60a5fa',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
+  },
+  hintText: {
+    color: '#cbd5e1',
+    fontSize: 12,
+    fontWeight: '400',
+    lineHeight: 18,
   },
   label: {
     fontSize: 16,
