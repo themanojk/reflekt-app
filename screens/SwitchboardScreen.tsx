@@ -61,11 +61,13 @@ import {
   Easing,
   Modal,
   PanResponder,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
+  Vibration,
   View,
 } from "react-native";
 import { Device as BleDevice } from "react-native-ble-plx";
@@ -164,6 +166,72 @@ type Props = {
 };
 type Disposable = { remove?: () => void; unsubscribe?: () => void };
 
+const CardLoadingOverlay = () => {
+  const pulse = React.useRef(new Animated.Value(0)).current;
+  const sweep = React.useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 520,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 0,
+          duration: 520,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulse]);
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(sweep, {
+          toValue: 1,
+          duration: 900,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        }),
+        Animated.timing(sweep, {
+          toValue: 0,
+          duration: 0,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [sweep]);
+
+  const loadingOpacity = pulse.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.14, 0.34],
+  });
+  const sweepTranslateX = sweep.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-220, 220],
+  });
+
+  return (
+    <Animated.View style={[styles.deviceLoadingOverlay, { opacity: loadingOpacity }]}>
+      <Animated.View
+        style={[
+          styles.deviceLoadingSweep,
+          { transform: [{ translateX: sweepTranslateX }] },
+        ]}
+      />
+    </Animated.View>
+  );
+};
+
 export default function SwitchboardScreen({ route, navigation }: Props) {
   const bleManagerRef = React.useRef<BLEManagerService>(null);
   if (!bleManagerRef.current) bleManagerRef.current = new BLEManagerService();
@@ -204,6 +272,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const connectingBleRef = React.useRef<boolean>(false);
   const [isOnline, setIsOnline] = useState<boolean>(status);
   const [isWifiOnline, setIsWifiOnline] = useState<boolean>(status);
+  const [pendingToggleById, setPendingToggleById] = useState<
+    Record<number, boolean>
+  >({});
   const [speed, setSpeed] = useState(0);
   const [availableSensors, setAvailableSensors] = useState<string[]>([]);
   const [showSensorModal, setShowSensorModal] = useState(false);
@@ -1555,6 +1626,18 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     }
   };
 
+  const triggerTapHaptic = React.useCallback(() => {
+    try {
+      if (Platform.OS === "android") {
+        // Slightly stronger single pulse for Android OEMs (e.g., Vivo).
+        Vibration.cancel();
+        Vibration.vibrate([0, 22], false);
+      } else {
+        Vibration.vibrate(10);
+      }
+    } catch {}
+  }, []);
+
   const restartEspDevice = async () => {
     Alert.alert("Restart Device", "Restart this switchboard now?", [
       { text: "Cancel", style: "cancel" },
@@ -1582,7 +1665,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   };
 
   const toggleDevice = async (deviceId: number) => {
+    if (pendingToggleById[deviceId]) return;
     try {
+      triggerTapHaptic();
+      setPendingToggleById((prev) => ({ ...prev, [deviceId]: true }));
       const dev = devices.find((d) => d.id === deviceId);
       if (!dev) return;
       const current = resolvePinStatus(dev);
@@ -1604,6 +1690,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       }
     } catch (e) {
       // no-op on failure
+    } finally {
+      setPendingToggleById((prev) => ({ ...prev, [deviceId]: false }));
     }
   };
 
@@ -1753,43 +1841,66 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     const isActive = resolvePinStatus(device);
     const speedValue = device.speed ?? 0;
     const displayName = pinConfigs[device.id]?.name?.trim() || device.name;
+    const isFan = device.device_type === "fan";
+    const isTogglePending = !!pendingToggleById[device.id];
+
+    const cardTop = (
+      <>
+        <View style={isActive ? styles.glassOverlay : null} />
+        <View style={[styles.deviceIcon, isActive && styles.deviceIconActive]}>
+          <IconComponent
+            size={26}
+            color={isActive ? "#fff" : "#64748b"}
+            strokeWidth={1.5}
+          />
+        </View>
+        <View style={[styles.deviceInfo, isFan && styles.deviceInfoFan]}>
+          <Text style={[styles.deviceName, isActive && styles.deviceNameActive]}>
+            {displayName}
+          </Text>
+        </View>
+        <View
+          style={[
+            styles.deviceStatus,
+            { backgroundColor: isActive ? "#10b981" : "#64748b" },
+          ]}
+        />
+      </>
+    );
+
+    if (!isFan) {
+      return (
+        <TouchableOpacity
+          key={device.id}
+          style={[styles.deviceCard, isActive && styles.deviceCardActive]}
+          onPress={() => toggleDevice(device.id)}
+          activeOpacity={0.85}
+          disabled={isTogglePending}
+        >
+          {cardTop}
+          {isTogglePending && <CardLoadingOverlay />}
+        </TouchableOpacity>
+      );
+    }
 
     return (
       <View
         key={device.id}
         style={[styles.deviceCard, isActive && styles.deviceCardActive]}
       >
-        <TouchableOpacity onPress={() => toggleDevice(device.id)}>
-          <View style={isActive ? styles.glassOverlay : null} />
-          <View
-            style={[styles.deviceIcon, isActive && styles.deviceIconActive]}
-          >
-            <IconComponent
-              size={26}
-              color={isActive ? "#fff" : "#64748b"}
-              strokeWidth={1.5}
-            />
-          </View>
-          <View style={styles.deviceInfo}>
-            <Text
-              style={[styles.deviceName, isActive && styles.deviceNameActive]}
-            >
-              {displayName}
-            </Text>
-          </View>
-          <View
-            style={[
-              styles.deviceStatus,
-              { backgroundColor: isActive ? "#fff" : "#64748b" },
-            ]}
-          />
+        <TouchableOpacity
+          onPress={() => toggleDevice(device.id)}
+          disabled={isTogglePending}
+        >
+          {cardTop}
         </TouchableOpacity>
 
-        {device.device_type === "fan" && (
-          <View style={styles.speedControllerBox}>
-            <View style={styles.sliderRow}>
-              <Text style={styles.label}>Speed</Text>
-
+        <View style={styles.speedControllerBox}>
+          <View style={styles.speedLabelRow}>
+            <Text style={styles.label}>Speed</Text>
+          </View>
+          <View style={styles.sliderRow}>
+            <View style={styles.sliderWrap}>
               <HingeSlider
                 value={speedValue}
                 minimumValue={0}
@@ -1816,7 +1927,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
               />
             </View>
           </View>
-        )}
+        </View>
+        {isTogglePending && <CardLoadingOverlay />}
 
         {/* {device.device_type === 'fan' && <View style={styles.speedControllerBox}>
           <View style={styles.sliderRow}>
@@ -1871,7 +1983,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         </View>
       </View>
 
-      <ScrollView style={styles.content}>
+      <ScrollView
+        style={styles.content}
+        contentContainerStyle={styles.contentContainer}
+      >
         <View style={styles.boardHeader}>
           <View style={styles.boardInfo}>
             <Text style={styles.boardName}>
@@ -1892,33 +2007,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
               </TouchableOpacity>
             </View>
             <View style={styles.boardStatus}>
-              {isOnline && (
-                <>
-                  <View style={styles.onlineDot} />
-                  <Text style={styles.onlineText}>Ble Online</Text>
-                </>
-              )}
-
-              {!isOnline && (
-                <>
-                  <View style={styles.offlineDot} />
-                  <Text style={styles.offlineText}>Ble Offline</Text>
-                </>
-              )}
-
-              <Text style={styles.separator}>|</Text>
-              {isWifiOnline && (
-                <>
-                  <View style={styles.onlineDot} />
-                  <Text style={styles.onlineText}>Wifi Online</Text>
-                </>
-              )}
-              {!isWifiOnline && (
-                <>
-                  <View style={styles.offlineDot} />
-                  <Text style={styles.offlineText}>Wifi Offline</Text>
-                </>
-              )}
               <View style={styles.wifiContainer}>
                 <TouchableOpacity
                   style={styles.actionChip}
@@ -1944,8 +2032,21 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
               </View>
             </View>
           </View>
-          <View style={[styles.boardIcon]}>
-            <IconComponent size={24} color="#5b8def" strokeWidth={2} />
+          <View style={styles.boardStatusPanel}>
+            <View style={styles.boardStatusIcon}>
+              <Bluetooth
+                size={14}
+                color={isOnline ? "#10b981" : "#b91010ff"}
+                strokeWidth={2.2}
+              />
+            </View>
+            <View style={styles.boardStatusIcon}>
+              <Wifi
+                size={14}
+                color={isWifiOnline ? "#10b981" : "#b91010ff"}
+                strokeWidth={2.2}
+              />
+            </View>
           </View>
           {/* <View style={[styles.boardIcon, { backgroundColor: boardColor }]} /> */}
         </View>
@@ -2946,8 +3047,20 @@ const styles = StyleSheet.create({
     borderRadius: 5,
     color: "#fff",
   },
-  sliderRow: { marginTop: 6 },
-  label: { color: "#cbd5e1", fontSize: 13, marginBottom: 6 },
+  speedLabelRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginBottom: 2,
+  },
+  sliderRow: {
+    marginTop: 2,
+    flexDirection: "column",
+    alignItems: "stretch",
+  },
+  sliderWrap: {
+    width: "100%",
+  },
+  label: { color: "#cbd5e1", fontSize: 13 },
   speedMarks: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -2981,6 +3094,9 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
   },
+  contentContainer: {
+    paddingBottom: 50,
+  },
   boardHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -2989,7 +3105,7 @@ const styles = StyleSheet.create({
     paddingVertical: 20,
     backgroundColor: "#1e293b",
     marginHorizontal: 24,
-    marginTop: 16,
+    marginTop: 0,
     borderRadius: 20,
     borderWidth: 1,
     borderColor: "#334155",
@@ -3189,6 +3305,24 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  boardStatusPanel: {
+    minWidth: 72,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    marginLeft: 12,
+  },
+  boardStatusIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(148, 163, 184, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(148, 163, 184, 0.3)",
+  },
   settingsPanel: {
     backgroundColor: "#1e293b",
     marginHorizontal: 24,
@@ -3333,14 +3467,15 @@ const styles = StyleSheet.create({
   deviceIconActive: {
     backgroundColor: "rgba(255, 255, 255, 0.25)",
     borderColor: "rgba(255, 255, 255, 0.4)",
-    shadowColor: "#fff",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
   },
   deviceInfo: {
     marginBottom: 10,
+  },
+  deviceInfoFan: {
+    marginBottom: 0,
   },
   deviceButton: {
     fontSize: 11,
@@ -3365,6 +3500,24 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 16,
     right: 16,
+  },
+  deviceLoadingOverlay: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    borderRadius: 16,
+    backgroundColor: "#5b8def",
+    overflow: "hidden",
+    zIndex: 20,
+  },
+  deviceLoadingSweep: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    width: "44%",
+    backgroundColor: "rgba(255,255,255,0.32)",
   },
   sheetOverlay: {
     flex: 1,
