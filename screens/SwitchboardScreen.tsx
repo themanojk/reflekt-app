@@ -89,9 +89,12 @@ interface Device {
   is_on: boolean;
   pin_status_ble?: boolean | null;
   pin_status_wifi?: boolean | null;
+  fan_status_ble?: boolean | null;
+  fan_status_wifi?: boolean | null;
   brightness?: number;
   color?: string;
   speed?: number;
+  fan_power?: number;
   command: string;
 }
 
@@ -106,7 +109,7 @@ const COLOR_PALETTE = [
   "rgb(251, 146, 60)",
 ];
 
-const FAN_SPEED_LEVELS = [30, 45, 60, 75, 90, 100];
+const FAN_SPEED_LEVELS = [0, 60, 70, 80, 90, 100];
 const DEFAULT_EXCLUDE_START = 22;
 const DEFAULT_EXCLUDE_END = 7;
 const DEFAULT_LOAD_WATT = 0;
@@ -159,6 +162,28 @@ const isMacAddress = (value: string) =>
 
 const isLikelySensorMac = (value: string) =>
   /^[0-9A-F]{2}(:[0-9A-F]{2}){5}$/i.test(String(value || "").trim());
+
+const normalizeFanPowerPercent = (value: number) => {
+  const safe = Math.max(0, Math.min(100, Math.round(value)));
+  if (safe <= 0) return 0;
+  return Math.max(60, safe);
+};
+
+const percentToLevel = (percent: number) => {
+  const safe = normalizeFanPowerPercent(percent);
+  let bestIdx = 0;
+  let bestDiff = Number.POSITIVE_INFINITY;
+
+  FAN_SPEED_LEVELS.forEach((candidate, idx) => {
+    const diff = Math.abs(candidate - safe);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      bestIdx = idx;
+    }
+  });
+
+  return bestIdx;
+};
 
 type Props = {
   route: RouteProp<RootStackParamList, "Switchboard">;
@@ -303,6 +328,15 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const disconnectRef = React.useRef<Disposable | null>(null);
   const mountedRef = React.useRef(true);
   const activeDeviceRef = React.useRef<BleDevice | undefined>(undefined);
+  const pendingFanPowerByIdRef = React.useRef<Record<number, number | undefined>>(
+    {},
+  );
+  const pendingFanStatusByIdRef = React.useRef<Record<number, boolean | undefined>>(
+    {},
+  );
+  const pendingFanTimerByIdRef = React.useRef<
+    Record<number, ReturnType<typeof setTimeout> | undefined>
+  >({});
   const prevFocusedRef = React.useRef<boolean>(false);
   const reconnectTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -319,6 +353,43 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const levelToPercent = (level: number) =>
     FAN_SPEED_LEVELS[Math.max(0, Math.min(5, Math.round(level)))];
+
+  const clearPendingFanState = (deviceId: number) => {
+    const timer = pendingFanTimerByIdRef.current[deviceId];
+    if (timer) {
+      clearTimeout(timer);
+      delete pendingFanTimerByIdRef.current[deviceId];
+    }
+    delete pendingFanPowerByIdRef.current[deviceId];
+    delete pendingFanStatusByIdRef.current[deviceId];
+  };
+
+  const armPendingFanState = (
+    deviceId: number,
+    nextPower?: number,
+    nextStatus?: boolean,
+  ) => {
+    clearPendingFanState(deviceId);
+    if (typeof nextPower === "number") {
+      pendingFanPowerByIdRef.current[deviceId] = nextPower;
+    }
+    if (typeof nextStatus === "boolean") {
+      pendingFanStatusByIdRef.current[deviceId] = nextStatus;
+    }
+    pendingFanTimerByIdRef.current[deviceId] = setTimeout(() => {
+      clearPendingFanState(deviceId);
+    }, 1800);
+  };
+
+  const resolveFanPowerPercent = (device: Device) => {
+    if (typeof device.fan_power === "number") {
+      return normalizeFanPowerPercent(device.fan_power);
+    }
+    if (typeof device.speed === "number") {
+      return levelToPercent(device.speed);
+    }
+    return 0;
+  };
 
   useEffect(() => {
     return () => {
@@ -497,6 +568,16 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   }, [resolvedDeviceMac, serviceId]);
 
   useEffect(() => {
+    if (!devices.length) return;
+
+    loadWifiStatusData();
+
+    if (activeDevice && services.length > 0) {
+      getCurrentState(activeDevice, services[0]);
+    }
+  }, [devices.length, activeDevice, services, resolvedDeviceMac]);
+
+  useEffect(() => {
     const wasFocused = prevFocusedRef.current;
     if (isFocused && !wasFocused) {
       prevFocusedRef.current = true;
@@ -570,6 +651,37 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       if (raw.startsWith("SENSOR_ATTACH_")) {
         return;
       }
+      if (raw.startsWith("POWER:")) {
+        const parts = raw.split(";");
+        const power = parts[0]?.replace("POWER:", "").trim();
+        const pinPart = parts.find((part) => part.startsWith("PIN:"));
+        const pin = pinPart?.replace("PIN:", "").trim();
+        const fanStatusPart = parts.find((part) =>
+          part.startsWith("FAN_STATUS:"),
+        );
+        const embeddedFanStatus = fanStatusPart
+          ?.replace("FAN_STATUS:", "")
+          .trim();
+        console.log("[FanSpeed][BLE] Raw power payload", {
+          raw,
+          power,
+          pin,
+          embeddedFanStatus,
+        });
+        updateFanPowerFromSource(power, pin);
+        if (embeddedFanStatus !== undefined) {
+          updateFanStatusFromSource(embeddedFanStatus, pin, "ble");
+        }
+        return;
+      }
+      if (raw.startsWith("FAN_STATUS:")) {
+        const parts = raw.split(";");
+        const status = parts[0]?.replace("FAN_STATUS:", "").trim();
+        const pinPart = parts.find((part) => part.startsWith("PIN:"));
+        const pin = pinPart?.replace("PIN:", "").trim();
+        updateFanStatusFromSource(status, pin, "ble");
+        return;
+      }
 
       const payload = raw.startsWith("PINS:") ? raw.slice(5).trim() : raw;
       if (!payload.includes(":")) {
@@ -583,7 +695,18 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         const statusData: string[] = pinData.split(":");
         const pin = Number(statusData[0]);
         if (!Number.isFinite(pin) || statusData.length < 2) return;
-        pinObj[pin] = statusData[1] === "1" ? true : false;
+        const incoming = statusData[1] === "1" ? true : false;
+        const pendingStatus = pendingFanStatusByIdRef.current[pin];
+        if (typeof pendingStatus === "boolean" && incoming !== pendingStatus) {
+          return;
+        }
+        if (typeof pendingStatus === "boolean" && incoming === pendingStatus) {
+          delete pendingFanStatusByIdRef.current[pin];
+          if (typeof pendingFanPowerByIdRef.current[pin] === "undefined") {
+            clearPendingFanState(pin);
+          }
+        }
+        pinObj[pin] = incoming;
       });
       if (!Object.keys(pinObj).length) {
         return;
@@ -649,13 +772,172 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     };
   }, [activeDevice, services]);
 
-  const onReceivedOverWifi = (pins: any) => {
-    const pinsData = pins;
+  const updateFanPowerFromSource = React.useCallback(
+    (power: unknown, pin?: unknown) => {
+      const nextPower = Number(power);
+      const nextPin = Number(pin);
+      if (!Number.isFinite(nextPower)) {
+        console.log("[FanSpeed] Ignoring non-numeric power", {
+          sourcePower: power,
+          sourcePin: pin,
+        });
+        return;
+      }
+
+      const safePower = normalizeFanPowerPercent(nextPower);
+      const nextLevel = percentToLevel(safePower);
+      console.log("[FanSpeed] Applying power update", {
+        rawPower: nextPower,
+        normalizedPower: safePower,
+        level: nextLevel,
+        pin: Number.isFinite(nextPin) ? nextPin : pin,
+      });
+
+      setDevices((prev) => {
+        let updated = false;
+        const fallbackFanId = prev.find((d) => d.device_type === "fan")?.id;
+
+        const targetPin = Number.isFinite(nextPin) ? nextPin : fallbackFanId;
+        if (!Number.isFinite(targetPin as number)) {
+          console.log("[FanSpeed] No target fan device found for power update", {
+            rawPower: nextPower,
+            sourcePin: pin,
+            fallbackFanId,
+          });
+          return prev;
+        }
+        const pendingPower = pendingFanPowerByIdRef.current[targetPin as number];
+        if (typeof pendingPower === "number" && safePower !== pendingPower) {
+          console.log("[FanSpeed] Ignoring stale power update", {
+            pin: targetPin,
+            rawPower: nextPower,
+            normalizedPower: safePower,
+            pendingPower,
+          });
+          return prev;
+        }
+        if (typeof pendingPower === "number" && safePower === pendingPower) {
+          delete pendingFanPowerByIdRef.current[targetPin as number];
+          if (
+            typeof pendingFanStatusByIdRef.current[targetPin as number] ===
+            "undefined"
+          ) {
+            clearPendingFanState(targetPin as number);
+          }
+        }
+
+        const next = prev.map((d) => {
+          if (d.id !== targetPin) return d;
+          updated = true;
+          return {
+            ...d,
+            fan_power: safePower,
+            speed: nextLevel,
+          };
+        });
+
+        return updated ? next : prev;
+      });
+    },
+    [],
+  );
+
+  const updateFanStatusFromSource = React.useCallback(
+    (status: unknown, pin?: unknown, source: "ble" | "wifi" = "ble") => {
+      const nextStatus =
+        typeof status === "boolean"
+          ? status
+          : status === 1 ||
+              status === "1" ||
+              String(status || "").toLowerCase() === "true";
+      const nextPin = Number(pin);
+
+      setDevices((prev) => {
+        let updated = false;
+        const fallbackFanId = prev.find((d) => d.device_type === "fan")?.id;
+        const targetPin = Number.isFinite(nextPin) ? nextPin : fallbackFanId;
+        if (!Number.isFinite(targetPin as number)) return prev;
+        const pendingStatus = pendingFanStatusByIdRef.current[targetPin as number];
+        if (typeof pendingStatus === "boolean" && nextStatus !== pendingStatus) {
+          return prev;
+        }
+        if (typeof pendingStatus === "boolean" && nextStatus === pendingStatus) {
+          delete pendingFanStatusByIdRef.current[targetPin as number];
+          if (
+            typeof pendingFanPowerByIdRef.current[targetPin as number] ===
+            "undefined"
+          ) {
+            clearPendingFanState(targetPin as number);
+          }
+        }
+
+        const next = prev.map((d) => {
+          if (d.id !== targetPin) return d;
+          updated = true;
+          return {
+            ...d,
+            is_on: nextStatus,
+            fan_status_ble:
+              source === "ble" ? nextStatus : d.fan_status_ble,
+            fan_status_wifi:
+              source === "wifi" ? nextStatus : d.fan_status_wifi,
+          };
+        });
+
+        return updated ? next : prev;
+      });
+    },
+    [],
+  );
+
+  const onReceivedOverWifi = (status: any) => {
+    const power =
+      status?.power ??
+      status?.speed ??
+      status?.fan_speed ??
+      status?.fan_power ??
+      status?.fanPower;
+    const powerPin = status?.pin ?? status?.fan_pin ?? status?.fanPin;
+    console.log("[FanSpeed][WiFi] Status payload", {
+      power,
+      powerPin,
+      fan_status:
+        status?.fan_status ??
+        status?.fanStatus ??
+        status?.status_fan,
+      rawStatus: status,
+    });
+    if (power !== undefined) {
+      updateFanPowerFromSource(power, powerPin);
+    }
+    const fanStatus =
+      status?.fan_status ??
+      status?.fanStatus ??
+      status?.status_fan;
+    if (fanStatus !== undefined) {
+      updateFanStatusFromSource(fanStatus, powerPin, "wifi");
+    }
+
+    const pinsData = status?.pins;
+    if (!pinsData || typeof pinsData !== "object") {
+      return;
+    }
     const pinObj: any = {};
     Object.keys(pinsData).forEach((pin: string) => {
       const n = Number(pin);
       if (!Number.isFinite(n)) return;
-      pinObj[n] = pinsData[pin] == 1 ? true : false;
+      const incoming = pinsData[pin] == 1 ? true : false;
+      const pendingStatus = pendingFanStatusByIdRef.current[n];
+      if (typeof pendingStatus === "boolean" && incoming !== pendingStatus) {
+        return;
+      }
+      if (typeof pendingStatus === "boolean" && incoming === pendingStatus) {
+        delete pendingFanStatusByIdRef.current[n];
+        if (typeof pendingFanPowerByIdRef.current[n] === "undefined") {
+          clearPendingFanState(n);
+        }
+      }
+      pinObj[n] = incoming;
     });
     setDevices((prev) =>
       prev.map((d) =>
@@ -706,6 +988,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
               is_on: prevDevice?.is_on ?? false,
               pin_status_ble: prevDevice?.pin_status_ble,
               pin_status_wifi: prevDevice?.pin_status_wifi,
+              fan_status_ble: prevDevice?.fan_status_ble,
+              fan_status_wifi: prevDevice?.fan_status_wifi,
+              speed: prevDevice?.speed,
+              fan_power: prevDevice?.fan_power,
               position: idx,
               command: button.command,
             };
@@ -725,6 +1011,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 is_on: prevDevice?.is_on ?? false,
                 pin_status_ble: prevDevice?.pin_status_ble,
                 pin_status_wifi: prevDevice?.pin_status_wifi,
+                fan_status_ble: prevDevice?.fan_status_ble,
+                fan_status_wifi: prevDevice?.fan_status_wifi,
+                speed: prevDevice?.speed,
+                fan_power: prevDevice?.fan_power,
                 position: idx,
                 command: button.command,
               };
@@ -762,6 +1052,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                   is_on: prevDevice?.is_on ?? false,
                   pin_status_ble: prevDevice?.pin_status_ble,
                   pin_status_wifi: prevDevice?.pin_status_wifi,
+                  fan_status_ble: prevDevice?.fan_status_ble,
+                  fan_status_wifi: prevDevice?.fan_status_wifi,
+                  speed: prevDevice?.speed,
+                  fan_power: prevDevice?.fan_power,
                   position: idx,
                   command: button.command,
                 };
@@ -786,7 +1080,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       if (wifiStatus) {
         setIsWifiOnline(wifiStatus?.status?.online);
         if (wifiStatus?.status?.online) {
-          onReceivedOverWifi(wifiStatus.status.pins);
+          onReceivedOverWifi(wifiStatus.status);
         }
       }
     } catch {
@@ -797,8 +1091,34 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     if (!device) return;
     try {
       const text = `REST:`;
-      await bleManager.sendData(device, text, serviceId);
+      await bleManager.safeWrite({
+        device,
+        serviceUUID: serviceId,
+        charUUID: DATA_CHAR_UUID,
+        base64Payload: Buffer.from(text).toString("base64"),
+      });
     } catch (e) {}
+  };
+
+  const resolveBleWriteTarget = async () => {
+    if (!activeDevice) return null;
+    if (services.length > 0) {
+      return { device: activeDevice, serviceId: services[0] };
+    }
+
+    try {
+      await activeDevice.discoverAllServicesAndCharacteristics();
+    } catch {}
+
+    try {
+      const serviceIds = await bleManager.getCustomServiceId(activeDevice);
+      if (serviceIds.length > 0) {
+        setServices(serviceIds);
+        return { device: activeDevice, serviceId: serviceIds[0] };
+      }
+    } catch {}
+
+    return null;
   };
 
   const requestSensorRefresh = async () => {
@@ -1605,7 +1925,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     pin: number,
     command: string,
   ): Promise<boolean> => {
-    if (!services.length || !activeDevice) {
+    const bleTarget = await resolveBleWriteTarget();
+    if (!bleTarget) {
+      const cmdText = JSON.stringify({ cmd: command, pin });
       const payload: WifiPayload = {
         mac_address: resolvedDeviceMac,
         data: {
@@ -1613,13 +1935,20 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           pin: pin,
         },
       };
+      showToast(`CMD: ${cmdText}`);
       const status = await sendCommandOverWifi(payload);
       return status;
     }
 
     try {
       const text = `PIN:${pin};STATUS:${command}`;
-      await bleManager.sendData(activeDevice, text, services[0]);
+      showToast(`CMD: ${text}`);
+      await bleManager.safeWrite({
+        device: bleTarget.device,
+        serviceUUID: bleTarget.serviceId,
+        charUUID: DATA_CHAR_UUID,
+        base64Payload: Buffer.from(text).toString("base64"),
+      });
       return true;
     } catch (e) {
       return false;
@@ -1666,16 +1995,88 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const toggleDevice = async (deviceId: number) => {
     if (pendingToggleById[deviceId]) return;
+    let oldSpeed: number | undefined;
+    let oldFanPower: number | undefined;
+    let oldIsOn = false;
+    let oldBleStatus: boolean | null | undefined;
+    let oldWifiStatus: boolean | null | undefined;
+    let oldFanBleStatus: boolean | null | undefined;
+    let oldFanWifiStatus: boolean | null | undefined;
     try {
       triggerTapHaptic();
       setPendingToggleById((prev) => ({ ...prev, [deviceId]: true }));
       const dev = devices.find((d) => d.id === deviceId);
       if (!dev) return;
       const current = resolvePinStatus(dev);
+      oldSpeed = dev.speed;
+      oldFanPower = dev.fan_power;
+      oldIsOn = dev.is_on;
+      oldBleStatus = dev.pin_status_ble;
+      oldWifiStatus = dev.pin_status_wifi;
+      oldFanBleStatus = dev.fan_status_ble;
+      oldFanWifiStatus = dev.fan_status_wifi;
+      if (dev.device_type === "fan") {
+        const useBle = !!(activeDevice && services.length > 0);
+        const nextCommand = current ? "off" : "on";
+        if (current) {
+          armPendingFanState(dev.id, undefined, false);
+          const status = await sendDataToESP(dev.id, nextCommand);
+          if (status) {
+            setDevices((prev) =>
+              prev.map((d) => {
+                if (d.id !== deviceId) return d;
+                return {
+                  ...d,
+                is_on: false,
+                pin_status_ble: useBle ? false : d.pin_status_ble,
+                pin_status_wifi: !useBle ? false : d.pin_status_wifi,
+                fan_status_ble: useBle ? false : d.fan_status_ble,
+                fan_status_wifi: !useBle ? false : d.fan_status_wifi,
+              };
+              }),
+            );
+          }
+          return;
+        }
+
+        let nextPower = resolveFanPowerPercent(dev);
+        if (nextPower <= 0) {
+          nextPower = 100;
+        }
+        armPendingFanState(dev.id, nextPower, true);
+
+        setDevices((prev) =>
+          prev.map((d) => {
+            if (d.id !== deviceId) return d;
+            return {
+              ...d,
+              fan_power: nextPower,
+              speed: percentToLevel(nextPower),
+              is_on: true,
+              pin_status_ble: useBle ? true : d.pin_status_ble,
+              pin_status_wifi: !useBle ? true : d.pin_status_wifi,
+              fan_status_ble: useBle ? true : d.fan_status_ble,
+              fan_status_wifi: !useBle ? true : d.fan_status_wifi,
+            };
+          }),
+        );
+
+        await sendFanSpeed(nextPower, dev);
+        if (useBle) {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+        }
+
+        const status = await sendDataToESP(dev.id, nextCommand);
+        if (!status) {
+          throw new Error("Failed to turn fan on");
+        }
+        return;
+      }
+
       const status = await sendDataToESP(dev.id, dev.command);
       if (status) {
         const nextVal = !current;
-        const useBle = blePinsReceived && activeDevice && services.length > 0;
+        const useBle = !!(activeDevice && services.length > 0);
         setDevices((prev) =>
           prev.map((d) => {
             if (d.id !== deviceId) return d;
@@ -1689,7 +2090,23 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         );
       }
     } catch (e) {
-      // no-op on failure
+      clearPendingFanState(deviceId);
+      setDevices((prev) =>
+        prev.map((d) =>
+          d.id === deviceId
+            ? {
+                ...d,
+                speed: oldSpeed,
+                fan_power: oldFanPower,
+                is_on: oldIsOn,
+                pin_status_ble: oldBleStatus,
+                pin_status_wifi: oldWifiStatus,
+                fan_status_ble: oldFanBleStatus,
+                fan_status_wifi: oldFanWifiStatus,
+              }
+            : d,
+        ),
+      );
     } finally {
       setPendingToggleById((prev) => ({ ...prev, [deviceId]: false }));
     }
@@ -1771,68 +2188,144 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   };
 
   const sendFanSpeed = async (speed: number, device: Device) => {
-    const val = Math.max(30, Math.min(100, Math.round(speed)));
+    const val = normalizeFanPowerPercent(speed);
 
-    if (!services.length || !activeDevice) {
+    const bleTarget = await resolveBleWriteTarget();
+    if (!bleTarget) {
+      const cmdText = JSON.stringify({
+        cmd: "fan_speed",
+        pin: device.id,
+        power: val,
+      });
       // Wi-Fi fallback
       const payload: WifiPayload = {
         mac_address: resolvedDeviceMac,
         data: { cmd: "fan_speed", pin: device.id, power: val },
       };
+      showToast(`CMD: ${cmdText}`);
       await sendCommandOverWifi(payload);
       return;
     }
 
     const text = `SPEED:${val};PIN:${device.id}`;
 
-    await bleManager.sendData(activeDevice, text, services[0]);
+    showToast(`CMD: ${text}`);
+    await bleManager.safeWrite({
+      device: bleTarget.device,
+      serviceUUID: bleTarget.serviceId,
+      charUUID: DATA_CHAR_UUID,
+      base64Payload: Buffer.from(text).toString("base64"),
+    });
   };
 
-  const changeDeviceSpeed = React.useCallback(
-    (device: Device, speed: number) => {
-      const clamped = Math.max(0, Math.min(5, Math.round(speed)));
-      const percent = levelToPercent(clamped);
+  const changeDeviceSpeed = (device: Device, speed: number) => {
+    const clamped = Math.max(0, Math.min(5, Math.round(speed)));
+    const percent = levelToPercent(clamped);
+    const currentDevice = devices.find((d) => d.id === device.id);
+    if (!currentDevice) return;
 
-      setDevices((prev) => {
-        const idx = prev.findIndex((d) => d.id === device.id);
-        if (idx === -1) return prev;
+    const old = currentDevice.speed ?? 0;
+    const oldFanPower = currentDevice.fan_power;
+    const oldIsOn = currentDevice.is_on;
+    const oldBleStatus = currentDevice.pin_status_ble;
+    const oldWifiStatus = currentDevice.pin_status_wifi;
+    const oldFanBleStatus = currentDevice.fan_status_ble;
+    const oldFanWifiStatus = currentDevice.fan_status_wifi;
+    const useBle = !!(activeDevice && services.length > 0);
+    const nextIsOn = percent > 0;
+    armPendingFanState(device.id, percent, nextIsOn);
 
-        const old = prev[idx].speed ?? 0;
-        const next = [...prev];
-        next[idx] = {
-          ...prev[idx],
-          speed: clamped,
-          is_on: clamped > 0 ? true : prev[idx].is_on,
-        };
+    setDevices((prev) =>
+      prev.map((d) =>
+        d.id === device.id
+          ? {
+              ...d,
+              speed: clamped,
+              fan_power: percent,
+              is_on: nextIsOn,
+              pin_status_ble: useBle ? nextIsOn : d.pin_status_ble,
+              pin_status_wifi: !useBle ? nextIsOn : d.pin_status_wifi,
+              fan_status_ble: useBle ? nextIsOn : d.fan_status_ble,
+              fan_status_wifi: !useBle ? nextIsOn : d.fan_status_wifi,
+            }
+          : d,
+      ),
+    );
 
-        (async () => {
-          try {
-            await sendFanSpeed(percent, device);
-          } catch {
-            // revert only that device
-            setDevices((curr) => {
-              const j = curr.findIndex((d) => d.id === device.id);
-              if (j === -1) return curr;
-              const copy = [...curr];
-              copy[j] = { ...copy[j], speed: old };
-              return copy;
-            });
+    (async () => {
+      try {
+        if (percent <= 0) {
+          await sendFanSpeed(0, device);
+          return;
+        }
+
+        const wasOn = resolvePinStatus(currentDevice);
+        await sendFanSpeed(percent, device);
+
+        if (!wasOn) {
+          if (useBle) {
+            await new Promise((resolve) => setTimeout(resolve, 120));
           }
-        })();
+          const started = await sendDataToESP(device.id, "on");
+          if (!started) {
+            throw new Error("Failed to turn fan on");
+          }
+        }
+      } catch {
+        clearPendingFanState(device.id);
+        setDevices((curr) =>
+          curr.map((d) =>
+            d.id === device.id
+              ? {
+                  ...d,
+                  speed: old,
+                  fan_power: oldFanPower,
+                  is_on: oldIsOn,
+                  pin_status_ble: oldBleStatus,
+                  pin_status_wifi: oldWifiStatus,
+                  fan_status_ble: oldFanBleStatus,
+                  fan_status_wifi: oldFanWifiStatus,
+                }
+              : d,
+          ),
+        );
+      }
+    })();
+  };
 
-        return next;
-      });
-    },
-    [services.length, activeDevice],
-  );
+  const resolveTransportPinStatus = (device: Device) => {
+    if (device.device_type === "fan") {
+      if (blePinsReceived && device.fan_status_ble !== undefined) {
+        return !!device.fan_status_ble;
+      }
+      if (blePinsReceived && device.pin_status_ble !== undefined) {
+        return !!device.pin_status_ble;
+      }
+      if (device.fan_status_wifi !== undefined) {
+        return !!device.fan_status_wifi;
+      }
+      if (device.pin_status_wifi !== undefined) {
+        return !!device.pin_status_wifi;
+      }
+      return undefined;
+    }
 
-  const resolvePinStatus = (device: Device) => {
     if (blePinsReceived && device.pin_status_ble !== undefined) {
       return !!device.pin_status_ble;
     }
     if (device.pin_status_wifi !== undefined) {
       return !!device.pin_status_wifi;
     }
+    return undefined;
+  };
+
+  const resolvePinStatus = (device: Device) => {
+    const transportStatus = resolveTransportPinStatus(device);
+
+    if (typeof transportStatus === "boolean") {
+      return transportStatus;
+    }
+
     return !!device.is_on;
   };
 
@@ -1840,6 +2333,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     const IconComponent = ROOM_ICONS[device.device_type] || Lightbulb;
     const isActive = resolvePinStatus(device);
     const speedValue = device.speed ?? 0;
+    const speedPercent = resolveFanPowerPercent(device);
     const displayName = pinConfigs[device.id]?.name?.trim() || device.name;
     const isFan = device.device_type === "fan";
     const isTogglePending = !!pendingToggleById[device.id];
@@ -1898,6 +2392,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         <View style={styles.speedControllerBox}>
           <View style={styles.speedLabelRow}>
             <Text style={styles.label}>Speed</Text>
+            <Text style={styles.label}>{speedPercent}%</Text>
           </View>
           <View style={styles.sliderRow}>
             <View style={styles.sliderWrap}>
@@ -1909,13 +2404,14 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 // live UI update (no network)
                 onValueChange={(v: number) => {
                   const clamped = Math.max(0, Math.min(5, Math.round(v)));
+                  const percent = levelToPercent(clamped);
                   setDevices((prev) =>
                     prev.map((d) =>
                       d.id === device.id
                         ? {
                             ...d,
                             speed: clamped,
-                            is_on: clamped > 0 ? true : d.is_on,
+                            fan_power: percent,
                           }
                         : d,
                     ),
