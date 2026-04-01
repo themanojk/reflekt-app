@@ -1,5 +1,18 @@
 import { addDevice, fetchDevicesByRoomForUser } from "@/api/devics";
+import { addRoom } from "@/api/room";
+import { useToast } from "@/contexts/ToastContext";
 import { getRoomsLocal } from "@/db/rooms.local";
+import { clearPendingSwitchboardDeviceId } from "@/utils/storage";
+import {
+  Bath,
+  Bed,
+  Coffee,
+  Hop as Home,
+  Lamp,
+  Sofa,
+  Tv,
+  Utensils,
+} from "lucide-react-native";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -18,6 +31,17 @@ type Room = {
   name: string;
   icon?: string;
 };
+
+const ROOM_ICON_OPTIONS = [
+  { name: "home", icon: Home, label: "Home" },
+  { name: "bed", icon: Bed, label: "Bedroom" },
+  { name: "coffee", icon: Coffee, label: "Kitchen" },
+  { name: "tv", icon: Tv, label: "Living Room" },
+  { name: "bath", icon: Bath, label: "Bathroom" },
+  { name: "utensils", icon: Utensils, label: "Dining" },
+  { name: "sofa", icon: Sofa, label: "Lounge" },
+  { name: "lamp", icon: Lamp, label: "Study" },
+];
 
 const normalizeSensors = (value: unknown): string[] => {
   if (Array.isArray(value)) {
@@ -62,10 +86,14 @@ const extractSensorsFromAddResponse = (payload: any): string[] => {
 
 export default function ConfirmNewBoardScreen({ navigation, route }: any) {
   const { pendingDeviceId, bleTransportId } = route.params || {};
+  const { showToast } = useToast();
   const [rooms, setRooms] = useState<Room[]>([]);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
   const [boardName, setBoardName] = useState("");
+  const [createRoomMode, setCreateRoomMode] = useState(false);
+  const [newRoomName, setNewRoomName] = useState("");
+  const [newRoomIcon, setNewRoomIcon] = useState("home");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -73,11 +101,14 @@ export default function ConfirmNewBoardScreen({ navigation, route }: any) {
     const load = async () => {
       try {
         const localRooms = await getRoomsLocal();
-        if (mounted && localRooms.length) {
-          setRooms(localRooms as Room[]);
-          if (!selectedRoomId) {
-            setSelectedRoomId(localRooms[0].id);
-            setSelectedRoom(localRooms[0] as Room);
+        if (mounted) {
+          setCreateRoomMode(localRooms.length === 0);
+          if (localRooms.length) {
+            setRooms(localRooms as Room[]);
+            if (!selectedRoomId) {
+              setSelectedRoomId(localRooms[0].id);
+              setSelectedRoom(localRooms[0] as Room);
+            }
           }
         }
         const byRoom = await fetchDevicesByRoomForUser();
@@ -93,6 +124,7 @@ export default function ConfirmNewBoardScreen({ navigation, route }: any) {
           });
           const roomsList = Array.from(unique.values());
           setRooms(roomsList);
+          setCreateRoomMode(roomsList.length === 0);
           if (!selectedRoomId && roomsList.length) {
             setSelectedRoomId(roomsList[0].id);
             setSelectedRoom(roomsList[0]);
@@ -109,8 +141,13 @@ export default function ConfirmNewBoardScreen({ navigation, route }: any) {
   }, []);
 
   const handleContinue = async () => {
-    if (!selectedRoomId) {
+    const shouldCreateRoom = createRoomMode || rooms.length === 0;
+    if (!shouldCreateRoom && !selectedRoomId) {
       Alert.alert("Select Room", "Please choose a room for this board.");
+      return;
+    }
+    if (shouldCreateRoom && !newRoomName.trim()) {
+      Alert.alert("Room Name", "Please enter a room name.");
       return;
     }
     if (!boardName.trim()) {
@@ -124,13 +161,40 @@ export default function ConfirmNewBoardScreen({ navigation, route }: any) {
     if (saving) return;
     setSaving(true);
     try {
+      let roomId = selectedRoomId;
+      let roomForNav = selectedRoom;
+
+      if (shouldCreateRoom) {
+        const createdRoom = await addRoom(newRoomName.trim(), newRoomIcon);
+        roomId = createdRoom?._id || (createdRoom as any)?.id;
+        roomForNav = {
+          id: roomId,
+          name: createdRoom?.name || newRoomName.trim(),
+          icon: createdRoom?.icon || newRoomIcon,
+        };
+        setRooms((prev) =>
+          roomId && !prev.some((room) => room.id === roomId)
+            ? [...prev, roomForNav as Room]
+            : prev,
+        );
+        setSelectedRoomId(roomId || null);
+        setSelectedRoom(roomForNav);
+      }
+
+      if (!roomId) {
+        Alert.alert("Room Missing", "Unable to create or select a room.");
+        return;
+      }
+
       const addRes = await addDevice({
         title: boardName.trim(),
-        room_id: selectedRoomId,
+        room_id: roomId,
         device_id: pendingDeviceId,
         os: Platform.OS,
       });
       const sensors = extractSensorsFromAddResponse(addRes);
+      await clearPendingSwitchboardDeviceId();
+      showToast(`Device "${boardName.trim()}" added successfully.`);
       navigation.reset({
         index: 1,
         routes: [
@@ -140,12 +204,12 @@ export default function ConfirmNewBoardScreen({ navigation, route }: any) {
             params: {
               switchboardName: boardName.trim(),
               deviceId: pendingDeviceId,
-              roomIcon: selectedRoom?.icon || "",
+              roomIcon: roomForNav?.icon || "",
               status: true,
               iosBleId: Platform.OS === "ios" ? (bleTransportId || pendingDeviceId) : undefined,
               bleId: bleTransportId || pendingDeviceId,
               service_id: "",
-              roomName: selectedRoom?.name || "",
+              roomName: roomForNav?.name || "",
               sensors,
             },
           },
@@ -178,9 +242,11 @@ export default function ConfirmNewBoardScreen({ navigation, route }: any) {
           onChangeText={setBoardName}
         />
 
-        <Text style={styles.label}>Select Room</Text>
-        <ScrollView style={styles.roomList} contentContainerStyle={styles.roomListContent}>
-          {rooms.map((room) => (
+        {!createRoomMode && rooms.length > 0 ? (
+          <>
+            <Text style={styles.label}>Select Room</Text>
+            <ScrollView style={styles.roomList} contentContainerStyle={styles.roomListContent}>
+              {rooms.map((room) => (
                 <TouchableOpacity
                   key={room.id}
                   style={[
@@ -194,8 +260,67 @@ export default function ConfirmNewBoardScreen({ navigation, route }: any) {
                 >
                   <Text style={styles.roomRowText}>{room.name}</Text>
                 </TouchableOpacity>
-          ))}
-        </ScrollView>
+              ))}
+            </ScrollView>
+            <TouchableOpacity
+              style={styles.inlineAction}
+              onPress={() => setCreateRoomMode(true)}
+            >
+              <Text style={styles.inlineActionText}>Create New Room</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <>
+            <Text style={styles.label}>
+              {rooms.length === 0 ? "Create Room" : "Create New Room"}
+            </Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g., Living Room"
+              placeholderTextColor="#64748b"
+              value={newRoomName}
+              onChangeText={setNewRoomName}
+            />
+            <Text style={styles.label}>Select Room Type</Text>
+            <View style={styles.iconGrid}>
+              {ROOM_ICON_OPTIONS.map((item) => {
+                const IconComponent = item.icon;
+                const isSelected = newRoomIcon === item.name;
+                return (
+                  <TouchableOpacity
+                    key={item.name}
+                    style={[
+                      styles.iconButton,
+                      isSelected && styles.iconButtonSelected,
+                    ]}
+                    onPress={() => setNewRoomIcon(item.name)}
+                  >
+                    <IconComponent
+                      size={24}
+                      color={isSelected ? "#5b8def" : "#94a3b8"}
+                    />
+                    <Text
+                      style={[
+                        styles.iconLabel,
+                        isSelected && styles.iconLabelSelected,
+                      ]}
+                    >
+                      {item.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            {rooms.length > 0 ? (
+              <TouchableOpacity
+                style={styles.inlineAction}
+                onPress={() => setCreateRoomMode(false)}
+              >
+                <Text style={styles.inlineActionText}>Back To Room Selection</Text>
+              </TouchableOpacity>
+            ) : null}
+          </>
+        )}
       </View>
 
       <View style={styles.footer}>
@@ -288,6 +413,45 @@ const styles = StyleSheet.create({
   roomRowText: {
     color: "#e2e8f0",
     fontWeight: "600",
+  },
+  inlineAction: {
+    alignSelf: "flex-start",
+    marginTop: 6,
+  },
+  inlineActionText: {
+    color: "#93c5fd",
+    fontWeight: "600",
+    fontSize: 13,
+  },
+  iconGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+  iconButton: {
+    width: "22%",
+    aspectRatio: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#1e293b",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#0b1220",
+    padding: 8,
+  },
+  iconButtonSelected: {
+    borderColor: "#5b8def",
+    backgroundColor: "rgba(91, 141, 239, 0.12)",
+  },
+  iconLabel: {
+    color: "#94a3b8",
+    fontSize: 11,
+    fontWeight: "600",
+    marginTop: 8,
+    textAlign: "center",
+  },
+  iconLabelSelected: {
+    color: "#dbeafe",
   },
   footer: {
     padding: 20,
