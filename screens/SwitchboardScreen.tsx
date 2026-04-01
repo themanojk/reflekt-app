@@ -1,14 +1,18 @@
 import {
   attachSensorToDevice,
   checkSensorAttachment,
+  createSwitchSchedule,
   createSensorRule,
+  deleteSwitchSchedule,
   detachSensorFromDevice,
   fetchDevicesByMac,
   fetchPinConfigs,
+  fetchSwitchSchedules,
   getDeviceStatusOverWifi,
   getLayout,
   savePinConfig,
   sendCommandOverWifi,
+  SwitchSchedule,
   WifiPayload,
 } from "@/api/devics";
 import HingeSlider from "@/components/HingeSlider";
@@ -45,10 +49,13 @@ import {
   ChevronLeft,
   ChevronDown,
   ChevronUp,
+  Clock3,
   Lightbulb,
+  Plus,
   Power,
   Settings,
   SlidersHorizontal,
+  Trash2,
   Wifi,
   X,
 } from "lucide-react-native";
@@ -112,6 +119,25 @@ const DEFAULT_EXCLUDE_END = 7;
 const DEFAULT_LOAD_WATT = 0;
 const HOUR_CHIP_MIN_WIDTH = 64;
 const HOUR_CHIP_GAP = 8;
+const SCHEDULE_DAY_OPTIONS = [
+  { code: "SU", label: "S" },
+  { code: "MO", label: "M" },
+  { code: "TU", label: "T" },
+  { code: "WE", label: "W" },
+  { code: "TH", label: "T" },
+  { code: "FR", label: "F" },
+  { code: "SA", label: "S" },
+];
+const DEFAULT_SCHEDULE_TIME = "18:00";
+
+type ScheduleDraft = {
+  pin: number;
+  mode: "one_time" | "recurring";
+  action: "on" | "off";
+  time: string;
+  date: string;
+  days: string[];
+};
 
 const formatHourLabel = (hour: number) => {
   const h = ((hour % 24) + 24) % 24;
@@ -126,6 +152,61 @@ const getHourScrollOffset = (hour: number) =>
 
 const formatExcludeSummary = (start: number, end: number) =>
   `${formatHourLabel(start)} - ${formatHourLabel(end)}`;
+
+const getLocalDateInputValue = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const getCurrentTimezone = () => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Kolkata";
+  } catch {
+    return "Asia/Kolkata";
+  }
+};
+
+const getScheduleHour = (time?: string) => {
+  const [hour] = String(time || DEFAULT_SCHEDULE_TIME).split(":");
+  const parsed = Number(hour);
+  return Number.isInteger(parsed) ? `${parsed}`.padStart(2, "0") : "18";
+};
+
+const getScheduleMinute = (time?: string) => {
+  const [, minute] = String(time || DEFAULT_SCHEDULE_TIME).split(":");
+  const parsed = Number(minute);
+  return Number.isInteger(parsed) ? `${parsed}`.padStart(2, "0") : "00";
+};
+
+const formatScheduleTime = (time?: string | null) => {
+  if (!time || !/^\d{2}:\d{2}$/.test(time)) return "--";
+  const [hourText, minuteText] = time.split(":");
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const period = hour >= 12 ? "PM" : "AM";
+  const displayHour = hour % 12 === 0 ? 12 : hour % 12;
+  return `${displayHour}:${String(minute).padStart(2, "0")} ${period}`;
+};
+
+const formatScheduleDays = (schedule: SwitchSchedule) => {
+  if (schedule.mode === "one_time") {
+    return schedule.date || "One time";
+  }
+  if (!schedule.days?.length || schedule.frequency === "daily") {
+    return "Every day";
+  }
+  return schedule.days
+    .map((day) => SCHEDULE_DAY_OPTIONS.find((item) => item.code === day)?.label || day)
+    .join(" ");
+};
+
+const formatScheduleSubtitle = (schedule: SwitchSchedule) => {
+  const dayLabel = formatScheduleDays(schedule);
+  const timeLabel = formatScheduleTime(schedule.time);
+  return schedule.mode === "one_time" ? `${dayLabel} • ${timeLabel}` : `${timeLabel} • ${dayLabel}`;
+};
 
 const normalizeSensorMacs = (value: unknown): string[] => {
   if (Array.isArray(value)) {
@@ -263,6 +344,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [showWifiModal, setShowWifiModal] = useState(false);
   const [showSensorConfigModal, setShowSensorConfigModal] = useState(false);
   const [showPinConfigModal, setShowPinConfigModal] = useState(false);
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [showScheduleEditorModal, setShowScheduleEditorModal] = useState(false);
   const [wifiSSID, setWifiSSID] = useState("");
   const [wifiPassword, setWifiPassword] = useState("");
   const [blePinsReceived, setBlePinsReceived] = useState(false);
@@ -304,6 +387,12 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     Array.isArray(initialSensors) ? initialSensors : [],
   );
   const [pinConfigs, setPinConfigs] = useState<Record<number, any>>({});
+  const [pinSchedules, setPinSchedules] = useState<Record<number, SwitchSchedule[]>>({});
+  const [expandedSchedulePinId, setExpandedSchedulePinId] = useState<number | null>(null);
+  const [scheduleLoading, setScheduleLoading] = useState(false);
+  const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [scheduleDraft, setScheduleDraft] = useState<ScheduleDraft | null>(null);
+  const [activeTimePicker, setActiveTimePicker] = useState<"hour" | "minute" | null>(null);
   const [expandedPinId, setExpandedPinId] = useState<number | null>(null);
   const [ruleTabs, setRuleTabs] = useState<Record<number, "on" | "off">>({});
   const hourScrollRefs = React.useRef<Record<string, ScrollView | null>>({});
@@ -1015,6 +1104,144 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     } catch {
       // offline: keep local
     }
+  };
+
+  const loadSchedules = async () => {
+    setScheduleLoading(true);
+    try {
+      const res = await fetchSwitchSchedules(resolvedDeviceMac);
+      const list = Array.isArray(res?.schedules) ? res.schedules : [];
+      const grouped: Record<number, SwitchSchedule[]> = {};
+      list.forEach((schedule: SwitchSchedule) => {
+        const pin = Number(schedule.pin);
+        if (!grouped[pin]) grouped[pin] = [];
+        grouped[pin].push(schedule);
+      });
+      Object.keys(grouped).forEach((pinKey) => {
+        grouped[Number(pinKey)] = grouped[Number(pinKey)].sort((left, right) => {
+          const leftAt = new Date(left.next_run_at || 0).getTime();
+          const rightAt = new Date(right.next_run_at || 0).getTime();
+          return leftAt - rightAt;
+        });
+      });
+      setPinSchedules(grouped);
+    } catch (err: any) {
+      showToast(err?.response?.data?.error || "Failed to load schedules.");
+    } finally {
+      setScheduleLoading(false);
+    }
+  };
+
+  const openScheduleEditor = (pin: number) => {
+    setScheduleDraft({
+      pin,
+      mode: "recurring",
+      action: "on",
+      time: DEFAULT_SCHEDULE_TIME,
+      date: getLocalDateInputValue(),
+      days: ["MO", "TU", "WE", "TH", "FR"],
+    });
+    setShowScheduleEditorModal(true);
+  };
+
+  const toggleScheduleDay = (code: string) => {
+    setScheduleDraft((prev) => {
+      if (!prev) return prev;
+      const exists = prev.days.includes(code);
+      const nextDays = exists
+        ? prev.days.filter((day) => day !== code)
+        : [...prev.days, code];
+      return { ...prev, days: nextDays };
+    });
+  };
+
+  const toggleAllScheduleDays = () => {
+    setScheduleDraft((prev) => {
+      if (!prev) return prev;
+      const allCodes = SCHEDULE_DAY_OPTIONS.map((item) => item.code);
+      const nextDays = prev.days.length === allCodes.length ? [] : allCodes;
+      return { ...prev, days: nextDays };
+    });
+  };
+
+  const updateScheduleTimePart = (
+    part: "hour" | "minute",
+    value: string,
+  ) => {
+    setScheduleDraft((prev) => {
+      if (!prev) return prev;
+      const currentHour = getScheduleHour(prev.time);
+      const currentMinute = getScheduleMinute(prev.time);
+      const nextHour = part === "hour" ? value : currentHour;
+      const nextMinute = part === "minute" ? value : currentMinute;
+      return { ...prev, time: `${nextHour}:${nextMinute}` };
+    });
+    setActiveTimePicker(null);
+  };
+
+  const saveScheduleDraft = async () => {
+    if (!scheduleDraft) return;
+    if (!/^\d{2}:\d{2}$/.test(scheduleDraft.time)) {
+      showToast("Enter time in HH:mm format.");
+      return;
+    }
+    if (
+      scheduleDraft.mode === "one_time" &&
+      !/^\d{4}-\d{2}-\d{2}$/.test(scheduleDraft.date)
+    ) {
+      showToast("Enter date in YYYY-MM-DD format.");
+      return;
+    }
+    if (scheduleDraft.mode === "recurring" && scheduleDraft.days.length === 0) {
+      showToast("Select at least one day or A for all days.");
+      return;
+    }
+
+    setScheduleSaving(true);
+    try {
+      await createSwitchSchedule({
+        mac_address: resolvedDeviceMac,
+        pin: scheduleDraft.pin,
+        action: scheduleDraft.action,
+        timezone: getCurrentTimezone(),
+        mode: scheduleDraft.mode,
+        date: scheduleDraft.date,
+        time: scheduleDraft.time,
+        days: scheduleDraft.mode === "recurring" ? scheduleDraft.days : [],
+        label: `${
+          pinConfigs[scheduleDraft.pin]?.name?.trim() ||
+          devices.find((item) => item.id === scheduleDraft.pin)?.name ||
+          `Pin ${scheduleDraft.pin}`
+        } ${scheduleDraft.action} schedule`,
+      });
+      await loadSchedules();
+      setShowScheduleEditorModal(false);
+      setScheduleDraft(null);
+      showToast("Schedule saved.");
+    } catch (err: any) {
+      showToast(err?.response?.data?.error || "Failed to save schedule.");
+    } finally {
+      setScheduleSaving(false);
+    }
+  };
+
+  const removeSchedule = async (scheduleId: string) => {
+    Alert.alert("Delete Schedule", "Remove this schedule from the switch?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await deleteSwitchSchedule(scheduleId);
+            await loadSchedules();
+            showToast("Schedule removed.");
+          } catch (err: any) {
+            showToast(err?.response?.data?.error || "Failed to remove schedule.");
+          }
+        },
+      },
+    ]);
   };
 
   const syncPendingPinConfigs = async () => {
@@ -2130,6 +2357,17 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                   <SlidersHorizontal size={14} color="#cbd5e1" />
                   <Text style={styles.actionChipText}>Pin Config</Text>
                 </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.iconActionChip}
+                  onPress={async () => {
+                    setShowScheduleModal(true);
+                    await loadSchedules();
+                  }}
+                  activeOpacity={0.85}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Clock3 size={16} color="#cbd5e1" />
+                </TouchableOpacity>
               </View>
             </View>
           </View>
@@ -2569,7 +2807,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                   </Text>
                   <TouchableOpacity
                     style={styles.dangerButton}
-                    onPress={detachSensor}
+                    onPress={() => detachSensor()}
                   >
                     <Text style={styles.dangerButtonText}>Remove Sensor</Text>
                   </TouchableOpacity>
@@ -2696,6 +2934,370 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
               <Text style={styles.closeBigBtnText}>Close</Text>
             </TouchableOpacity>
           </ScrollView>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showScheduleModal}
+        animationType="slide"
+        onRequestClose={() => setShowScheduleModal(false)}
+      >
+        <View style={styles.settingsModal}>
+          <View style={styles.settingsHeader}>
+            <Text style={styles.settingsTitle}>Switch Schedules</Text>
+            <TouchableOpacity onPress={() => setShowScheduleModal(false)}>
+              <X size={22} color="#94a3b8" />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.settingsBody}>
+            <View style={styles.pinRulesContainer}>
+              <Text style={styles.sectionLabel}>Per-switch schedule actions</Text>
+              <Text style={styles.pinRulesHint}>
+                Pick a time, choose once or repeating days, then set whether the switch should turn on or off.
+              </Text>
+              {scheduleLoading ? (
+                <Text style={styles.sensorConfigEmpty}>Loading schedules...</Text>
+              ) : null}
+              {devices.map((d) => {
+                const schedules = pinSchedules[d.id] || [];
+                const isExpanded = expandedSchedulePinId === d.id;
+                const displayName =
+                  pinConfigs[d.id]?.name?.trim() || d.name?.trim() || `Pin ${d.id}`;
+
+                return (
+                  <View key={`schedule-${d.id}`} style={styles.pinConfigCard}>
+                    <TouchableOpacity
+                      style={styles.pinConfigHeader}
+                      onPress={() =>
+                        setExpandedSchedulePinId((prev) => (prev === d.id ? null : d.id))
+                      }
+                      activeOpacity={0.8}
+                    >
+                      <View style={styles.pinConfigHeaderText}>
+                        <Text style={styles.pinConfigTitle}>
+                          {displayName} · Pin {d.id}
+                        </Text>
+                        {!isExpanded ? (
+                          <Text
+                            style={[
+                              styles.pinConfigSummary,
+                              schedules.length > 0 && styles.pinConfigSummaryActive,
+                            ]}
+                          >
+                            {schedules.length
+                              ? `${schedules.length} schedule${schedules.length > 1 ? "s" : ""}`
+                              : "No schedules"}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <View style={styles.pinConfigHeaderRight}>
+                        {isExpanded ? (
+                          <ChevronUp size={18} color="#cbd5e1" />
+                        ) : (
+                          <ChevronDown size={18} color="#cbd5e1" />
+                        )}
+                      </View>
+                    </TouchableOpacity>
+
+                    {isExpanded ? (
+                      <View style={styles.schedulePinBody}>
+                        {schedules.length ? (
+                          schedules.map((schedule) => (
+                            <View key={schedule._id} style={styles.scheduleCard}>
+                              <View style={styles.scheduleCardTop}>
+                                <View style={styles.scheduleInfo}>
+                                  <Text style={styles.scheduleAction}>
+                                    Turn {schedule.action === "on" ? "On" : "Off"}
+                                  </Text>
+                                  <Text style={styles.scheduleMeta}>
+                                    {formatScheduleSubtitle(schedule)}
+                                  </Text>
+                                  {schedule.next_run_at ? (
+                                    <Text style={styles.scheduleNextRun}>
+                                      Next:{" "}
+                                      {new Date(schedule.next_run_at).toLocaleString()}
+                                    </Text>
+                                  ) : null}
+                                </View>
+                                <TouchableOpacity
+                                  style={styles.scheduleDeleteBtn}
+                                  onPress={() => removeSchedule(schedule._id)}
+                                >
+                                  <Trash2 size={16} color="#fca5a5" />
+                                </TouchableOpacity>
+                              </View>
+                            </View>
+                          ))
+                        ) : (
+                          <Text style={styles.sensorConfigEmpty}>
+                            No schedules added for this switch yet.
+                          </Text>
+                        )}
+
+                        <TouchableOpacity
+                          style={styles.scheduleAddBtn}
+                          onPress={() => openScheduleEditor(d.id)}
+                        >
+                          <Plus size={16} color="#dbeafe" />
+                          <Text style={styles.scheduleAddBtnText}>Add Schedule</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ) : null}
+                  </View>
+                );
+              })}
+            </View>
+
+            <TouchableOpacity
+              style={styles.closeBigBtn}
+              onPress={() => setShowScheduleModal(false)}
+            >
+              <Text style={styles.closeBigBtnText}>Close</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showScheduleEditorModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowScheduleEditorModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.scheduleEditorModal}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>New Schedule</Text>
+              <TouchableOpacity onPress={() => setShowScheduleEditorModal(false)}>
+                <X size={22} color="#94a3b8" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.scheduleModeTabs}>
+              {[
+                { key: "one_time", label: "Once" },
+                { key: "recurring", label: "Repeat" },
+              ].map((item) => (
+                <TouchableOpacity
+                  key={item.key}
+                  style={[
+                    styles.scheduleModeTab,
+                    scheduleDraft?.mode === item.key && styles.scheduleModeTabActive,
+                  ]}
+                  onPress={() =>
+                    setScheduleDraft((prev) =>
+                      prev ? { ...prev, mode: item.key as ScheduleDraft["mode"] } : prev,
+                    )
+                  }
+                >
+                  <Text
+                    style={[
+                      styles.scheduleModeTabText,
+                      scheduleDraft?.mode === item.key &&
+                        styles.scheduleModeTabTextActive,
+                    ]}
+                  >
+                    {item.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {scheduleDraft ? (
+              <>
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Time</Text>
+                  <View style={styles.timeSelectRow}>
+                    <TouchableOpacity
+                      style={styles.timeSelectButton}
+                      onPress={() => setActiveTimePicker("hour")}
+                    >
+                      <Text style={styles.timeSelectValue}>
+                        {getScheduleHour(scheduleDraft.time)}
+                      </Text>
+                      <Text style={styles.timeSelectLabel}>Hour</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.timeSeparator}>:</Text>
+                    <TouchableOpacity
+                      style={styles.timeSelectButton}
+                      onPress={() => setActiveTimePicker("minute")}
+                    >
+                      <Text style={styles.timeSelectValue}>
+                        {getScheduleMinute(scheduleDraft.time)}
+                      </Text>
+                      <Text style={styles.timeSelectLabel}>Minute</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                {scheduleDraft.mode === "one_time" ? (
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>Date</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={scheduleDraft.date}
+                      onChangeText={(value) =>
+                        setScheduleDraft((prev) => (prev ? { ...prev, date: value } : prev))
+                      }
+                      placeholder="YYYY-MM-DD"
+                      placeholderTextColor="#64748b"
+                    />
+                  </View>
+                ) : (
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>Repeat on</Text>
+                    <View style={styles.scheduleDayRow}>
+                      <TouchableOpacity
+                        style={[
+                          styles.scheduleDayChip,
+                          scheduleDraft.days.length === SCHEDULE_DAY_OPTIONS.length &&
+                            styles.scheduleDayChipActive,
+                        ]}
+                        onPress={toggleAllScheduleDays}
+                      >
+                        <Text
+                          style={[
+                            styles.scheduleDayChipText,
+                            scheduleDraft.days.length ===
+                              SCHEDULE_DAY_OPTIONS.length &&
+                              styles.scheduleDayChipTextActive,
+                          ]}
+                        >
+                          A
+                        </Text>
+                      </TouchableOpacity>
+                      {SCHEDULE_DAY_OPTIONS.map((item) => {
+                        const active = scheduleDraft.days.includes(item.code);
+                        return (
+                          <TouchableOpacity
+                            key={item.code}
+                            style={[
+                              styles.scheduleDayChip,
+                              active && styles.scheduleDayChipActive,
+                            ]}
+                            onPress={() => toggleScheduleDay(item.code)}
+                          >
+                            <Text
+                              style={[
+                                styles.scheduleDayChipText,
+                                active && styles.scheduleDayChipTextActive,
+                              ]}
+                            >
+                              {item.label}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+                )}
+
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Action</Text>
+                  <View style={styles.scheduleModeTabs}>
+                    {[
+                      { key: "on", label: "Turn On" },
+                      { key: "off", label: "Turn Off" },
+                    ].map((item) => (
+                      <TouchableOpacity
+                        key={item.key}
+                        style={[
+                          styles.scheduleModeTab,
+                          scheduleDraft.action === item.key &&
+                            styles.scheduleModeTabActive,
+                        ]}
+                        onPress={() =>
+                          setScheduleDraft((prev) =>
+                            prev ? { ...prev, action: item.key as "on" | "off" } : prev,
+                          )
+                        }
+                      >
+                        <Text
+                          style={[
+                            styles.scheduleModeTabText,
+                            scheduleDraft.action === item.key &&
+                              styles.scheduleModeTabTextActive,
+                          ]}
+                        >
+                          {item.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+
+                <TouchableOpacity
+                  style={[styles.saveButton, scheduleSaving && styles.buttonDisabled]}
+                  onPress={saveScheduleDraft}
+                  disabled={scheduleSaving}
+                >
+                  <Text style={styles.saveButtonText}>
+                    {scheduleSaving ? "Saving..." : "Save Schedule"}
+                  </Text>
+                </TouchableOpacity>
+              </>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={activeTimePicker !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setActiveTimePicker(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.timePickerModal}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                Select {activeTimePicker === "hour" ? "Hour" : "Minute"}
+              </Text>
+              <TouchableOpacity onPress={() => setActiveTimePicker(null)}>
+                <X size={22} color="#94a3b8" />
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={styles.timePickerList}>
+              {(activeTimePicker === "hour"
+                ? Array.from({ length: 24 }, (_, index) =>
+                    `${index}`.padStart(2, "0"),
+                  )
+                : Array.from({ length: 60 }, (_, index) =>
+                    `${index}`.padStart(2, "0"),
+                  )
+              ).map((value) => {
+                const selected =
+                  activeTimePicker === "hour"
+                    ? getScheduleHour(scheduleDraft?.time) === value
+                    : getScheduleMinute(scheduleDraft?.time) === value;
+                return (
+                  <TouchableOpacity
+                    key={`${activeTimePicker}-${value}`}
+                    style={[
+                      styles.timePickerOption,
+                      selected && styles.timePickerOptionActive,
+                    ]}
+                    onPress={() =>
+                      updateScheduleTimePart(
+                        activeTimePicker === "hour" ? "hour" : "minute",
+                        value,
+                      )
+                    }
+                  >
+                    <Text
+                      style={[
+                        styles.timePickerOptionText,
+                        selected && styles.timePickerOptionTextActive,
+                      ]}
+                    >
+                      {value}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
         </View>
       </Modal>
 
@@ -3305,6 +3907,16 @@ const styles = StyleSheet.create({
     borderColor: "rgba(91, 141, 239, 0.35)",
     backgroundColor: "rgba(91, 141, 239, 0.12)",
   },
+  iconActionChip: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(91, 141, 239, 0.35)",
+    backgroundColor: "rgba(91, 141, 239, 0.12)",
+  },
   actionChipText: {
     fontSize: 12,
     color: "#cbd5e1",
@@ -3325,6 +3937,25 @@ const styles = StyleSheet.create({
     maxWidth: 400,
     borderWidth: 1,
     borderColor: "#334155",
+  },
+  scheduleEditorModal: {
+    backgroundColor: "#1e293b",
+    borderRadius: 20,
+    padding: 24,
+    width: "100%",
+    maxWidth: 420,
+    borderWidth: 1,
+    borderColor: "#334155",
+  },
+  timePickerModal: {
+    backgroundColor: "#1e293b",
+    borderRadius: 20,
+    padding: 24,
+    width: "100%",
+    maxWidth: 320,
+    borderWidth: 1,
+    borderColor: "#334155",
+    maxHeight: "70%",
   },
   modalHeader: {
     flexDirection: "row",
@@ -3396,6 +4027,9 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#fff",
   },
+  buttonDisabled: {
+    opacity: 0.6,
+  },
   boardIcon: {
     width: 60,
     height: 60,
@@ -3437,6 +4071,174 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 8,
+  },
+  schedulePinBody: {
+    gap: 12,
+  },
+  scheduleCard: {
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#0f172a",
+  },
+  scheduleCardTop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+  scheduleInfo: {
+    flex: 1,
+    gap: 4,
+  },
+  scheduleAction: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  scheduleMeta: {
+    color: "#cbd5e1",
+    fontSize: 13,
+  },
+  scheduleNextRun: {
+    color: "#94a3b8",
+    fontSize: 12,
+  },
+  scheduleDeleteBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(239, 68, 68, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.25)",
+  },
+  scheduleAddBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(91, 141, 239, 0.35)",
+    backgroundColor: "rgba(91, 141, 239, 0.12)",
+    paddingVertical: 12,
+  },
+  scheduleAddBtnText: {
+    color: "#dbeafe",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  scheduleModeTabs: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 16,
+  },
+  scheduleModeTab: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#0f172a",
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  scheduleModeTabActive: {
+    backgroundColor: "rgba(91, 141, 239, 0.18)",
+    borderColor: "#5b8def",
+  },
+  scheduleModeTabText: {
+    color: "#94a3b8",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  scheduleModeTabTextActive: {
+    color: "#fff",
+  },
+  timeSelectRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  timeSelectButton: {
+    flex: 1,
+    minHeight: 64,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#0f172a",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 10,
+  },
+  timeSelectValue: {
+    color: "#fff",
+    fontSize: 24,
+    fontWeight: "700",
+  },
+  timeSelectLabel: {
+    color: "#94a3b8",
+    fontSize: 12,
+    marginTop: 4,
+    fontWeight: "600",
+  },
+  timeSeparator: {
+    color: "#cbd5e1",
+    fontSize: 24,
+    fontWeight: "700",
+  },
+  timePickerList: {
+    marginTop: 4,
+  },
+  timePickerOption: {
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 8,
+    backgroundColor: "#0f172a",
+    borderWidth: 1,
+    borderColor: "#334155",
+    alignItems: "center",
+  },
+  timePickerOptionActive: {
+    backgroundColor: "rgba(91, 141, 239, 0.18)",
+    borderColor: "#5b8def",
+  },
+  timePickerOptionText: {
+    color: "#cbd5e1",
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  timePickerOptionTextActive: {
+    color: "#fff",
+  },
+  scheduleDayRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  scheduleDayChip: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#0f172a",
+  },
+  scheduleDayChipActive: {
+    backgroundColor: "rgba(91, 141, 239, 0.18)",
+    borderColor: "#5b8def",
+  },
+  scheduleDayChipText: {
+    color: "#94a3b8",
+    fontWeight: "700",
+  },
+  scheduleDayChipTextActive: {
+    color: "#fff",
   },
   settingsTitle: {
     fontSize: 20,
@@ -3719,11 +4521,6 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: "#1f2937",
-  },
-  settingsTitle: {
-    color: "#fff",
-    fontSize: 18,
-    fontWeight: "700",
   },
   settingsBody: {
     paddingHorizontal: 20,

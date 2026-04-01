@@ -205,3 +205,46 @@ export async function savePinConfig(payload: {
 }) {
   return client.post(`/sensor/pin-config`, payload).then((res) => res.data);
 }
+
+export type SwitchSchedule = {
+  _id: string;
+  mac_address: string;
+  pin: number;
+  action: "on" | "off";
+  timezone: string;
+  enabled: boolean;
+  label: string;
+  mode: "one_time" | "recurring";
+  frequency: "once" | "daily" | "weekly";
+  days: string[];
+  date: string | null;
+  time: string | null;
+  next_run_at?: string | null;
+  last_run_at?: string | null;
+};
+
+export async function fetchSwitchSchedules(deviceMac: string) {
+  return client
+    .get(`/scheduler`, {
+      params: { mac_address: deviceMac },
+    })
+    .then((res) => res.data);
+}
+
+export async function createSwitchSchedule(payload: {
+  mac_address: string;
+  pin: number;
+  action: "on" | "off";
+  timezone: string;
+  mode: "one_time" | "recurring";
+  date?: string;
+  time: string;
+  days?: string[];
+  label?: string;
+}) {
+  return client.post(`/scheduler`, payload).then((res) => res.data);
+}
+
+export async function deleteSwitchSchedule(scheduleId: string) {
+  return client.delete(`/scheduler/${scheduleId}`).then((res) => res.data);
+}
