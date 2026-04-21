@@ -7,12 +7,15 @@ import {
   detachSensorFromDevice,
   fetchDevicesByMac,
   fetchPinConfigs,
+  fetchSensorRange,
   fetchSwitchSchedules,
   getDeviceStatusOverWifi,
   getLayout,
   savePinConfig,
   sendCommandOverWifi,
+  SensorRangeResponse,
   SwitchSchedule,
+  updateSensorRange,
   WifiPayload,
 } from "@/api/devics";
 import HingeSlider from "@/components/HingeSlider";
@@ -66,6 +69,7 @@ import {
   Alert,
   Animated,
   Easing,
+  KeyboardAvoidingView,
   Modal,
   PanResponder,
   Platform,
@@ -137,6 +141,16 @@ type ScheduleDraft = {
   time: string;
   date: string;
   days: string[];
+};
+
+type SensorRangeState = {
+  rangeCm: string;
+  appliedRangeCm?: number | null;
+  ackAt?: string | null;
+  ackStatus?: string | null;
+  ackMessage?: string | null;
+  loading?: boolean;
+  saving?: boolean;
 };
 
 const formatHourLabel = (hour: number) => {
@@ -345,7 +359,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [showSensorConfigModal, setShowSensorConfigModal] = useState(false);
   const [showPinConfigModal, setShowPinConfigModal] = useState(false);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
-  const [showScheduleEditorModal, setShowScheduleEditorModal] = useState(false);
   const [wifiSSID, setWifiSSID] = useState("");
   const [wifiPassword, setWifiPassword] = useState("");
   const [blePinsReceived, setBlePinsReceived] = useState(false);
@@ -386,12 +399,16 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [attachedSensors, setAttachedSensors] = useState<string[]>(
     Array.isArray(initialSensors) ? initialSensors : [],
   );
+  const [sensorRanges, setSensorRanges] = useState<
+    Record<string, SensorRangeState>
+  >({});
   const [pinConfigs, setPinConfigs] = useState<Record<number, any>>({});
   const [pinSchedules, setPinSchedules] = useState<Record<number, SwitchSchedule[]>>({});
   const [expandedSchedulePinId, setExpandedSchedulePinId] = useState<number | null>(null);
   const [scheduleLoading, setScheduleLoading] = useState(false);
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [scheduleDraft, setScheduleDraft] = useState<ScheduleDraft | null>(null);
+  const [scheduleView, setScheduleView] = useState<"list" | "editor">("list");
   const [activeTimePicker, setActiveTimePicker] = useState<"hour" | "minute" | null>(null);
   const [expandedPinId, setExpandedPinId] = useState<number | null>(null);
   const [ruleTabs, setRuleTabs] = useState<Record<number, "on" | "off">>({});
@@ -517,6 +534,74 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   useEffect(() => {
     loadPinConfigs();
   }, []);
+
+  const applySensorRangeResponse = React.useCallback(
+    (sensorMac: string, payload: Partial<SensorRangeResponse>) => {
+      const mac = String(sensorMac || "").trim().toUpperCase();
+      if (!mac) return;
+      setSensorRanges((prev) => ({
+        ...prev,
+        [mac]: {
+          ...(prev[mac] || {}),
+          rangeCm: String(
+            payload.coverage_range_cm ??
+              payload.last_range_applied_cm ??
+              prev[mac]?.rangeCm ??
+              "",
+          ),
+          appliedRangeCm:
+            payload.last_range_applied_cm ??
+            payload.coverage_range_cm ??
+            prev[mac]?.appliedRangeCm ??
+            null,
+          ackAt: payload.last_range_ack_at ?? prev[mac]?.ackAt ?? null,
+          ackStatus:
+            payload.last_range_ack_status ?? prev[mac]?.ackStatus ?? null,
+          ackMessage:
+            payload.last_range_ack_message ?? prev[mac]?.ackMessage ?? null,
+          loading: false,
+          saving: false,
+        },
+      }));
+    },
+    [],
+  );
+
+  const loadSensorRangeState = React.useCallback(
+    async (sensorMac: string) => {
+      const mac = String(sensorMac || "").trim().toUpperCase();
+      if (!mac) return;
+      setSensorRanges((prev) => ({
+        ...prev,
+        [mac]: {
+          ...(prev[mac] || { rangeCm: "" }),
+          loading: true,
+        },
+      }));
+      try {
+        const res = await fetchSensorRange(mac);
+        applySensorRangeResponse(mac, res);
+      } catch {
+        setSensorRanges((prev) => ({
+          ...prev,
+          [mac]: {
+            ...(prev[mac] || { rangeCm: "" }),
+            loading: false,
+          },
+        }));
+      }
+    },
+    [applySensorRangeResponse],
+  );
+
+  const loadAllSensorRanges = React.useCallback(async () => {
+    await Promise.all(attachedSensors.map((mac) => loadSensorRangeState(mac)));
+  }, [attachedSensors, loadSensorRangeState]);
+
+  useEffect(() => {
+    if (!attachedSensors.length) return;
+    void loadAllSensorRanges();
+  }, [attachedSensors, loadAllSensorRanges]);
 
   const closeSheet = React.useCallback(() => {
     Animated.timing(sheetTranslateY, {
@@ -910,6 +995,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       // 5️⃣ Non-blocking side calls
       loadWifiStatusData();
       refreshAttachedSensorsFromBackend();
+      loadAllSensorRanges();
     } catch (err) {
     } finally {
       setLoading(false);
@@ -1132,6 +1218,34 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     }
   };
 
+  const openScheduleManager = React.useCallback(async () => {
+    const hadBlockingModal =
+      showSettings ||
+      showPinConfigModal ||
+      showWifiModal ||
+      showSensorConfigModal;
+    if (hadBlockingModal) {
+      setShowSettings(false);
+      setShowPinConfigModal(false);
+      setShowWifiModal(false);
+      setShowSensorConfigModal(false);
+      if (Platform.OS === "ios") {
+        await new Promise((resolve) => setTimeout(resolve, 220));
+      }
+    }
+    setScheduleDraft(null);
+    setScheduleView("list");
+    setActiveTimePicker(null);
+    setShowScheduleModal(true);
+    await loadSchedules();
+  }, [
+    loadSchedules,
+    showPinConfigModal,
+    showSensorConfigModal,
+    showSettings,
+    showWifiModal,
+  ]);
+
   const openScheduleEditor = (pin: number) => {
     setScheduleDraft({
       pin,
@@ -1141,7 +1255,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       date: getLocalDateInputValue(),
       days: ["MO", "TU", "WE", "TH", "FR"],
     });
-    setShowScheduleEditorModal(true);
+    setActiveTimePicker(null);
+    setScheduleView("editor");
+    setShowScheduleModal(true);
   };
 
   const toggleScheduleDay = (code: string) => {
@@ -1215,13 +1331,68 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         } ${scheduleDraft.action} schedule`,
       });
       await loadSchedules();
-      setShowScheduleEditorModal(false);
+      setScheduleView("list");
       setScheduleDraft(null);
+      setActiveTimePicker(null);
       showToast("Schedule saved.");
     } catch (err: any) {
       showToast(err?.response?.data?.error || "Failed to save schedule.");
     } finally {
       setScheduleSaving(false);
+    }
+  };
+
+  const saveSensorRangeFor = async (sensorMac: string) => {
+    const mac = String(sensorMac || "").trim().toUpperCase();
+    const draft = sensorRanges[mac];
+    const numeric = Number(String(draft?.rangeCm || "").replace(/[^\d]/g, ""));
+    if (!Number.isFinite(numeric) || numeric < 30 || numeric > 700) {
+      showToast("Range must be between 30 and 700 cm.");
+      return;
+    }
+
+    setSensorRanges((prev) => ({
+      ...prev,
+      [mac]: {
+        ...(prev[mac] || { rangeCm: String(numeric) }),
+        saving: true,
+      },
+    }));
+
+    try {
+      const apiDeviceMac = await resolveApiDeviceMac();
+      if (!isMacAddress(apiDeviceMac)) {
+        throw new Error("Device MAC not resolved yet.");
+      }
+      const res = await updateSensorRange(apiDeviceMac, mac, numeric);
+      applySensorRangeResponse(mac, {
+        coverage_range_cm: Number(res?.applied_range_cm ?? numeric),
+        last_range_applied_cm: Number(res?.applied_range_cm ?? numeric),
+        last_range_ack_at: new Date().toISOString(),
+        last_range_ack_status: res?.ok ? "applied" : "error",
+        last_range_ack_message: String(
+          res?.message || (res?.ok ? "Range applied" : "Range update failed"),
+        ),
+      });
+      showToast(res?.message || "Motion range updated.");
+    } catch (err: any) {
+      setSensorRanges((prev) => ({
+        ...prev,
+        [mac]: {
+          ...(prev[mac] || { rangeCm: String(numeric) }),
+          saving: false,
+          ackStatus: "error",
+          ackMessage:
+            err?.response?.data?.message ||
+            err?.message ||
+            "Failed to update range",
+        },
+      }));
+      showToast(
+        err?.response?.data?.message ||
+          err?.message ||
+          "Failed to update motion range.",
+      );
     }
   };
 
@@ -1496,6 +1667,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       const attached = String(pendingSensor).trim().toUpperCase();
       if (attached) {
         await persistAttachedSensors([...attachedSensors, attached]);
+        await loadSensorRangeState(attached);
       }
       if (services.length && activeDevice) {
         const cmd = `SENSOR_ATTACH:${pendingSensor}`;
@@ -1557,6 +1729,11 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
               await persistAttachedSensors(
                 attachedSensors.filter((s) => s !== normalizedTarget),
               );
+              setSensorRanges((prev) => {
+                const next = { ...prev };
+                delete next[normalizedTarget];
+                return next;
+              });
               setShowSensorModal(false);
               setPendingSensor(null);
             } catch (e: any) {
@@ -1567,6 +1744,11 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 await persistAttachedSensors(
                   attachedSensors.filter((s) => s !== normalizedTarget),
                 );
+                setSensorRanges((prev) => {
+                  const next = { ...prev };
+                  delete next[normalizedTarget];
+                  return next;
+                });
                 setShowSensorModal(false);
                 setPendingSensor(null);
                 showToast("Sensor removed from local list.");
@@ -2020,6 +2202,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     }
     setShowSettings(true);
     loadPinConfigs();
+    loadAllSensorRanges();
     requestSensorRefresh();
   };
 
@@ -2359,10 +2542,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.iconActionChip}
-                  onPress={async () => {
-                    setShowScheduleModal(true);
-                    await loadSchedules();
-                  }}
+                  onPress={openScheduleManager}
                   activeOpacity={0.85}
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
@@ -2823,7 +3003,11 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         animationType="slide"
         onRequestClose={() => setShowSettings(false)}
       >
-        <View style={styles.settingsModal}>
+        <KeyboardAvoidingView
+          style={styles.settingsModal}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 12 : 0}
+        >
           <View style={styles.settingsHeader}>
             <Text style={styles.settingsTitle}>Device Settings</Text>
             <TouchableOpacity onPress={() => setShowSettings(false)}>
@@ -2831,7 +3015,11 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             </TouchableOpacity>
           </View>
 
-          <ScrollView style={styles.settingsBody}>
+          <ScrollView
+            style={styles.settingsBody}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={styles.settingsBodyContent}
+          >
             <View style={styles.settingsCard}>
               <Text style={styles.sectionLabel}>LED Color</Text>
               <View style={styles.colorGrid}>
@@ -2893,6 +3081,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                   onPress={async () => {
                     await requestSensorRefresh();
                     await refreshAttachedSensorsFromBackend();
+                    await loadAllSensorRanges();
                     await loadPinConfigs();
                   }}
                 >
@@ -2915,14 +3104,64 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 </Text>
               )}
               {attachedSensors.map((mac) => (
-                <View key={mac} style={styles.sensorRow}>
-                  <Text style={styles.sensorMac}>{mac}</Text>
-                  <TouchableOpacity
-                    style={styles.sensorRemoveBtn}
-                    onPress={() => detachSensor(mac)}
-                  >
-                    <Text style={styles.sensorRemoveText}>Detach</Text>
-                  </TouchableOpacity>
+                <View key={mac} style={styles.sensorCard}>
+                  <View style={styles.sensorRow}>
+                    <Text style={styles.sensorMac}>{mac}</Text>
+                    <TouchableOpacity
+                      style={styles.sensorRemoveBtn}
+                      onPress={() => detachSensor(mac)}
+                    >
+                      <Text style={styles.sensorRemoveText}>Detach</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={styles.sensorRangeCaption}>
+                    Motion coverage range
+                  </Text>
+                  <View style={styles.sensorRangeRow}>
+                    <TextInput
+                      style={styles.sensorRangeInput}
+                      keyboardType="numeric"
+                      placeholder="100"
+                      placeholderTextColor="#64748b"
+                      value={sensorRanges[mac]?.rangeCm ?? ""}
+                      onChangeText={(value) =>
+                        setSensorRanges((prev) => ({
+                          ...prev,
+                          [mac]: {
+                            ...(prev[mac] || {}),
+                            rangeCm: value.replace(/[^\d]/g, ""),
+                          },
+                        }))
+                      }
+                    />
+                    <Text style={styles.sensorRangeUnit}>cm</Text>
+                    <TouchableOpacity
+                      style={[
+                        styles.sensorSaveBtn,
+                        sensorRanges[mac]?.saving && styles.buttonDisabled,
+                      ]}
+                      onPress={() => saveSensorRangeFor(mac)}
+                      disabled={!!sensorRanges[mac]?.saving}
+                    >
+                      <Text style={styles.sensorSaveBtnText}>
+                        {sensorRanges[mac]?.saving ? "Saving..." : "Save"}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={styles.sensorRangeMeta}>
+                    Applied: {sensorRanges[mac]?.appliedRangeCm ?? "-"} cm
+                  </Text>
+                  {sensorRanges[mac]?.ackStatus ? (
+                    <Text style={styles.sensorRangeMeta}>
+                      Status: {sensorRanges[mac]?.ackStatus}
+                      {sensorRanges[mac]?.ackMessage
+                        ? ` • ${sensorRanges[mac]?.ackMessage}`
+                        : ""}
+                    </Text>
+                  ) : null}
+                  {sensorRanges[mac]?.loading ? (
+                    <Text style={styles.sensorRangeMeta}>Loading range...</Text>
+                  ) : null}
                 </View>
               ))}
             </View>
@@ -2934,371 +3173,381 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
               <Text style={styles.closeBigBtnText}>Close</Text>
             </TouchableOpacity>
           </ScrollView>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal
         visible={showScheduleModal}
         animationType="slide"
-        onRequestClose={() => setShowScheduleModal(false)}
+        onRequestClose={() => {
+          setActiveTimePicker(null);
+          setScheduleView("list");
+          setScheduleDraft(null);
+          setShowScheduleModal(false);
+        }}
       >
-        <View style={styles.settingsModal}>
+        <KeyboardAvoidingView
+          style={styles.settingsModal}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 12 : 0}
+        >
           <View style={styles.settingsHeader}>
-            <Text style={styles.settingsTitle}>Switch Schedules</Text>
-            <TouchableOpacity onPress={() => setShowScheduleModal(false)}>
+            <Text style={styles.settingsTitle}>
+              {scheduleView === "editor" ? "New Schedule" : "Switch Schedules"}
+            </Text>
+            <TouchableOpacity
+              onPress={() => {
+                setActiveTimePicker(null);
+                if (scheduleView === "editor") {
+                  setScheduleView("list");
+                  setScheduleDraft(null);
+                  return;
+                }
+                setScheduleDraft(null);
+                setShowScheduleModal(false);
+              }}
+            >
               <X size={22} color="#94a3b8" />
             </TouchableOpacity>
           </View>
 
-          <ScrollView style={styles.settingsBody}>
-            <View style={styles.pinRulesContainer}>
-              <Text style={styles.sectionLabel}>Per-switch schedule actions</Text>
-              <Text style={styles.pinRulesHint}>
-                Pick a time, choose once or repeating days, then set whether the switch should turn on or off.
-              </Text>
-              {scheduleLoading ? (
-                <Text style={styles.sensorConfigEmpty}>Loading schedules...</Text>
-              ) : null}
-              {devices.map((d) => {
-                const schedules = pinSchedules[d.id] || [];
-                const isExpanded = expandedSchedulePinId === d.id;
-                const displayName =
-                  pinConfigs[d.id]?.name?.trim() || d.name?.trim() || `Pin ${d.id}`;
+          <ScrollView
+            style={styles.settingsBody}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={styles.settingsBodyContent}
+          >
+            {scheduleView === "list" ? (
+              <>
+                <View style={styles.pinRulesContainer}>
+                  <Text style={styles.sectionLabel}>Per-switch schedule actions</Text>
+                  <Text style={styles.pinRulesHint}>
+                    Pick a time, choose once or repeating days, then set whether the switch should turn on or off.
+                  </Text>
+                  {scheduleLoading ? (
+                    <Text style={styles.sensorConfigEmpty}>Loading schedules...</Text>
+                  ) : null}
+                  {devices.map((d) => {
+                    const schedules = pinSchedules[d.id] || [];
+                    const isExpanded = expandedSchedulePinId === d.id;
+                    const displayName =
+                      pinConfigs[d.id]?.name?.trim() || d.name?.trim() || `Pin ${d.id}`;
 
-                return (
-                  <View key={`schedule-${d.id}`} style={styles.pinConfigCard}>
-                    <TouchableOpacity
-                      style={styles.pinConfigHeader}
-                      onPress={() =>
-                        setExpandedSchedulePinId((prev) => (prev === d.id ? null : d.id))
-                      }
-                      activeOpacity={0.8}
-                    >
-                      <View style={styles.pinConfigHeaderText}>
-                        <Text style={styles.pinConfigTitle}>
-                          {displayName} · Pin {d.id}
-                        </Text>
-                        {!isExpanded ? (
-                          <Text
-                            style={[
-                              styles.pinConfigSummary,
-                              schedules.length > 0 && styles.pinConfigSummaryActive,
-                            ]}
-                          >
-                            {schedules.length
-                              ? `${schedules.length} schedule${schedules.length > 1 ? "s" : ""}`
-                              : "No schedules"}
-                          </Text>
+                    return (
+                      <View key={`schedule-${d.id}`} style={styles.pinConfigCard}>
+                        <TouchableOpacity
+                          style={styles.pinConfigHeader}
+                          onPress={() =>
+                            setExpandedSchedulePinId((prev) => (prev === d.id ? null : d.id))
+                          }
+                          activeOpacity={0.8}
+                        >
+                          <View style={styles.pinConfigHeaderText}>
+                            <Text style={styles.pinConfigTitle}>
+                              {displayName} · Pin {d.id}
+                            </Text>
+                            {!isExpanded ? (
+                              <Text
+                                style={[
+                                  styles.pinConfigSummary,
+                                  schedules.length > 0 && styles.pinConfigSummaryActive,
+                                ]}
+                              >
+                                {schedules.length
+                                  ? `${schedules.length} schedule${schedules.length > 1 ? "s" : ""}`
+                                  : "No schedules"}
+                              </Text>
+                            ) : null}
+                          </View>
+                          <View style={styles.pinConfigHeaderRight}>
+                            {isExpanded ? (
+                              <ChevronUp size={18} color="#cbd5e1" />
+                            ) : (
+                              <ChevronDown size={18} color="#cbd5e1" />
+                            )}
+                          </View>
+                        </TouchableOpacity>
+
+                        {isExpanded ? (
+                          <View style={styles.schedulePinBody}>
+                            {schedules.length ? (
+                              schedules.map((schedule) => (
+                                <View key={schedule._id} style={styles.scheduleCard}>
+                                  <View style={styles.scheduleCardTop}>
+                                    <View style={styles.scheduleInfo}>
+                                      <Text style={styles.scheduleAction}>
+                                        Turn {schedule.action === "on" ? "On" : "Off"}
+                                      </Text>
+                                      <Text style={styles.scheduleMeta}>
+                                        {formatScheduleSubtitle(schedule)}
+                                      </Text>
+                                      {schedule.next_run_at ? (
+                                        <Text style={styles.scheduleNextRun}>
+                                          Next:{" "}
+                                          {new Date(schedule.next_run_at).toLocaleString()}
+                                        </Text>
+                                      ) : null}
+                                    </View>
+                                    <TouchableOpacity
+                                      style={styles.scheduleDeleteBtn}
+                                      onPress={() => removeSchedule(schedule._id)}
+                                    >
+                                      <Trash2 size={16} color="#fca5a5" />
+                                    </TouchableOpacity>
+                                  </View>
+                                </View>
+                              ))
+                            ) : (
+                              <Text style={styles.sensorConfigEmpty}>
+                                No schedules added for this switch yet.
+                              </Text>
+                            )}
+
+                            <TouchableOpacity
+                              style={styles.scheduleAddBtn}
+                              onPress={() => openScheduleEditor(d.id)}
+                            >
+                              <Plus size={16} color="#dbeafe" />
+                              <Text style={styles.scheduleAddBtnText}>Add Schedule</Text>
+                            </TouchableOpacity>
+                          </View>
                         ) : null}
                       </View>
-                      <View style={styles.pinConfigHeaderRight}>
-                        {isExpanded ? (
-                          <ChevronUp size={18} color="#cbd5e1" />
-                        ) : (
-                          <ChevronDown size={18} color="#cbd5e1" />
-                        )}
-                      </View>
-                    </TouchableOpacity>
-
-                    {isExpanded ? (
-                      <View style={styles.schedulePinBody}>
-                        {schedules.length ? (
-                          schedules.map((schedule) => (
-                            <View key={schedule._id} style={styles.scheduleCard}>
-                              <View style={styles.scheduleCardTop}>
-                                <View style={styles.scheduleInfo}>
-                                  <Text style={styles.scheduleAction}>
-                                    Turn {schedule.action === "on" ? "On" : "Off"}
-                                  </Text>
-                                  <Text style={styles.scheduleMeta}>
-                                    {formatScheduleSubtitle(schedule)}
-                                  </Text>
-                                  {schedule.next_run_at ? (
-                                    <Text style={styles.scheduleNextRun}>
-                                      Next:{" "}
-                                      {new Date(schedule.next_run_at).toLocaleString()}
-                                    </Text>
-                                  ) : null}
-                                </View>
-                                <TouchableOpacity
-                                  style={styles.scheduleDeleteBtn}
-                                  onPress={() => removeSchedule(schedule._id)}
-                                >
-                                  <Trash2 size={16} color="#fca5a5" />
-                                </TouchableOpacity>
-                              </View>
-                            </View>
-                          ))
-                        ) : (
-                          <Text style={styles.sensorConfigEmpty}>
-                            No schedules added for this switch yet.
-                          </Text>
-                        )}
-
-                        <TouchableOpacity
-                          style={styles.scheduleAddBtn}
-                          onPress={() => openScheduleEditor(d.id)}
-                        >
-                          <Plus size={16} color="#dbeafe" />
-                          <Text style={styles.scheduleAddBtnText}>Add Schedule</Text>
-                        </TouchableOpacity>
-                      </View>
-                    ) : null}
-                  </View>
-                );
-              })}
-            </View>
-
-            <TouchableOpacity
-              style={styles.closeBigBtn}
-              onPress={() => setShowScheduleModal(false)}
-            >
-              <Text style={styles.closeBigBtnText}>Close</Text>
-            </TouchableOpacity>
-          </ScrollView>
-        </View>
-      </Modal>
-
-      <Modal
-        visible={showScheduleEditorModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowScheduleEditorModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.scheduleEditorModal}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>New Schedule</Text>
-              <TouchableOpacity onPress={() => setShowScheduleEditorModal(false)}>
-                <X size={22} color="#94a3b8" />
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.scheduleModeTabs}>
-              {[
-                { key: "one_time", label: "Once" },
-                { key: "recurring", label: "Repeat" },
-              ].map((item) => (
-                <TouchableOpacity
-                  key={item.key}
-                  style={[
-                    styles.scheduleModeTab,
-                    scheduleDraft?.mode === item.key && styles.scheduleModeTabActive,
-                  ]}
-                  onPress={() =>
-                    setScheduleDraft((prev) =>
-                      prev ? { ...prev, mode: item.key as ScheduleDraft["mode"] } : prev,
-                    )
-                  }
-                >
-                  <Text
-                    style={[
-                      styles.scheduleModeTabText,
-                      scheduleDraft?.mode === item.key &&
-                        styles.scheduleModeTabTextActive,
-                    ]}
-                  >
-                    {item.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            {scheduleDraft ? (
-              <>
-                <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>Time</Text>
-                  <View style={styles.timeSelectRow}>
-                    <TouchableOpacity
-                      style={styles.timeSelectButton}
-                      onPress={() => setActiveTimePicker("hour")}
-                    >
-                      <Text style={styles.timeSelectValue}>
-                        {getScheduleHour(scheduleDraft.time)}
-                      </Text>
-                      <Text style={styles.timeSelectLabel}>Hour</Text>
-                    </TouchableOpacity>
-                    <Text style={styles.timeSeparator}>:</Text>
-                    <TouchableOpacity
-                      style={styles.timeSelectButton}
-                      onPress={() => setActiveTimePicker("minute")}
-                    >
-                      <Text style={styles.timeSelectValue}>
-                        {getScheduleMinute(scheduleDraft.time)}
-                      </Text>
-                      <Text style={styles.timeSelectLabel}>Minute</Text>
-                    </TouchableOpacity>
-                  </View>
+                    );
+                  })}
                 </View>
 
-                {scheduleDraft.mode === "one_time" ? (
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>Date</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={scheduleDraft.date}
-                      onChangeText={(value) =>
-                        setScheduleDraft((prev) => (prev ? { ...prev, date: value } : prev))
-                      }
-                      placeholder="YYYY-MM-DD"
-                      placeholderTextColor="#64748b"
-                    />
-                  </View>
-                ) : (
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>Repeat on</Text>
-                    <View style={styles.scheduleDayRow}>
-                      <TouchableOpacity
-                        style={[
-                          styles.scheduleDayChip,
-                          scheduleDraft.days.length === SCHEDULE_DAY_OPTIONS.length &&
-                            styles.scheduleDayChipActive,
-                        ]}
-                        onPress={toggleAllScheduleDays}
-                      >
-                        <Text
+                <TouchableOpacity
+                  style={styles.closeBigBtn}
+                  onPress={() => {
+                    setScheduleDraft(null);
+                    setScheduleView("list");
+                    setShowScheduleModal(false);
+                  }}
+                >
+                  <Text style={styles.closeBigBtnText}>Close</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                {scheduleDraft ? (
+                  <>
+                    <View style={styles.scheduleModeTabs}>
+                      {[
+                        { key: "one_time", label: "Once" },
+                        { key: "recurring", label: "Repeat" },
+                      ].map((item) => (
+                        <TouchableOpacity
+                          key={item.key}
                           style={[
-                            styles.scheduleDayChipText,
-                            scheduleDraft.days.length ===
-                              SCHEDULE_DAY_OPTIONS.length &&
-                              styles.scheduleDayChipTextActive,
+                            styles.scheduleModeTab,
+                            scheduleDraft?.mode === item.key && styles.scheduleModeTabActive,
                           ]}
+                          onPress={() =>
+                            setScheduleDraft((prev) =>
+                              prev ? { ...prev, mode: item.key as ScheduleDraft["mode"] } : prev,
+                            )
+                          }
                         >
-                          A
+                          <Text
+                            style={[
+                              styles.scheduleModeTabText,
+                              scheduleDraft?.mode === item.key &&
+                                styles.scheduleModeTabTextActive,
+                            ]}
+                          >
+                            {item.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Time</Text>
+                      <View style={styles.timeSelectRow}>
+                        <TouchableOpacity
+                          style={styles.timeSelectButton}
+                          onPress={() => setActiveTimePicker("hour")}
+                        >
+                          <Text style={styles.timeSelectValue}>
+                            {getScheduleHour(scheduleDraft.time)}
+                          </Text>
+                          <Text style={styles.timeSelectLabel}>Hour</Text>
+                        </TouchableOpacity>
+                        <Text style={styles.timeSeparator}>:</Text>
+                        <TouchableOpacity
+                          style={styles.timeSelectButton}
+                          onPress={() => setActiveTimePicker("minute")}
+                        >
+                          <Text style={styles.timeSelectValue}>
+                            {getScheduleMinute(scheduleDraft.time)}
+                          </Text>
+                          <Text style={styles.timeSelectLabel}>Minute</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+
+                    {activeTimePicker ? (
+                      <View style={styles.inlineTimePickerCard}>
+                        <Text style={styles.inputLabel}>
+                          Select {activeTimePicker === "hour" ? "Hour" : "Minute"}
                         </Text>
-                      </TouchableOpacity>
-                      {SCHEDULE_DAY_OPTIONS.map((item) => {
-                        const active = scheduleDraft.days.includes(item.code);
-                        return (
+                        <ScrollView
+                          horizontal
+                          showsHorizontalScrollIndicator={false}
+                          contentContainerStyle={styles.inlineTimePickerRow}
+                        >
+                          {(activeTimePicker === "hour"
+                            ? Array.from({ length: 24 }, (_, index) =>
+                                `${index}`.padStart(2, "0"),
+                              )
+                            : Array.from({ length: 60 }, (_, index) =>
+                                `${index}`.padStart(2, "0"),
+                              )
+                          ).map((value) => {
+                            const selected =
+                              activeTimePicker === "hour"
+                                ? getScheduleHour(scheduleDraft?.time) === value
+                                : getScheduleMinute(scheduleDraft?.time) === value;
+                            return (
+                              <TouchableOpacity
+                                key={`${activeTimePicker}-${value}`}
+                                style={[
+                                  styles.timePickerOption,
+                                  selected && styles.timePickerOptionActive,
+                                ]}
+                                onPress={() =>
+                                  updateScheduleTimePart(
+                                    activeTimePicker === "hour" ? "hour" : "minute",
+                                    value,
+                                  )
+                                }
+                              >
+                                <Text
+                                  style={[
+                                    styles.timePickerOptionText,
+                                    selected && styles.timePickerOptionTextActive,
+                                  ]}
+                                >
+                                  {value}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </ScrollView>
+                      </View>
+                    ) : null}
+
+                    {scheduleDraft.mode === "one_time" ? (
+                      <View style={styles.inputGroup}>
+                        <Text style={styles.inputLabel}>Date</Text>
+                        <TextInput
+                          style={styles.input}
+                          value={scheduleDraft.date}
+                          onChangeText={(value) =>
+                            setScheduleDraft((prev) => (prev ? { ...prev, date: value } : prev))
+                          }
+                          placeholder="YYYY-MM-DD"
+                          placeholderTextColor="#64748b"
+                        />
+                      </View>
+                    ) : (
+                      <View style={styles.inputGroup}>
+                        <Text style={styles.inputLabel}>Repeat on</Text>
+                        <View style={styles.scheduleDayRow}>
                           <TouchableOpacity
-                            key={item.code}
                             style={[
                               styles.scheduleDayChip,
-                              active && styles.scheduleDayChipActive,
+                              scheduleDraft.days.length === SCHEDULE_DAY_OPTIONS.length &&
+                                styles.scheduleDayChipActive,
                             ]}
-                            onPress={() => toggleScheduleDay(item.code)}
+                            onPress={toggleAllScheduleDays}
                           >
                             <Text
                               style={[
                                 styles.scheduleDayChipText,
-                                active && styles.scheduleDayChipTextActive,
+                                scheduleDraft.days.length ===
+                                  SCHEDULE_DAY_OPTIONS.length &&
+                                  styles.scheduleDayChipTextActive,
+                              ]}
+                            >
+                              A
+                            </Text>
+                          </TouchableOpacity>
+                          {SCHEDULE_DAY_OPTIONS.map((item) => {
+                            const active = scheduleDraft.days.includes(item.code);
+                            return (
+                              <TouchableOpacity
+                                key={item.code}
+                                style={[
+                                  styles.scheduleDayChip,
+                                  active && styles.scheduleDayChipActive,
+                                ]}
+                                onPress={() => toggleScheduleDay(item.code)}
+                              >
+                                <Text
+                                  style={[
+                                    styles.scheduleDayChipText,
+                                    active && styles.scheduleDayChipTextActive,
+                                  ]}
+                                >
+                                  {item.label}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      </View>
+                    )}
+
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Action</Text>
+                      <View style={styles.scheduleModeTabs}>
+                        {[
+                          { key: "on", label: "Turn On" },
+                          { key: "off", label: "Turn Off" },
+                        ].map((item) => (
+                          <TouchableOpacity
+                            key={item.key}
+                            style={[
+                              styles.scheduleModeTab,
+                              scheduleDraft.action === item.key &&
+                                styles.scheduleModeTabActive,
+                            ]}
+                            onPress={() =>
+                              setScheduleDraft((prev) =>
+                                prev ? { ...prev, action: item.key as "on" | "off" } : prev,
+                              )
+                            }
+                          >
+                            <Text
+                              style={[
+                                styles.scheduleModeTabText,
+                                scheduleDraft.action === item.key &&
+                                  styles.scheduleModeTabTextActive,
                               ]}
                             >
                               {item.label}
                             </Text>
                           </TouchableOpacity>
-                        );
-                      })}
+                        ))}
+                      </View>
                     </View>
-                  </View>
-                )}
 
-                <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>Action</Text>
-                  <View style={styles.scheduleModeTabs}>
-                    {[
-                      { key: "on", label: "Turn On" },
-                      { key: "off", label: "Turn Off" },
-                    ].map((item) => (
-                      <TouchableOpacity
-                        key={item.key}
-                        style={[
-                          styles.scheduleModeTab,
-                          scheduleDraft.action === item.key &&
-                            styles.scheduleModeTabActive,
-                        ]}
-                        onPress={() =>
-                          setScheduleDraft((prev) =>
-                            prev ? { ...prev, action: item.key as "on" | "off" } : prev,
-                          )
-                        }
-                      >
-                        <Text
-                          style={[
-                            styles.scheduleModeTabText,
-                            scheduleDraft.action === item.key &&
-                              styles.scheduleModeTabTextActive,
-                          ]}
-                        >
-                          {item.label}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                </View>
-
-                <TouchableOpacity
-                  style={[styles.saveButton, scheduleSaving && styles.buttonDisabled]}
-                  onPress={saveScheduleDraft}
-                  disabled={scheduleSaving}
-                >
-                  <Text style={styles.saveButtonText}>
-                    {scheduleSaving ? "Saving..." : "Save Schedule"}
-                  </Text>
-                </TouchableOpacity>
-              </>
-            ) : null}
-          </View>
-        </View>
-      </Modal>
-
-      <Modal
-        visible={activeTimePicker !== null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setActiveTimePicker(null)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.timePickerModal}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>
-                Select {activeTimePicker === "hour" ? "Hour" : "Minute"}
-              </Text>
-              <TouchableOpacity onPress={() => setActiveTimePicker(null)}>
-                <X size={22} color="#94a3b8" />
-              </TouchableOpacity>
-            </View>
-            <ScrollView style={styles.timePickerList}>
-              {(activeTimePicker === "hour"
-                ? Array.from({ length: 24 }, (_, index) =>
-                    `${index}`.padStart(2, "0"),
-                  )
-                : Array.from({ length: 60 }, (_, index) =>
-                    `${index}`.padStart(2, "0"),
-                  )
-              ).map((value) => {
-                const selected =
-                  activeTimePicker === "hour"
-                    ? getScheduleHour(scheduleDraft?.time) === value
-                    : getScheduleMinute(scheduleDraft?.time) === value;
-                return (
-                  <TouchableOpacity
-                    key={`${activeTimePicker}-${value}`}
-                    style={[
-                      styles.timePickerOption,
-                      selected && styles.timePickerOptionActive,
-                    ]}
-                    onPress={() =>
-                      updateScheduleTimePart(
-                        activeTimePicker === "hour" ? "hour" : "minute",
-                        value,
-                      )
-                    }
-                  >
-                    <Text
-                      style={[
-                        styles.timePickerOptionText,
-                        selected && styles.timePickerOptionTextActive,
-                      ]}
+                    <TouchableOpacity
+                      style={[styles.saveButton, scheduleSaving && styles.buttonDisabled]}
+                      onPress={saveScheduleDraft}
+                      disabled={scheduleSaving}
                     >
-                      {value}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          </View>
-        </View>
+                      <Text style={styles.saveButtonText}>
+                        {scheduleSaving ? "Saving..." : "Save Schedule"}
+                      </Text>
+                    </TouchableOpacity>
+                  </>
+                ) : null}
+              </>
+            )}
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal
@@ -3306,7 +3555,11 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         animationType="slide"
         onRequestClose={() => setShowPinConfigModal(false)}
       >
-        <View style={styles.settingsModal}>
+        <KeyboardAvoidingView
+          style={styles.settingsModal}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 12 : 0}
+        >
           <View style={styles.settingsHeader}>
             <Text style={styles.settingsTitle}>Pin Configuration</Text>
             <TouchableOpacity onPress={() => setShowPinConfigModal(false)}>
@@ -3314,7 +3567,11 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             </TouchableOpacity>
           </View>
 
-          <ScrollView style={styles.settingsBody}>
+          <ScrollView
+            style={styles.settingsBody}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={styles.settingsBodyContent}
+          >
             <View style={styles.pinRulesContainer}>
               <Text style={styles.sectionLabel}>Pin Motion Rules</Text>
               <Text style={styles.pinRulesHint}>
@@ -3707,7 +3964,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
               <Text style={styles.closeBigBtnText}>Close</Text>
             </TouchableOpacity>
           </ScrollView>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -3937,25 +4194,6 @@ const styles = StyleSheet.create({
     maxWidth: 400,
     borderWidth: 1,
     borderColor: "#334155",
-  },
-  scheduleEditorModal: {
-    backgroundColor: "#1e293b",
-    borderRadius: 20,
-    padding: 24,
-    width: "100%",
-    maxWidth: 420,
-    borderWidth: 1,
-    borderColor: "#334155",
-  },
-  timePickerModal: {
-    backgroundColor: "#1e293b",
-    borderRadius: 20,
-    padding: 24,
-    width: "100%",
-    maxWidth: 320,
-    borderWidth: 1,
-    borderColor: "#334155",
-    maxHeight: "70%",
   },
   modalHeader: {
     flexDirection: "row",
@@ -4189,14 +4427,23 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: "700",
   },
-  timePickerList: {
-    marginTop: 4,
+  inlineTimePickerCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#111827",
+    padding: 14,
+    marginBottom: 20,
+  },
+  inlineTimePickerRow: {
+    gap: 10,
+    paddingRight: 8,
   },
   timePickerOption: {
     borderRadius: 12,
+    minWidth: 56,
     paddingVertical: 12,
     paddingHorizontal: 14,
-    marginBottom: 8,
     backgroundColor: "#0f172a",
     borderWidth: 1,
     borderColor: "#334155",
@@ -4526,6 +4773,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 16,
   },
+  settingsBodyContent: {
+    paddingBottom: 180,
+  },
   settingsCard: {
     backgroundColor: "#111827",
     borderRadius: 16,
@@ -4670,18 +4920,65 @@ const styles = StyleSheet.create({
     color: "#64748b",
     fontSize: 14,
   },
+  sensorCard: {
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#1f2937",
+  },
   sensorRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#1f2937",
   },
   sensorMac: {
     color: "#e2e8f0",
     fontSize: 14,
     fontWeight: "600",
+  },
+  sensorRangeCaption: {
+    color: "#94a3b8",
+    fontSize: 12,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  sensorRangeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  sensorRangeInput: {
+    flex: 1,
+    backgroundColor: "#0f172a",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: "#334155",
+    color: "#fff",
+    minHeight: 44,
+  },
+  sensorRangeUnit: {
+    color: "#94a3b8",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  sensorSaveBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: "#5b8def",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sensorSaveBtnText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  sensorRangeMeta: {
+    color: "#94a3b8",
+    fontSize: 12,
+    marginTop: 6,
   },
   sensorRemoveBtn: {
     paddingVertical: 8,

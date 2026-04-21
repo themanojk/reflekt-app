@@ -186,6 +186,36 @@ export async function detachSensorFromDevice(
     .then((res) => res.data);
 }
 
+export type SensorRangeResponse = {
+  sensor_mac: string;
+  device_mac: string | null;
+  coverage_range_cm: number;
+  last_range_applied_cm?: number | null;
+  last_range_ack_at?: string | null;
+  last_range_ack_status?: string | null;
+  last_range_ack_message?: string | null;
+};
+
+export async function fetchSensorRange(sensorMac: string) {
+  return client
+    .get<SensorRangeResponse>(`/sensor/${encodeURIComponent(sensorMac)}/range`)
+    .then((res) => res.data);
+}
+
+export async function updateSensorRange(
+  deviceMac: string,
+  sensorMac: string,
+  rangeCm: number
+) {
+  return client
+    .post(`/sensor/range`, {
+      device_mac: deviceMac,
+      sensor_mac: sensorMac,
+      range_cm: rangeCm,
+    })
+    .then((res) => res.data);
+}
+
 export async function fetchPinConfigs(deviceMac: string) {
   return client
     .get(`/sensor/pin-config/${encodeURIComponent(deviceMac)}`)
