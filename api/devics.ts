@@ -253,10 +253,13 @@ export type SwitchSchedule = {
   last_run_at?: string | null;
 };
 
-export async function fetchSwitchSchedules(deviceMac: string) {
+export async function fetchSwitchSchedules(deviceMac: string, serviceId?: string) {
   return client
     .get(`/scheduler`, {
-      params: { mac_address: deviceMac },
+      params: {
+        mac_address: deviceMac,
+        ...(serviceId ? { service_id: serviceId } : {}),
+      },
     })
     .then((res) => res.data);
 }

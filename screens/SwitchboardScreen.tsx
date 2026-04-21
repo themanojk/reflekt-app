@@ -121,6 +121,7 @@ const FAN_SPEED_LEVELS = [30, 45, 60, 75, 90, 100];
 const DEFAULT_EXCLUDE_START = 22;
 const DEFAULT_EXCLUDE_END = 7;
 const DEFAULT_LOAD_WATT = 0;
+const DEFAULT_AUTO_OFF_DELAY_SEC = 45;
 const HOUR_CHIP_MIN_WIDTH = 64;
 const HOUR_CHIP_GAP = 8;
 const SCHEDULE_DAY_OPTIONS = [
@@ -166,6 +167,13 @@ const getHourScrollOffset = (hour: number) =>
 
 const formatExcludeSummary = (start: number, end: number) =>
   `${formatHourLabel(start)} - ${formatHourLabel(end)}`;
+
+const formatOffDelayLabel = (seconds: number) => {
+  const safeSeconds = Math.max(1, Math.round(Number(seconds) || DEFAULT_AUTO_OFF_DELAY_SEC));
+  if (safeSeconds < 60) return `${safeSeconds} sec`;
+  const minutes = Math.round(safeSeconds / 60);
+  return `${minutes} min`;
+};
 
 const getLocalDateInputValue = (date = new Date()) => {
   const year = date.getFullYear();
@@ -390,6 +398,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     },
     [],
   );
+
   const [speed, setSpeed] = useState(0);
   const [availableSensors, setAvailableSensors] = useState<string[]>([]);
   const [showSensorModal, setShowSensorModal] = useState(false);
@@ -434,7 +443,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   );
   const reconnectAttemptsRef = React.useRef<number>(0);
   const appStateRef = React.useRef<AppStateStatus>(AppState.currentState);
-
   const IconComponent = ROOM_ICONS[roomIcon] ?? ROOM_ICONS["home"];
   const bleLog = (...args: any[]) =>
     console.log(
@@ -713,9 +721,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     }
     if (!isFocused && wasFocused) {
       prevFocusedRef.current = false;
-      disconnectBleConnection();
+      bleLog("Switchboard blurred; preserving BLE connection for faster return");
     }
-  }, [isFocused, resolvedDeviceMac, disconnectBleConnection]);
+  }, [isFocused, resolvedDeviceMac]);
 
   useEffect(() => {
     if (!activeDevice || !services.length) return;
@@ -887,6 +895,29 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     applyPinStateSnapshot(pinObj, "wifi");
   }, [applyPinStateSnapshot]);
 
+  const applyFanStateFromWifi = React.useCallback((status: any) => {
+    const fanPin = Number(status?.fan_pin);
+    const fanPower = Number(status?.fan_speed);
+    if (!Number.isFinite(fanPin) || !Number.isFinite(fanPower)) return;
+
+    const speedLevel = percentToLevel(fanPower);
+    const isFanOn =
+      typeof status?.fan_status === "boolean" ? !!status.fan_status : fanPower > 0;
+
+    setDevices((prev) =>
+      prev.map((device) =>
+        device.id === fanPin
+          ? {
+              ...device,
+              speed: speedLevel,
+              is_on: isFanOn,
+              pin_status_wifi: isFanOn,
+            }
+          : device,
+      ),
+    );
+  }, []);
+
   const loadSwitchboardData = async () => {
     setLoading(true);
 
@@ -925,6 +956,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
               name: button.label,
               device_type: button.type,
               is_on: prevDevice?.is_on ?? false,
+              speed: prevDevice?.speed,
               pin_status_ble: prevDevice?.pin_status_ble,
               pin_status_wifi: prevDevice?.pin_status_wifi,
               position: idx,
@@ -944,6 +976,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 name: button.label,
                 device_type: button.type,
                 is_on: prevDevice?.is_on ?? false,
+                speed: prevDevice?.speed,
                 pin_status_ble: prevDevice?.pin_status_ble,
                 pin_status_wifi: prevDevice?.pin_status_wifi,
                 position: idx,
@@ -981,6 +1014,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                   name: button.label,
                   device_type: button.type,
                   is_on: prevDevice?.is_on ?? false,
+                  speed: prevDevice?.speed,
                   pin_status_ble: prevDevice?.pin_status_ble,
                   pin_status_wifi: prevDevice?.pin_status_wifi,
                   position: idx,
@@ -1007,8 +1041,11 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       const wifiStatus = await getDeviceStatusOverWifi(resolvedDeviceMac);
       if (wifiStatus) {
         setIsWifiOnline(!!wifiStatus?.status?.online);
-        if (wifiStatus?.status?.online && wifiStatus?.status?.pins) {
-          onReceivedOverWifi(wifiStatus.status.pins);
+        if (wifiStatus?.status?.online) {
+          if (wifiStatus?.status?.pins) {
+            onReceivedOverWifi(wifiStatus.status.pins);
+          }
+          applyFanStateFromWifi(wifiStatus.status);
         }
         return;
       }
@@ -1017,7 +1054,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       setIsWifiOnline(false);
       // offline: keep cached pins
     }
-  }, [onReceivedOverWifi, resolvedDeviceMac]);
+  }, [applyFanStateFromWifi, onReceivedOverWifi, resolvedDeviceMac]);
 
   useEffect(() => {
     if (!isFocused || !resolvedDeviceMac) return;
@@ -1056,14 +1093,17 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         await delay(waitMs);
         try {
           const wifiStatus = await getDeviceStatusOverWifi(resolvedDeviceMac);
-          if (wifiStatus?.status?.online && wifiStatus?.status?.pins) {
-            onReceivedOverWifi(wifiStatus.status.pins);
+          if (wifiStatus?.status?.online) {
+            if (wifiStatus?.status?.pins) {
+              onReceivedOverWifi(wifiStatus.status.pins);
+            }
+            applyFanStateFromWifi(wifiStatus.status);
             return;
           }
         } catch {}
       }
     },
-    [activeDevice, delay, onReceivedOverWifi, resolvedDeviceMac, services],
+    [activeDevice, applyFanStateFromWifi, delay, onReceivedOverWifi, resolvedDeviceMac, services],
   );
 
   const requestSensorRefresh = async () => {
@@ -1139,7 +1179,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           name: c.name,
           autoOn: !!c.auto_on,
           autoOff: !!c.auto_off,
-          offDelay: c.off_delay || 600,
+          offDelay: c.off_delay || DEFAULT_AUTO_OFF_DELAY_SEC,
           loadWatt: c.load_watt ?? DEFAULT_LOAD_WATT,
           onExcludeStartHour: c.on_exclude_start_hour ?? DEFAULT_EXCLUDE_START,
           onExcludeEndHour: c.on_exclude_end_hour ?? DEFAULT_EXCLUDE_END,
@@ -1163,7 +1203,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             name: c.name || "",
             autoOn: !!c.auto_on,
             autoOff: !!c.auto_off,
-            offDelay: c.off_delay || 600,
+            offDelay: c.off_delay || DEFAULT_AUTO_OFF_DELAY_SEC,
             loadWatt: c.load_watt ?? DEFAULT_LOAD_WATT,
             onExcludeStartHour:
               c.on_exclude_start_hour ?? DEFAULT_EXCLUDE_START,
@@ -1176,7 +1216,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             name: c.name || "",
             auto_on: c.auto_on ? 1 : 0,
             auto_off: c.auto_off ? 1 : 0,
-            off_delay: c.off_delay || 600,
+            off_delay: c.off_delay || DEFAULT_AUTO_OFF_DELAY_SEC,
             load_watt: c.load_watt ?? DEFAULT_LOAD_WATT,
             on_exclude_start_hour:
               c.on_exclude_start_hour ?? DEFAULT_EXCLUDE_START,
@@ -1195,7 +1235,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const loadSchedules = async () => {
     setScheduleLoading(true);
     try {
-      const res = await fetchSwitchSchedules(resolvedDeviceMac);
+      const resolvedServiceId = String(serviceId || service_id || "")
+        .trim()
+        .toUpperCase();
+      const res = await fetchSwitchSchedules(resolvedDeviceMac, resolvedServiceId);
       const list = Array.isArray(res?.schedules) ? res.schedules : [];
       const grouped: Record<number, SwitchSchedule[]> = {};
       list.forEach((schedule: SwitchSchedule) => {
@@ -1426,7 +1469,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           name: cfg.name || "",
           auto_on: !!cfg.auto_on,
           auto_off: !!cfg.auto_off,
-          off_delay: cfg.off_delay || 600,
+          off_delay: cfg.off_delay || DEFAULT_AUTO_OFF_DELAY_SEC,
           load_watt: cfg.load_watt ?? DEFAULT_LOAD_WATT,
           on_exclude_start_hour:
             cfg.on_exclude_start_hour ?? DEFAULT_EXCLUDE_START,
@@ -1445,7 +1488,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         name: "",
         autoOn: false,
         autoOff: false,
-        offDelay: 600,
+        offDelay: DEFAULT_AUTO_OFF_DELAY_SEC,
         loadWatt: DEFAULT_LOAD_WATT,
         onExcludeStartHour: DEFAULT_EXCLUDE_START,
         onExcludeEndHour: DEFAULT_EXCLUDE_END,
@@ -1472,7 +1515,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       name: cfg.name || "",
       auto_on: cfg.autoOn ? 1 : 0,
       auto_off: cfg.autoOff ? 1 : 0,
-      off_delay: cfg.offDelay || 600,
+      off_delay: cfg.offDelay || DEFAULT_AUTO_OFF_DELAY_SEC,
       load_watt: cfg.loadWatt ?? DEFAULT_LOAD_WATT,
       on_exclude_start_hour: cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
       on_exclude_end_hour: cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END,
@@ -1486,7 +1529,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         name: cfg.name || "",
         auto_on: !!cfg.autoOn,
         auto_off: !!cfg.autoOff,
-        off_delay: cfg.offDelay || 600,
+        off_delay: cfg.offDelay || DEFAULT_AUTO_OFF_DELAY_SEC,
         load_watt: cfg.loadWatt ?? DEFAULT_LOAD_WATT,
         on_exclude_start_hour: cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
         on_exclude_end_hour: cfg.onExcludeEndHour ?? DEFAULT_EXCLUDE_END,
@@ -1507,7 +1550,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         name: d.name || "",
         autoOn: false,
         autoOff: false,
-        offDelay: 600,
+        offDelay: DEFAULT_AUTO_OFF_DELAY_SEC,
         loadWatt: DEFAULT_LOAD_WATT,
         onExcludeStartHour: DEFAULT_EXCLUDE_START,
         onExcludeEndHour: DEFAULT_EXCLUDE_END,
@@ -1523,7 +1566,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             name: cfg.name || "",
             auto_on: cfg.autoOn ? 1 : 0,
             auto_off: cfg.autoOff ? 1 : 0,
-            off_delay: cfg.offDelay || 600,
+            off_delay: cfg.offDelay || DEFAULT_AUTO_OFF_DELAY_SEC,
             load_watt: cfg.loadWatt ?? DEFAULT_LOAD_WATT,
             on_exclude_start_hour:
               cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
@@ -1537,7 +1580,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
               name: cfg.name || "",
               auto_on: !!cfg.autoOn,
               auto_off: !!cfg.autoOff,
-              off_delay: cfg.offDelay || 600,
+              off_delay: cfg.offDelay || DEFAULT_AUTO_OFF_DELAY_SEC,
               load_watt: cfg.loadWatt ?? DEFAULT_LOAD_WATT,
               on_exclude_start_hour:
                 cfg.onExcludeStartHour ?? DEFAULT_EXCLUDE_START,
@@ -1563,7 +1606,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                   d.id,
                   "inactive",
                   "off",
-                  cfg.offDelay || 600,
+                  cfg.offDelay || DEFAULT_AUTO_OFF_DELAY_SEC,
                 );
               }
             } catch {
@@ -3582,16 +3625,15 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                   name: pinConfigs[d.id]?.name || d.name || "",
                   autoOn: false,
                   autoOff: false,
-                  offDelay: 600,
+                  offDelay: DEFAULT_AUTO_OFF_DELAY_SEC,
                   onExcludeStartHour: DEFAULT_EXCLUDE_START,
                   onExcludeEndHour: DEFAULT_EXCLUDE_END,
                   loadWatt: DEFAULT_LOAD_WATT,
                 };
                 const displayName =
                   cfg.name?.trim() || d.name?.trim() || `Pin ${d.id}`;
-                const offDelayMinutes = Math.max(
-                  1,
-                  Math.round((cfg.offDelay || 0) / 60),
+                const offDelayLabel = formatOffDelayLabel(
+                  cfg.offDelay || DEFAULT_AUTO_OFF_DELAY_SEC,
                 );
                 const isExpanded = expandedPinId === d.id;
                 const activeTab =
@@ -3607,7 +3649,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                   );
                 }
                 if (cfg.autoOff) {
-                  summaryItems.push(`Auto Off: ${offDelayMinutes} min`);
+                  summaryItems.push(`Auto Off: ${offDelayLabel}`);
                 }
                 const summaryText =
                   attachedSensors.length === 0
@@ -3726,7 +3768,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                         {attachedSensors.length > 0 && activeTab === "off" && (
                           <View>
                             <View style={styles.durationRow}>
-                              {[120, 600, 1800].map((sec) => (
+                              {[45, 120, 600, 1800].map((sec) => (
                                 <TouchableOpacity
                                   key={sec}
                                   style={[
@@ -3748,18 +3790,16 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                                         styles.durationChipTextDisabled,
                                     ]}
                                   >
-                                    {sec === 120
-                                      ? "2 min"
-                                      : sec === 600
-                                        ? "10 min"
-                                        : "30 min"}
+                                    {formatOffDelayLabel(sec)}
                                   </Text>
                                 </TouchableOpacity>
                               ))}
                             </View>
                             <Text style={styles.ruleNote}>
                               {displayName} will turn off automatically after no
-                              activity for {offDelayMinutes} minutes.
+                              activity for {formatOffDelayLabel(
+                                cfg.offDelay || DEFAULT_AUTO_OFF_DELAY_SEC,
+                              )}.
                             </Text>
                             <TouchableOpacity
                               style={[
