@@ -292,7 +292,7 @@ struct LittraOneTouchWidgetEntryView: View {
           }
         }
       } else {
-        Text("Littra One Touch")
+        Text("lOT")
           .font(.headline)
           .foregroundColor(.white)
         Text("Open app to sync widget data")
@@ -326,7 +326,7 @@ struct LittraOneTouchWidget: Widget {
     StaticConfiguration(kind: kind, provider: LittraOneTouchProvider()) { entry in
       LittraOneTouchWidgetEntryView(entry: entry)
     }
-    .configurationDisplayName("Littra One Touch")
+    .configurationDisplayName("lOT")
     .description("View room and switchboard online status at a glance.")
     .supportedFamilies([.systemSmall, .systemMedium])
   }

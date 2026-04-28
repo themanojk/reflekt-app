@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Littra One Touch",
+    "name": "lOT",
     "slug": "reflekt",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -12,8 +12,8 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.littra.reflektapp",
       "infoPlist": {
-        "NSBluetoothAlwaysUsageDescription": "Littra One Touch uses Bluetooth to connect to nearby devices.",
-        "NSBluetoothPeripheralUsageDescription": "Littra One Touch uses Bluetooth to communicate with nearby accessories.",
+        "NSBluetoothAlwaysUsageDescription": "lOT uses Bluetooth to connect to nearby devices.",
+        "NSBluetoothPeripheralUsageDescription": "lOT uses Bluetooth to communicate with nearby accessories.",
         "ITSAppUsesNonExemptEncryption": false
       },
       "appleTeamId": "7A2483D2W6"
@@ -50,9 +50,9 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff",
+          "backgroundColor": "#0A0F1E",
           "dark": {
-            "backgroundColor": "#000000"
+            "backgroundColor": "#0A0F1E"
           }
         }
       ],
@@ -81,7 +81,7 @@
         "projectId": "8052d4b3-65a8-422c-85cb-b2d61f91eeaa"
       },
       "widget": {
-        "appName": "Littra One Touch",
+        "appName": "lOT",
         "iosAppGroup": "group.com.littra.reflekt",
         "kind": "expo.extra.widget.kind"
       }
