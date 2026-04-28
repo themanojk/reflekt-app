@@ -60,18 +60,14 @@
         "react-native-ble-plx",
         {
           "isBackgroundEnabled": false,
-          "modes": [
-            "central"
-          ],
+          "modes": ["central"],
           "bluetoothAlwaysPermission": "Allow $(PRODUCT_NAME) to connect to Bluetooth devices"
         }
       ],
       [
         "react-native-permissions",
         {
-          "iosPermissions": [
-            "Bluetooth"
-          ]
+          "iosPermissions": ["Bluetooth"]
         }
       ]
     ],
@@ -83,6 +79,11 @@
       "router": {},
       "eas": {
         "projectId": "8052d4b3-65a8-422c-85cb-b2d61f91eeaa"
+      },
+      "widget": {
+        "appName": "Littra One Touch",
+        "iosAppGroup": "group.com.littra.reflekt",
+        "kind": "expo.extra.widget.kind"
       }
     },
     "owner": "themanojk"
