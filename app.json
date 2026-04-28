@@ -9,7 +9,7 @@
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "com.littra.reflektapp",
       "infoPlist": {
         "NSBluetoothAlwaysUsageDescription": "Littra One Touch uses Bluetooth to connect to nearby devices.",
