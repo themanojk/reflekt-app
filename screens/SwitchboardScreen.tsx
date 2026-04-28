@@ -1,8 +1,8 @@
 import {
   attachSensorToDevice,
   checkSensorAttachment,
-  createSwitchSchedule,
   createSensorRule,
+  createSwitchSchedule,
   deleteSwitchSchedule,
   detachSensorFromDevice,
   fetchDevicesByMac,
@@ -33,15 +33,15 @@ import {
   getSwitchboardsLocal,
   updateSwitchboardSensorsLocal,
 } from "@/db/switchboards.local";
-import BLEManagerService from "@/services/bleManager";
 import { getCanonicalId } from "@/services/bleCanonicalId";
+import BLEManagerService from "@/services/bleManager";
 import {
   addIgnoredSensor,
   clearIgnoredSensors,
   getIgnoredSensors,
   getLastLayout,
-  updateDeviceSensorsInCachedLists,
   setLastLayout,
+  updateDeviceSensorsInCachedLists,
 } from "@/utils/storage";
 import { loadWifi, saveWifi } from "@/utils/wifiCreds";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -49,8 +49,8 @@ import { RouteProp, useIsFocused } from "@react-navigation/native";
 import { Buffer } from "buffer";
 import {
   Bluetooth,
-  ChevronLeft,
   ChevronDown,
+  ChevronLeft,
   ChevronUp,
   Clock3,
   Lightbulb,
@@ -64,15 +64,16 @@ import {
 } from "lucide-react-native";
 import React, { useEffect, useState } from "react";
 import {
-  AppState,
-  AppStateStatus,
   Alert,
   Animated,
+  AppState,
+  AppStateStatus,
   Easing,
   KeyboardAvoidingView,
   Modal,
   PanResponder,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -169,7 +170,10 @@ const formatExcludeSummary = (start: number, end: number) =>
   `${formatHourLabel(start)} - ${formatHourLabel(end)}`;
 
 const formatOffDelayLabel = (seconds: number) => {
-  const safeSeconds = Math.max(1, Math.round(Number(seconds) || DEFAULT_AUTO_OFF_DELAY_SEC));
+  const safeSeconds = Math.max(
+    1,
+    Math.round(Number(seconds) || DEFAULT_AUTO_OFF_DELAY_SEC),
+  );
   if (safeSeconds < 60) return `${safeSeconds} sec`;
   const minutes = Math.round(safeSeconds / 60);
   return `${minutes} min`;
@@ -220,14 +224,19 @@ const formatScheduleDays = (schedule: SwitchSchedule) => {
     return "Every day";
   }
   return schedule.days
-    .map((day) => SCHEDULE_DAY_OPTIONS.find((item) => item.code === day)?.label || day)
+    .map(
+      (day) =>
+        SCHEDULE_DAY_OPTIONS.find((item) => item.code === day)?.label || day,
+    )
     .join(" ");
 };
 
 const formatScheduleSubtitle = (schedule: SwitchSchedule) => {
   const dayLabel = formatScheduleDays(schedule);
   const timeLabel = formatScheduleTime(schedule.time);
-  return schedule.mode === "one_time" ? `${dayLabel} • ${timeLabel}` : `${timeLabel} • ${dayLabel}`;
+  return schedule.mode === "one_time"
+    ? `${dayLabel} • ${timeLabel}`
+    : `${timeLabel} • ${dayLabel}`;
 };
 
 const normalizeSensorMacs = (value: unknown): string[] => {
@@ -324,7 +333,9 @@ const CardLoadingOverlay = () => {
   });
 
   return (
-    <Animated.View style={[styles.deviceLoadingOverlay, { opacity: loadingOpacity }]}>
+    <Animated.View
+      style={[styles.deviceLoadingOverlay, { opacity: loadingOpacity }]}
+    >
       <Animated.View
         style={[
           styles.deviceLoadingSweep,
@@ -412,13 +423,21 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     Record<string, SensorRangeState>
   >({});
   const [pinConfigs, setPinConfigs] = useState<Record<number, any>>({});
-  const [pinSchedules, setPinSchedules] = useState<Record<number, SwitchSchedule[]>>({});
-  const [expandedSchedulePinId, setExpandedSchedulePinId] = useState<number | null>(null);
+  const [pinSchedules, setPinSchedules] = useState<
+    Record<number, SwitchSchedule[]>
+  >({});
+  const [expandedSchedulePinId, setExpandedSchedulePinId] = useState<
+    number | null
+  >(null);
   const [scheduleLoading, setScheduleLoading] = useState(false);
   const [scheduleSaving, setScheduleSaving] = useState(false);
-  const [scheduleDraft, setScheduleDraft] = useState<ScheduleDraft | null>(null);
+  const [scheduleDraft, setScheduleDraft] = useState<ScheduleDraft | null>(
+    null,
+  );
   const [scheduleView, setScheduleView] = useState<"list" | "editor">("list");
-  const [activeTimePicker, setActiveTimePicker] = useState<"hour" | "minute" | null>(null);
+  const [activeTimePicker, setActiveTimePicker] = useState<
+    "hour" | "minute" | null
+  >(null);
   const [expandedPinId, setExpandedPinId] = useState<number | null>(null);
   const [ruleTabs, setRuleTabs] = useState<Record<number, "on" | "off">>({});
   const hourScrollRefs = React.useRef<Record<string, ScrollView | null>>({});
@@ -545,7 +564,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const applySensorRangeResponse = React.useCallback(
     (sensorMac: string, payload: Partial<SensorRangeResponse>) => {
-      const mac = String(sensorMac || "").trim().toUpperCase();
+      const mac = String(sensorMac || "")
+        .trim()
+        .toUpperCase();
       if (!mac) return;
       setSensorRanges((prev) => ({
         ...prev,
@@ -577,7 +598,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const loadSensorRangeState = React.useCallback(
     async (sensorMac: string) => {
-      const mac = String(sensorMac || "").trim().toUpperCase();
+      const mac = String(sensorMac || "")
+        .trim()
+        .toUpperCase();
       if (!mac) return;
       setSensorRanges((prev) => ({
         ...prev,
@@ -721,7 +744,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     }
     if (!isFocused && wasFocused) {
       prevFocusedRef.current = false;
-      bleLog("Switchboard blurred; preserving BLE connection for faster return");
+      bleLog(
+        "Switchboard blurred; preserving BLE connection for faster return",
+      );
     }
   }, [isFocused, resolvedDeviceMac]);
 
@@ -744,70 +769,70 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         console.log("Printing Raw data");
         console.log(raw);
         if (raw.startsWith("SENSORS:")) {
-        const list = raw
-          .replace("SENSORS:", "")
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-        const validList = list.filter((s) => isLikelySensorMac(s));
-        if (!validList.length && list.length) {
-          console.log("Ignoring malformed SENSORS payload:", list);
+          const list = raw
+            .replace("SENSORS:", "")
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const validList = list.filter((s) => isLikelySensorMac(s));
+          if (!validList.length && list.length) {
+            console.log("Ignoring malformed SENSORS payload:", list);
+            return;
+          }
+          const key = list.join(",");
+          const now = Date.now();
+          const minGapMs = 10000;
+          if (
+            key !== lastSensorListRef.current ||
+            now - lastSensorCheckRef.current > minGapMs
+          ) {
+            lastSensorListRef.current = key;
+            lastSensorCheckRef.current = now;
+            handleAvailableSensors(validList);
+          }
           return;
         }
-        const key = list.join(",");
-        const now = Date.now();
-        const minGapMs = 10000;
-        if (
-          key !== lastSensorListRef.current ||
-          now - lastSensorCheckRef.current > minGapMs
-        ) {
-          lastSensorListRef.current = key;
-          lastSensorCheckRef.current = now;
-          handleAvailableSensors(validList);
-        }
-        return;
-        }
         if (raw.startsWith("SENSORS_ATTACHED:")) {
-        const list = raw
-          .replace("SENSORS_ATTACHED:", "")
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-        const hasMalformed = list.some((s) => !isLikelySensorMac(s));
-        if (hasMalformed) {
-          console.log(
-            "Ignoring malformed SENSORS_ATTACHED payload, syncing from backend:",
-            list,
-          );
-          refreshAttachedSensorsFromBackend();
-        } else {
-          handleAttachedSensors(list);
-        }
-        return;
+          const list = raw
+            .replace("SENSORS_ATTACHED:", "")
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const hasMalformed = list.some((s) => !isLikelySensorMac(s));
+          if (hasMalformed) {
+            console.log(
+              "Ignoring malformed SENSORS_ATTACHED payload, syncing from backend:",
+              list,
+            );
+            refreshAttachedSensorsFromBackend();
+          } else {
+            handleAttachedSensors(list);
+          }
+          return;
         }
         if (raw.startsWith("SENSOR_ATTACH_")) {
           return;
         }
         if (raw.startsWith("FAN_SPEED:")) {
-        const parts = raw.split(":");
-        const pin = Number(parts[1]);
-        const power = Number(parts[2]);
-        if (!Number.isFinite(pin) || !Number.isFinite(power)) {
-          return;
-        }
-        const speedLevel = percentToLevel(power);
-        setDevices((prev) =>
-          prev.map((d) =>
-            d.id !== pin
-              ? d
-              : {
-                  ...d,
-                  speed: speedLevel,
-                  is_on: power > 0,
-                  pin_status_ble: power > 0,
-                },
-          ),
-        );
+          const parts = raw.split(":");
+          const pin = Number(parts[1]);
+          const power = Number(parts[2]);
+          if (!Number.isFinite(pin) || !Number.isFinite(power)) {
+            return;
+          }
+          const speedLevel = percentToLevel(power);
+          setDevices((prev) =>
+            prev.map((d) =>
+              d.id !== pin
+                ? d
+                : {
+                    ...d,
+                    speed: speedLevel,
+                    is_on: power > 0,
+                    pin_status_ble: power > 0,
+                  },
+            ),
+          );
           return;
         }
 
@@ -884,16 +909,19 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     };
   }, [activeDevice, services]);
 
-  const onReceivedOverWifi = React.useCallback((pins: any) => {
-    const pinsData = pins;
-    const pinObj: any = {};
-    Object.keys(pinsData).forEach((pin: string) => {
-      const n = Number(pin);
-      if (!Number.isFinite(n)) return;
-      pinObj[n] = pinsData[pin] == 1 ? true : false;
-    });
-    applyPinStateSnapshot(pinObj, "wifi");
-  }, [applyPinStateSnapshot]);
+  const onReceivedOverWifi = React.useCallback(
+    (pins: any) => {
+      const pinsData = pins;
+      const pinObj: any = {};
+      Object.keys(pinsData).forEach((pin: string) => {
+        const n = Number(pin);
+        if (!Number.isFinite(n)) return;
+        pinObj[n] = pinsData[pin] == 1 ? true : false;
+      });
+      applyPinStateSnapshot(pinObj, "wifi");
+    },
+    [applyPinStateSnapshot],
+  );
 
   const applyFanStateFromWifi = React.useCallback((status: any) => {
     const fanPin = Number(status?.fan_pin);
@@ -902,7 +930,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
     const speedLevel = percentToLevel(fanPower);
     const isFanOn =
-      typeof status?.fan_status === "boolean" ? !!status.fan_status : fanPower > 0;
+      typeof status?.fan_status === "boolean"
+        ? !!status.fan_status
+        : fanPower > 0;
 
     setDevices((prev) =>
       prev.map((device) =>
@@ -1082,7 +1112,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const syncDeviceStates = React.useCallback(
     async (options?: { preferWifi?: boolean }) => {
-      const useBle = !options?.preferWifi && !!activeDevice && services.length > 0;
+      const useBle =
+        !options?.preferWifi && !!activeDevice && services.length > 0;
       if (useBle && activeDevice) {
         await delay(80);
         await getCurrentState(activeDevice, services[0]);
@@ -1103,7 +1134,14 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         } catch {}
       }
     },
-    [activeDevice, applyFanStateFromWifi, delay, onReceivedOverWifi, resolvedDeviceMac, services],
+    [
+      activeDevice,
+      applyFanStateFromWifi,
+      delay,
+      onReceivedOverWifi,
+      resolvedDeviceMac,
+      services,
+    ],
   );
 
   const requestSensorRefresh = async () => {
@@ -1238,7 +1276,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       const resolvedServiceId = String(serviceId || service_id || "")
         .trim()
         .toUpperCase();
-      const res = await fetchSwitchSchedules(resolvedDeviceMac, resolvedServiceId);
+      const res = await fetchSwitchSchedules(
+        resolvedDeviceMac,
+        resolvedServiceId,
+      );
       const list = Array.isArray(res?.schedules) ? res.schedules : [];
       const grouped: Record<number, SwitchSchedule[]> = {};
       list.forEach((schedule: SwitchSchedule) => {
@@ -1247,11 +1288,13 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         grouped[pin].push(schedule);
       });
       Object.keys(grouped).forEach((pinKey) => {
-        grouped[Number(pinKey)] = grouped[Number(pinKey)].sort((left, right) => {
-          const leftAt = new Date(left.next_run_at || 0).getTime();
-          const rightAt = new Date(right.next_run_at || 0).getTime();
-          return leftAt - rightAt;
-        });
+        grouped[Number(pinKey)] = grouped[Number(pinKey)].sort(
+          (left, right) => {
+            const leftAt = new Date(left.next_run_at || 0).getTime();
+            const rightAt = new Date(right.next_run_at || 0).getTime();
+            return leftAt - rightAt;
+          },
+        );
       });
       setPinSchedules(grouped);
     } catch (err: any) {
@@ -1323,10 +1366,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     });
   };
 
-  const updateScheduleTimePart = (
-    part: "hour" | "minute",
-    value: string,
-  ) => {
+  const updateScheduleTimePart = (part: "hour" | "minute", value: string) => {
     setScheduleDraft((prev) => {
       if (!prev) return prev;
       const currentHour = getScheduleHour(prev.time);
@@ -1386,7 +1426,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   };
 
   const saveSensorRangeFor = async (sensorMac: string) => {
-    const mac = String(sensorMac || "").trim().toUpperCase();
+    const mac = String(sensorMac || "")
+      .trim()
+      .toUpperCase();
     const draft = sensorRanges[mac];
     const numeric = Number(String(draft?.rangeCm || "").replace(/[^\d]/g, ""));
     if (!Number.isFinite(numeric) || numeric < 30 || numeric > 700) {
@@ -1451,7 +1493,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             await loadSchedules();
             showToast("Schedule removed.");
           } catch (err: any) {
-            showToast(err?.response?.data?.error || "Failed to remove schedule.");
+            showToast(
+              err?.response?.data?.error || "Failed to remove schedule.",
+            );
           }
         },
       },
@@ -2189,7 +2233,11 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         onPress: async () => {
           try {
             if (services.length && activeDevice) {
-              await bleManager.sendData(activeDevice, "ESP_RESTART", services[0]);
+              await bleManager.sendData(
+                activeDevice,
+                "ESP_RESTART",
+                services[0],
+              );
             } else {
               const payload: WifiPayload = {
                 mac_address: resolvedDeviceMac,
@@ -2348,7 +2396,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           ...prev[idx],
           speed: clamped,
           is_on: clamped > 0 ? true : prev[idx].is_on,
-          pin_status_ble: useBle && clamped > 0 ? true : prev[idx].pin_status_ble,
+          pin_status_ble:
+            useBle && clamped > 0 ? true : prev[idx].pin_status_ble,
           pin_status_wifi:
             !useBle && clamped > 0 ? true : prev[idx].pin_status_wifi,
         };
@@ -2408,7 +2457,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           />
         </View>
         <View style={[styles.deviceInfo, isFan && styles.deviceInfoFan]}>
-          <Text style={[styles.deviceName, isActive && styles.deviceNameActive]}>
+          <Text
+            style={[styles.deviceName, isActive && styles.deviceNameActive]}
+          >
             {displayName}
           </Text>
         </View>
@@ -2524,16 +2575,28 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         </TouchableOpacity>
 
         <View style={styles.headerActions}>
-          <TouchableOpacity style={styles.iconButton} onPress={restartEspDevice}>
+          <TouchableOpacity
+            style={styles.iconButton}
+            onPress={restartEspDevice}
+          >
             <Power size={20} color="#cbd5e1" />
           </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.iconButton, showSettings && styles.iconButtonActive]}
+          <Pressable
+            style={({ pressed }) => [
+              styles.iconButton,
+              showSettings && styles.iconButtonActive,
+              pressed && styles.iconButtonPressed,
+            ]}
             onPress={openSettings}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            hitSlop={16}
+            pressRetentionOffset={16}
+            android_ripple={{
+              color: "rgba(91, 141, 239, 0.2)",
+              borderless: false,
+            }}
           >
             <Settings size={20} color={showSettings ? "#5b8def" : "#cbd5e1"} />
-          </TouchableOpacity>
+          </Pressable>
         </View>
       </View>
 
@@ -2630,9 +2693,17 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Configure WiFi</Text>
-              <TouchableOpacity onPress={() => setShowWifiModal(false)}>
+              <Pressable
+                onPress={() => setShowWifiModal(false)}
+                hitSlop={{ top: 20, bottom: 20, left: 20, right: 30 }}
+                pressRetentionOffset={16}
+                style={({ pressed }) => [
+                  styles.closeIconButton,
+                  pressed && styles.closeIconButtonPressed,
+                ]}
+              >
                 <X size={24} color="#94a3b8" />
-              </TouchableOpacity>
+              </Pressable>
             </View>
 
             <View style={styles.inputGroup}>
@@ -2690,9 +2761,17 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 <>
                   <View style={styles.sheetHeader}>
                     <Text style={styles.sheetTitle}>Motion Sensor Found</Text>
-                    <TouchableOpacity onPress={closeSheet}>
+                    <Pressable
+                      onPress={closeSheet}
+                      hitSlop={16}
+                      pressRetentionOffset={16}
+                      style={({ pressed }) => [
+                        styles.closeIconButton,
+                        pressed && styles.closeIconButtonPressed,
+                      ]}
+                    >
                       <X size={22} color="#94a3b8" />
-                    </TouchableOpacity>
+                    </Pressable>
                   </View>
                   <View style={styles.sensorHero}>
                     <Animated.View
@@ -2875,9 +2954,17 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 <>
                   <View style={styles.sheetHeader}>
                     <Text style={styles.sheetTitle}>Sensor Attached</Text>
-                    <TouchableOpacity onPress={closeSheet}>
+                    <Pressable
+                      onPress={closeSheet}
+                      hitSlop={16}
+                      pressRetentionOffset={16}
+                      style={({ pressed }) => [
+                        styles.closeIconButton,
+                        pressed && styles.closeIconButtonPressed,
+                      ]}
+                    >
                       <X size={22} color="#94a3b8" />
-                    </TouchableOpacity>
+                    </Pressable>
                   </View>
                   <View style={styles.sensorHero}>
                     <Animated.View
@@ -3053,9 +3140,17 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         >
           <View style={styles.settingsHeader}>
             <Text style={styles.settingsTitle}>Device Settings</Text>
-            <TouchableOpacity onPress={() => setShowSettings(false)}>
+            <Pressable
+              onPress={() => setShowSettings(false)}
+              hitSlop={20}
+              pressRetentionOffset={16}
+              style={({ pressed }) => [
+                styles.closeIconButton,
+                pressed && styles.closeIconButtonPressed,
+              ]}
+            >
               <X size={22} color="#94a3b8" />
-            </TouchableOpacity>
+            </Pressable>
           </View>
 
           <ScrollView
@@ -3238,7 +3333,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             <Text style={styles.settingsTitle}>
               {scheduleView === "editor" ? "New Schedule" : "Switch Schedules"}
             </Text>
-            <TouchableOpacity
+            <Pressable
               onPress={() => {
                 setActiveTimePicker(null);
                 if (scheduleView === "editor") {
@@ -3249,9 +3344,15 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                 setScheduleDraft(null);
                 setShowScheduleModal(false);
               }}
+              hitSlop={16}
+              pressRetentionOffset={16}
+              style={({ pressed }) => [
+                styles.closeIconButton,
+                pressed && styles.closeIconButtonPressed,
+              ]}
             >
               <X size={22} color="#94a3b8" />
-            </TouchableOpacity>
+            </Pressable>
           </View>
 
           <ScrollView
@@ -3262,25 +3363,37 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             {scheduleView === "list" ? (
               <>
                 <View style={styles.pinRulesContainer}>
-                  <Text style={styles.sectionLabel}>Per-switch schedule actions</Text>
+                  <Text style={styles.sectionLabel}>
+                    Per-switch schedule actions
+                  </Text>
                   <Text style={styles.pinRulesHint}>
-                    Pick a time, choose once or repeating days, then set whether the switch should turn on or off.
+                    Pick a time, choose once or repeating days, then set whether
+                    the switch should turn on or off.
                   </Text>
                   {scheduleLoading ? (
-                    <Text style={styles.sensorConfigEmpty}>Loading schedules...</Text>
+                    <Text style={styles.sensorConfigEmpty}>
+                      Loading schedules...
+                    </Text>
                   ) : null}
                   {devices.map((d) => {
                     const schedules = pinSchedules[d.id] || [];
                     const isExpanded = expandedSchedulePinId === d.id;
                     const displayName =
-                      pinConfigs[d.id]?.name?.trim() || d.name?.trim() || `Pin ${d.id}`;
+                      pinConfigs[d.id]?.name?.trim() ||
+                      d.name?.trim() ||
+                      `Pin ${d.id}`;
 
                     return (
-                      <View key={`schedule-${d.id}`} style={styles.pinConfigCard}>
+                      <View
+                        key={`schedule-${d.id}`}
+                        style={styles.pinConfigCard}
+                      >
                         <TouchableOpacity
                           style={styles.pinConfigHeader}
                           onPress={() =>
-                            setExpandedSchedulePinId((prev) => (prev === d.id ? null : d.id))
+                            setExpandedSchedulePinId((prev) =>
+                              prev === d.id ? null : d.id,
+                            )
                           }
                           activeOpacity={0.8}
                         >
@@ -3292,7 +3405,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                               <Text
                                 style={[
                                   styles.pinConfigSummary,
-                                  schedules.length > 0 && styles.pinConfigSummaryActive,
+                                  schedules.length > 0 &&
+                                    styles.pinConfigSummaryActive,
                                 ]}
                               >
                                 {schedules.length
@@ -3314,11 +3428,17 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                           <View style={styles.schedulePinBody}>
                             {schedules.length ? (
                               schedules.map((schedule) => (
-                                <View key={schedule._id} style={styles.scheduleCard}>
+                                <View
+                                  key={schedule._id}
+                                  style={styles.scheduleCard}
+                                >
                                   <View style={styles.scheduleCardTop}>
                                     <View style={styles.scheduleInfo}>
                                       <Text style={styles.scheduleAction}>
-                                        Turn {schedule.action === "on" ? "On" : "Off"}
+                                        Turn{" "}
+                                        {schedule.action === "on"
+                                          ? "On"
+                                          : "Off"}
                                       </Text>
                                       <Text style={styles.scheduleMeta}>
                                         {formatScheduleSubtitle(schedule)}
@@ -3326,13 +3446,17 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                                       {schedule.next_run_at ? (
                                         <Text style={styles.scheduleNextRun}>
                                           Next:{" "}
-                                          {new Date(schedule.next_run_at).toLocaleString()}
+                                          {new Date(
+                                            schedule.next_run_at,
+                                          ).toLocaleString()}
                                         </Text>
                                       ) : null}
                                     </View>
                                     <TouchableOpacity
                                       style={styles.scheduleDeleteBtn}
-                                      onPress={() => removeSchedule(schedule._id)}
+                                      onPress={() =>
+                                        removeSchedule(schedule._id)
+                                      }
                                     >
                                       <Trash2 size={16} color="#fca5a5" />
                                     </TouchableOpacity>
@@ -3350,7 +3474,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                               onPress={() => openScheduleEditor(d.id)}
                             >
                               <Plus size={16} color="#dbeafe" />
-                              <Text style={styles.scheduleAddBtnText}>Add Schedule</Text>
+                              <Text style={styles.scheduleAddBtnText}>
+                                Add Schedule
+                              </Text>
                             </TouchableOpacity>
                           </View>
                         ) : null}
@@ -3383,11 +3509,17 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                           key={item.key}
                           style={[
                             styles.scheduleModeTab,
-                            scheduleDraft?.mode === item.key && styles.scheduleModeTabActive,
+                            scheduleDraft?.mode === item.key &&
+                              styles.scheduleModeTabActive,
                           ]}
                           onPress={() =>
                             setScheduleDraft((prev) =>
-                              prev ? { ...prev, mode: item.key as ScheduleDraft["mode"] } : prev,
+                              prev
+                                ? {
+                                    ...prev,
+                                    mode: item.key as ScheduleDraft["mode"],
+                                  }
+                                : prev,
                             )
                           }
                         >
@@ -3432,7 +3564,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                     {activeTimePicker ? (
                       <View style={styles.inlineTimePickerCard}>
                         <Text style={styles.inputLabel}>
-                          Select {activeTimePicker === "hour" ? "Hour" : "Minute"}
+                          Select{" "}
+                          {activeTimePicker === "hour" ? "Hour" : "Minute"}
                         </Text>
                         <ScrollView
                           horizontal
@@ -3450,7 +3583,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                             const selected =
                               activeTimePicker === "hour"
                                 ? getScheduleHour(scheduleDraft?.time) === value
-                                : getScheduleMinute(scheduleDraft?.time) === value;
+                                : getScheduleMinute(scheduleDraft?.time) ===
+                                  value;
                             return (
                               <TouchableOpacity
                                 key={`${activeTimePicker}-${value}`}
@@ -3460,7 +3594,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                                 ]}
                                 onPress={() =>
                                   updateScheduleTimePart(
-                                    activeTimePicker === "hour" ? "hour" : "minute",
+                                    activeTimePicker === "hour"
+                                      ? "hour"
+                                      : "minute",
                                     value,
                                   )
                                 }
@@ -3468,7 +3604,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                                 <Text
                                   style={[
                                     styles.timePickerOptionText,
-                                    selected && styles.timePickerOptionTextActive,
+                                    selected &&
+                                      styles.timePickerOptionTextActive,
                                   ]}
                                 >
                                   {value}
@@ -3487,7 +3624,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                           style={styles.input}
                           value={scheduleDraft.date}
                           onChangeText={(value) =>
-                            setScheduleDraft((prev) => (prev ? { ...prev, date: value } : prev))
+                            setScheduleDraft((prev) =>
+                              prev ? { ...prev, date: value } : prev,
+                            )
                           }
                           placeholder="YYYY-MM-DD"
                           placeholderTextColor="#64748b"
@@ -3500,7 +3639,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                           <TouchableOpacity
                             style={[
                               styles.scheduleDayChip,
-                              scheduleDraft.days.length === SCHEDULE_DAY_OPTIONS.length &&
+                              scheduleDraft.days.length ===
+                                SCHEDULE_DAY_OPTIONS.length &&
                                 styles.scheduleDayChipActive,
                             ]}
                             onPress={toggleAllScheduleDays}
@@ -3517,7 +3657,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                             </Text>
                           </TouchableOpacity>
                           {SCHEDULE_DAY_OPTIONS.map((item) => {
-                            const active = scheduleDraft.days.includes(item.code);
+                            const active = scheduleDraft.days.includes(
+                              item.code,
+                            );
                             return (
                               <TouchableOpacity
                                 key={item.code}
@@ -3558,7 +3700,12 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                             ]}
                             onPress={() =>
                               setScheduleDraft((prev) =>
-                                prev ? { ...prev, action: item.key as "on" | "off" } : prev,
+                                prev
+                                  ? {
+                                      ...prev,
+                                      action: item.key as "on" | "off",
+                                    }
+                                  : prev,
                               )
                             }
                           >
@@ -3577,7 +3724,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                     </View>
 
                     <TouchableOpacity
-                      style={[styles.saveButton, scheduleSaving && styles.buttonDisabled]}
+                      style={[
+                        styles.saveButton,
+                        scheduleSaving && styles.buttonDisabled,
+                      ]}
                       onPress={saveScheduleDraft}
                       disabled={scheduleSaving}
                     >
@@ -3605,9 +3755,17 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         >
           <View style={styles.settingsHeader}>
             <Text style={styles.settingsTitle}>Pin Configuration</Text>
-            <TouchableOpacity onPress={() => setShowPinConfigModal(false)}>
+            <Pressable
+              onPress={() => setShowPinConfigModal(false)}
+              hitSlop={16}
+              pressRetentionOffset={16}
+              style={({ pressed }) => [
+                styles.closeIconButton,
+                pressed && styles.closeIconButtonPressed,
+              ]}
+            >
               <X size={22} color="#94a3b8" />
-            </TouchableOpacity>
+            </Pressable>
           </View>
 
           <ScrollView
@@ -3797,9 +3955,11 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                             </View>
                             <Text style={styles.ruleNote}>
                               {displayName} will turn off automatically after no
-                              activity for {formatOffDelayLabel(
+                              activity for{" "}
+                              {formatOffDelayLabel(
                                 cfg.offDelay || DEFAULT_AUTO_OFF_DELAY_SEC,
-                              )}.
+                              )}
+                              .
                             </Text>
                             <TouchableOpacity
                               style={[
@@ -4087,9 +4247,24 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#334155",
   },
+  iconButtonPressed: {
+    opacity: 0.92,
+    transform: [{ scale: 0.98 }],
+  },
   iconButtonActive: {
     borderColor: "#5b8def",
     borderWidth: 2,
+  },
+  closeIconButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  closeIconButtonPressed: {
+    opacity: 0.88,
+    backgroundColor: "rgba(148, 163, 184, 0.12)",
   },
   content: {
     flex: 1,

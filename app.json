@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Reflekt",
+    "name": "Littra One Touch",
     "slug": "reflekt",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -12,8 +12,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.littra.reflektapp",
       "infoPlist": {
-        "NSBluetoothAlwaysUsageDescription": "Reflekt use Bluetooth to connect to nearby devices.",
-        "NSBluetoothPeripheralUsageDescription": "Reflekt uses Bluetooth to communicate with nearby accessories.",
+        "NSBluetoothAlwaysUsageDescription": "Littra One Touch uses Bluetooth to connect to nearby devices.",
+        "NSBluetoothPeripheralUsageDescription": "Littra One Touch uses Bluetooth to communicate with nearby accessories.",
         "ITSAppUsesNonExemptEncryption": false
       },
       "appleTeamId": "7A2483D2W6"
