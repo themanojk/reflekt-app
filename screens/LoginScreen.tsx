@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -6,24 +6,24 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View
-} from 'react-native';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
-import { useAuth } from '../contexts/AuthContext';
+  View,
+} from "react-native";
+import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
+import { useAuth } from "../contexts/AuthContext";
 
 export default function LoginScreen() {
-  const [transactionId, setTransactionId] = useState('');
-  const [phone, setPhone] = useState('');
-  const [otp, setOtp] = useState('');
-  const [step, setStep] = useState<'phone' | 'otp'>('phone');
+  const [transactionId, setTransactionId] = useState("");
+  const [phone, setPhone] = useState("");
+  const [otp, setOtp] = useState("");
+  const [step, setStep] = useState<"phone" | "otp">("phone");
   const [loading, setLoading] = useState(false);
   const { signInWithPhone, verifyOTP } = useAuth();
   const otpInputRef = useRef<TextInput>(null);
-  const lastAutoSentRef = useRef<string>('');
+  const lastAutoSentRef = useRef<string>("");
 
   const handleSendOTP = async () => {
     if (!phone || phone.length < 10) {
-      Alert.alert('Error', 'Please enter a valid phone number');
+      Alert.alert("Error", "Please enter a valid phone number");
       return;
     }
     if (loading) return;
@@ -33,12 +33,12 @@ export default function LoginScreen() {
     setTransactionId(id);
     setLoading(false);
 
-    setStep('otp');
+    setStep("otp");
   };
 
   const handleVerifyOTP = async () => {
     if (!otp || otp.length !== 4) {
-      Alert.alert('Error', 'Please enter the 4-digit OTP (1234)');
+      Alert.alert("Error", "Please enter the 4-digit OTP (1234)");
       return;
     }
     if (loading) return;
@@ -48,18 +48,18 @@ export default function LoginScreen() {
     setLoading(false);
 
     if (error) {
-      Alert.alert('Error', error.message);
+      Alert.alert("Error", error.message);
     }
   };
 
   useEffect(() => {
-    if (step === 'otp') {
+    if (step === "otp") {
       setTimeout(() => otpInputRef.current?.focus(), 150);
     }
   }, [step]);
 
   useEffect(() => {
-    if (step !== 'phone') return;
+    if (step !== "phone") return;
     if (phone.length === 10 && !loading && lastAutoSentRef.current !== phone) {
       lastAutoSentRef.current = phone;
       handleSendOTP();
@@ -67,7 +67,7 @@ export default function LoginScreen() {
   }, [phone, step, loading]);
 
   useEffect(() => {
-    if (step !== 'otp') return;
+    if (step !== "otp") return;
     if (otp.length === 4) {
       handleVerifyOTP();
     }
@@ -81,11 +81,11 @@ export default function LoginScreen() {
     >
       <View style={styles.content}>
         <View style={styles.header}>
-          <Text style={styles.title}>Reflekt</Text>
+          <Text style={styles.title}>Littra One Touch</Text>
           <Text style={styles.subtitle}>Control your home from anywhere</Text>
         </View>
 
-        {step === 'phone' ? (
+        {step === "phone" ? (
           <View style={styles.form}>
             <Text style={styles.label}>Phone Number</Text>
             <TextInput
@@ -115,9 +115,7 @@ export default function LoginScreen() {
         ) : (
           <View style={styles.form}>
             <Text style={styles.label}>Enter OTP</Text>
-            <Text style={styles.hint}>
-              For testing, use OTP: 1234
-            </Text>
+            <Text style={styles.hint}>For testing, use OTP: 1234</Text>
             <TextInput
               style={styles.input}
               placeholder="1234"
@@ -142,8 +140,8 @@ export default function LoginScreen() {
             <TouchableOpacity
               style={styles.backButton}
               onPress={() => {
-                setStep('phone');
-                setOtp('');
+                setStep("phone");
+                setOtp("");
               }}
               disabled={loading}
             >
@@ -159,71 +157,71 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0f172a',
+    backgroundColor: "#0f172a",
   },
   content: {
     flex: 1,
-    justifyContent: 'center',
+    justifyContent: "center",
     padding: 24,
   },
   header: {
-    alignItems: 'center',
+    alignItems: "center",
     marginBottom: 48,
   },
   title: {
     fontSize: 36,
-    fontWeight: 'bold',
-    color: '#fff',
+    fontWeight: "bold",
+    color: "#fff",
     marginBottom: 8,
   },
   subtitle: {
     fontSize: 16,
-    color: '#94a3b8',
+    color: "#94a3b8",
   },
   form: {
     gap: 16,
   },
   label: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#e2e8f0',
+    fontWeight: "600",
+    color: "#e2e8f0",
     marginBottom: -8,
   },
   hint: {
     fontSize: 14,
-    color: '#94a3b8',
+    color: "#94a3b8",
     marginBottom: -8,
   },
   input: {
-    backgroundColor: '#1e293b',
+    backgroundColor: "#1e293b",
     borderRadius: 12,
     padding: 16,
     fontSize: 16,
-    color: '#fff',
+    color: "#fff",
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: "#334155",
   },
   button: {
-    backgroundColor: '#3b82f6',
+    backgroundColor: "#3b82f6",
     borderRadius: 12,
     padding: 16,
-    alignItems: 'center',
+    alignItems: "center",
     marginTop: 8,
   },
   buttonDisabled: {
     opacity: 0.6,
   },
   buttonText: {
-    color: '#fff',
+    color: "#fff",
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: "600",
   },
   backButton: {
-    alignItems: 'center',
+    alignItems: "center",
     marginTop: 8,
   },
   backButtonText: {
-    color: '#3b82f6',
+    color: "#3b82f6",
     fontSize: 14,
   },
 });
