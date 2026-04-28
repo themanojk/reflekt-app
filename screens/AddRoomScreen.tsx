@@ -1,39 +1,49 @@
-import { addRoom } from '@/api/room';
-import { Bath, Bed, Coffee, Hop as Home, Lamp, Sofa, Tv, Utensils } from 'lucide-react-native';
-import React, { useState } from 'react';
+import { addRoom } from "@/api/room";
+import {
+  Bath,
+  Bed,
+  Coffee,
+  Hop as Home,
+  Lamp,
+  Sofa,
+  Tv,
+  Utensils,
+} from "lucide-react-native";
+import React, { useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  ScrollView,
+  Pressable,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  View
-} from 'react-native';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
-import { useAuth } from '../contexts/AuthContext';
+  View,
+} from "react-native";
+import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
+import { useAuth } from "../contexts/AuthContext";
 
 const ROOM_ICONS = [
-  { name: 'home', icon: Home, label: 'Home' },
-  { name: 'bed', icon: Bed, label: 'Bedroom' },
-  { name: 'coffee', icon: Coffee, label: 'Kitchen' },
-  { name: 'tv', icon: Tv, label: 'Living Room' },
-  { name: 'bath', icon: Bath, label: 'Bathroom' },
-  { name: 'utensils', icon: Utensils, label: 'Dining' },
-  { name: 'sofa', icon: Sofa, label: 'Lounge' },
-  { name: 'lamp', icon: Lamp, label: 'Study' },
+  { name: "home", icon: Home, label: "Home" },
+  { name: "bed", icon: Bed, label: "Bedroom" },
+  { name: "coffee", icon: Coffee, label: "Kitchen" },
+  { name: "tv", icon: Tv, label: "Living Room" },
+  { name: "bath", icon: Bath, label: "Bathroom" },
+  { name: "utensils", icon: Utensils, label: "Dining" },
+  { name: "sofa", icon: Sofa, label: "Lounge" },
+  { name: "lamp", icon: Lamp, label: "Study" },
 ];
 
 export default function AddRoomScreen({ navigation }: any) {
-  const [name, setName] = useState('');
-  const [selectedIcon, setSelectedIcon] = useState('home');
+  const [name, setName] = useState("");
+  const [selectedIcon, setSelectedIcon] = useState("home");
   const [loading, setLoading] = useState(false);
   const { user } = useAuth();
 
   const handleAddRoom = async () => {
+    console.log("Adding room with name:", name, "and icon:", selectedIcon);
     if (!name.trim()) {
-      Alert.alert('Error', 'Please enter a room name');
+      Alert.alert("Error", "Please enter a room name");
       return;
     }
 
@@ -41,16 +51,18 @@ export default function AddRoomScreen({ navigation }: any) {
 
     await addRoom(name, selectedIcon);
     setLoading(false);
-    Alert.alert('Success', `Room "${name.trim()}" added successfully!`);
+    Alert.alert("Success", `Room "${name.trim()}" added successfully!`);
     navigation.goBack();
-
   };
 
   return (
     <KeyboardAwareScrollView
+      style={styles.screen}
       contentContainerStyle={styles.container}
       enableOnAndroid
       extraScrollHeight={16}
+      keyboardShouldPersistTaps="always"
+      keyboardDismissMode="on-drag"
     >
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}>
@@ -68,7 +80,7 @@ export default function AddRoomScreen({ navigation }: any) {
         </View>
       </View>
 
-      <ScrollView style={styles.content}>
+      <View style={styles.content}>
         <Text style={styles.label}>Room Name</Text>
         <TextInput
           style={styles.input}
@@ -86,18 +98,25 @@ export default function AddRoomScreen({ navigation }: any) {
             const IconComponent = item.icon;
             const isSelected = selectedIcon === item.name;
             return (
-              <TouchableOpacity
+              <Pressable
                 key={item.name}
-                style={[
+                style={({ pressed }) => [
                   styles.iconButton,
                   isSelected && styles.iconButtonSelected,
+                  pressed && styles.iconButtonPressed,
                 ]}
                 onPress={() => setSelectedIcon(item.name)}
+                android_ripple={{
+                  color: "rgba(59, 130, 246, 0.14)",
+                  borderless: false,
+                }}
+                hitSlop={8}
+                pressRetentionOffset={12}
                 disabled={loading}
               >
                 <IconComponent
                   size={28}
-                  color={isSelected ? '#3b82f6' : '#94a3b8'}
+                  color={isSelected ? "#3b82f6" : "#94a3b8"}
                 />
                 <Text
                   style={[
@@ -107,7 +126,7 @@ export default function AddRoomScreen({ navigation }: any) {
                 >
                   {item.label}
                 </Text>
-              </TouchableOpacity>
+              </Pressable>
             );
           })}
         </View>
@@ -123,33 +142,36 @@ export default function AddRoomScreen({ navigation }: any) {
             <Text style={styles.buttonText}>Add Room</Text>
           )}
         </TouchableOpacity>
-      </ScrollView>
+      </View>
     </KeyboardAwareScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  screen: {
     flex: 1,
-    backgroundColor: '#0f172a',
+    backgroundColor: "#0f172a",
+  },
+  container: {
+    paddingBottom: 24,
   },
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     padding: 16,
     paddingTop: 60,
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
+    borderBottomColor: "#1e293b",
   },
   cancelButton: {
-    color: '#3b82f6',
+    color: "#3b82f6",
     fontSize: 16,
   },
   title: {
     fontSize: 18,
-    fontWeight: '600',
-    color: '#fff',
+    fontWeight: "600",
+    color: "#fff",
   },
   placeholder: {
     width: 60,
@@ -162,82 +184,87 @@ const styles = StyleSheet.create({
     paddingTop: 12,
   },
   hintBox: {
-    backgroundColor: '#111827',
+    backgroundColor: "#111827",
     borderWidth: 1,
-    borderColor: '#374151',
+    borderColor: "#374151",
     borderLeftWidth: 3,
-    borderLeftColor: '#60a5fa',
+    borderLeftColor: "#60a5fa",
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
     marginBottom: 8,
   },
   hintText: {
-    color: '#cbd5e1',
+    color: "#cbd5e1",
     fontSize: 12,
-    fontWeight: '400',
+    fontWeight: "400",
     lineHeight: 18,
   },
   label: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#e2e8f0',
+    fontWeight: "600",
+    color: "#e2e8f0",
     marginTop: 16,
     marginBottom: 12,
   },
   input: {
-    backgroundColor: '#1e293b',
+    backgroundColor: "#1e293b",
     borderRadius: 12,
     padding: 16,
     fontSize: 16,
-    color: '#fff',
+    color: "#fff",
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: "#334155",
   },
   button: {
-    backgroundColor: '#3b82f6',
+    backgroundColor: "#3b82f6",
     borderRadius: 12,
     padding: 16,
-    alignItems: 'center',
+    alignItems: "center",
     marginTop: 16,
   },
   buttonDisabled: {
     opacity: 0.6,
   },
   buttonText: {
-    color: '#fff',
+    color: "#fff",
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: "600",
   },
   iconGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
     marginBottom: 8,
   },
   iconButton: {
-    width: '22%',
+    width: "23%",
     aspectRatio: 1,
-    backgroundColor: '#1e293b',
+    backgroundColor: "#1e293b",
     borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
     borderWidth: 2,
-    borderColor: '#334155',
+    borderColor: "#334155",
     padding: 8,
+    marginBottom: 12,
+  },
+  iconButtonPressed: {
+    opacity: 0.94,
+    transform: [{ scale: 0.98 }],
   },
   iconButtonSelected: {
-    borderColor: '#3b82f6',
-    backgroundColor: '#1e3a8a',
+    borderColor: "#3b82f6",
+    backgroundColor: "#1e3a8a",
   },
   iconLabel: {
     fontSize: 10,
-    color: '#94a3b8',
+    color: "#94a3b8",
     marginTop: 4,
-    textAlign: 'center',
+    textAlign: "center",
   },
   iconLabelSelected: {
-    color: '#3b82f6',
-    fontWeight: '600',
+    color: "#3b82f6",
+    fontWeight: "600",
   },
 });
