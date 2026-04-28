@@ -230,3 +230,28 @@ export const getCachedHomeWidgetSnapshot = async () => {
     return null;
   }
 };
+
+export const clearWidgetData = async () => {
+  await AsyncStorage.multiRemove([WIDGET_SNAPSHOT_KEY, WIDGET_FAVORITES_KEY]);
+
+  if (Platform.OS !== "ios" || !bridge?.setHomeWidgetSnapshot) return;
+
+  const { appGroupId, widgetKind, appName } = getWidgetConfig();
+  const cleared: HomeWidgetSnapshot = {
+    appName,
+    updatedAtISO: new Date().toISOString(),
+    totalRooms: 0,
+    totalBoards: 0,
+    onlineBoards: 0,
+    rooms: [],
+    favorites: [],
+    apiBaseURL: undefined,
+    authToken: undefined,
+  };
+
+  const payload = JSON.stringify(cleared);
+  try {
+    await bridge.setHomeWidgetSnapshot(payload, appGroupId, widgetKind);
+    await bridge.reloadWidgets?.(widgetKind);
+  } catch {}
+};

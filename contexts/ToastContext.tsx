@@ -1,5 +1,6 @@
 import React, { createContext, ReactNode, useContext, useMemo, useState } from "react";
 import Toast from "@/components/Toast";
+import { SafeAreaInsetsContext } from "react-native-safe-area-context";
 
 type ToastContextValue = {
   showToast: (message: string, duration?: number) => void;
@@ -8,6 +9,7 @@ type ToastContextValue = {
 const ToastContext = createContext<ToastContextValue | null>(null);
 
 export function ToastProvider({ children }: { children: ReactNode }) {
+  const insets = useContext(SafeAreaInsetsContext);
   const [toast, setToast] = useState<{
     visible: boolean;
     message: string;
@@ -31,7 +33,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         message={toast.message}
         duration={toast.duration}
         onHide={() => setToast((prev) => ({ ...prev, visible: false }))}
-        style={{ top: 16, bottom: undefined }}
+        style={{ bottom: (insets?.bottom ?? 20) + 24, top: undefined }}
       />
     </ToastContext.Provider>
   );

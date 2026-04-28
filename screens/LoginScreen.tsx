@@ -29,11 +29,20 @@ export default function LoginScreen() {
     if (loading) return;
 
     setLoading(true);
-    const id = await signInWithPhone(phone);
-    setTransactionId(id);
-    setLoading(false);
-
-    setStep("otp");
+    try {
+      const id = await signInWithPhone(phone);
+      setTransactionId(id);
+      setStep("otp");
+    } catch (err: any) {
+      const message =
+        err?.response?.data?.err ||
+        err?.response?.data?.error ||
+        err?.message ||
+        "Failed to send OTP";
+      Alert.alert("Error", message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleVerifyOTP = async () => {
@@ -44,11 +53,13 @@ export default function LoginScreen() {
     if (loading) return;
 
     setLoading(true);
-    const { error } = await verifyOTP(transactionId, otp);
-    setLoading(false);
-
-    if (error) {
-      Alert.alert("Error", error.message);
+    try {
+      const result = await verifyOTP(transactionId, otp);
+      if (result?.error) {
+        Alert.alert("Error", result.error.message || "Login failed");
+      }
+    } finally {
+      setLoading(false);
     }
   };
 

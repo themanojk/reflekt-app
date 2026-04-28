@@ -46,3 +46,12 @@ export async function updateProfile(payload: {
 }) : Promise<User> {
   return client.patch('/user', payload).then(res => res.data.user);
 }
+
+export async function deactivateAccount(
+  userId: string,
+) : Promise<{ success: boolean; message?: string }> {
+  const safeId = encodeURIComponent(String(userId || "").trim());
+  return client
+    .patch(`/user/${safeId}/deactivate`)
+    .then((res) => res.data);
+}
