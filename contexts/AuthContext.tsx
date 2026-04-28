@@ -1,5 +1,6 @@
 import { RequestOTP, requestOtp, verifyOtp } from '@/api/auth';
 import { fetchServiceIds } from '@/api/service';
+import { clearWidgetData } from '@/utils/widgetSync';
 import { clearWifi } from '@/utils/wifiCreds';
 import { createContext, ReactNode, useContext, useEffect, useState } from 'react';
 import { clearAuth, getToken, getUser, setESPServiceIds, setToken, setUser } from '../utils/storage';
@@ -33,30 +34,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const verifyOTP = async (transactionId: string, otp: string) => {
-    if(!otp) {
-      return { error: { message: 'Invalid OTP' }};
+    if (!otp) {
+      return { error: { message: "Invalid OTP" } };
     }
 
     try {
       const response = await verifyOtp(transactionId, otp);
-      if("error" in response) {
-        return {error: response.error};
+      if ("error" in response) {
+        return { error: response.error };
       }
 
-      if("jwtToken" in response) {
+      if ("jwtToken" in response) {
         const { jwtToken, user } = response;
         const services = await fetchServiceIds();
         await setESPServiceIds(services);
-        setToken(jwtToken);
-        setUser(user);
+        await setToken(jwtToken);
+        await setUser(user);
         setUserState(user);
+        return { error: null };
       }
-    } catch(err) {
-      console.log("error in verify otp", err)
+      return { error: { message: "Unexpected login response" } };
+    } catch (err: any) {
+      const apiMessage =
+        err?.response?.data?.err ||
+        err?.response?.data?.error ||
+        err?.message ||
+        "Login failed";
+      return { error: { message: apiMessage } };
     }
-  }
+  };
 
   const logout = async () => {
+    await clearWidgetData();
     await clearAuth();
     await clearWifi();
     setUserState(null);

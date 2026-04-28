@@ -1,4 +1,4 @@
-import { getProfile, updateProfile } from "@/api/auth";
+import { deactivateAccount, getProfile, updateProfile } from "@/api/auth";
 import { useAuth } from "@/contexts/AuthContext";
 import { clearBoardCache, clearSensorCache, setUser } from "@/utils/storage";
 import Constants from "expo-constants";
@@ -33,6 +33,7 @@ export default function ProfileScreen({ navigation }: any) {
   const [avatar, setAvatar] = useState("🙂");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     loadProfile();
@@ -153,6 +154,68 @@ export default function ProfileScreen({ navigation }: any) {
           onPress: async () => {
             await clearSensorCache();
             Alert.alert("Done", "Sensor cache cleared");
+          },
+        },
+      ],
+    );
+  };
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      "Delete Account",
+      "This permanently deletes your account and associated data. This action cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => {
+            Alert.alert(
+              "Final Confirmation",
+              "Are you absolutely sure? Your account data will be permanently removed.",
+              [
+                { text: "Cancel", style: "cancel" },
+                {
+                  text: "Yes, Delete",
+                  style: "destructive",
+                  onPress: async () => {
+                    setDeleting(true);
+                    try {
+                      const uid = String(profile?.id || user?.id || "").trim();
+                      if (!uid) {
+                        Alert.alert(
+                          "Deletion Failed",
+                          "Missing user id. Please re-login and try again.",
+                        );
+                        return;
+                      }
+                      await deactivateAccount(uid);
+                      await clearBoardCache();
+                      await clearSensorCache();
+                      Alert.alert(
+                        "Account Deleted",
+                        "Your account and data were deleted successfully.",
+                        [
+                          {
+                            text: "OK",
+                            onPress: async () => {
+                              await logout();
+                            },
+                          },
+                        ],
+                      );
+                    } catch {
+                      Alert.alert(
+                        "Deletion Failed",
+                        "Unable to delete your account right now. Please try again in a moment.",
+                      );
+                    } finally {
+                      setDeleting(false);
+                    }
+                  },
+                },
+              ],
+            );
           },
         },
       ],
@@ -333,6 +396,20 @@ export default function ProfileScreen({ navigation }: any) {
           <TouchableOpacity style={styles.actionButton} onPress={handleSignOut}>
             <Text style={styles.actionButtonTextDanger}>Sign Out</Text>
           </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.actionButtonDelete, deleting && styles.buttonDisabled]}
+            onPress={handleDeleteAccount}
+            disabled={deleting}
+          >
+            {deleting ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.actionButtonDeleteText}>
+                Delete My Account & Data
+              </Text>
+            )}
+          </TouchableOpacity>
         </View>
 
         <View style={styles.footer}>
@@ -509,6 +586,20 @@ const styles = StyleSheet.create({
     color: "#ef4444",
     fontSize: 16,
     fontWeight: "600",
+  },
+  actionButtonDelete: {
+    backgroundColor: "#7f1d1d",
+    borderRadius: 12,
+    padding: 16,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#ef4444",
+    marginTop: 12,
+  },
+  actionButtonDeleteText: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "700",
   },
   footer: {
     alignItems: "center",

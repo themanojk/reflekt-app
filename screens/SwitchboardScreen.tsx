@@ -43,6 +43,11 @@ import {
   setLastLayout,
   updateDeviceSensorsInCachedLists,
 } from "@/utils/storage";
+import {
+  getWidgetFavorites,
+  toggleWidgetFavoriteSwitch,
+  updateWidgetFavoriteSwitchState,
+} from "@/utils/widgetSync";
 import { loadWifi, saveWifi } from "@/utils/wifiCreds";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { RouteProp, useIsFocused } from "@react-navigation/native";
@@ -58,6 +63,7 @@ import {
   Power,
   Settings,
   SlidersHorizontal,
+  Star,
   Trash2,
   Wifi,
   X,
@@ -390,6 +396,15 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [pendingToggleById, setPendingToggleById] = useState<
     Record<number, boolean>
   >({});
+  const [widgetFavoriteIds, setWidgetFavoriteIds] = useState<string[]>([]);
+
+  const toWidgetFavoriteId = React.useCallback(
+    (pin: number) =>
+      `${String(resolvedDeviceMac || "")
+        .trim()
+        .toUpperCase()}:${Number(pin)}`,
+    [resolvedDeviceMac],
+  );
 
   const applyPinStateSnapshot = React.useCallback(
     (pinObj: Record<number, boolean>, source: "ble" | "wifi") => {
@@ -2187,6 +2202,64 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     }
   }, [activeDevice, services.length]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const loadFavorites = async () => {
+      const favorites = await getWidgetFavorites();
+      if (cancelled) return;
+      const boardMac = String(resolvedDeviceMac || "")
+        .trim()
+        .toUpperCase();
+      const next = favorites
+        .filter((item) => String(item.deviceMac || "").toUpperCase() === boardMac)
+        .map((item) => item.id);
+      setWidgetFavoriteIds(next);
+    };
+    void loadFavorites();
+    return () => {
+      cancelled = true;
+    };
+  }, [resolvedDeviceMac]);
+
+  const toggleWidgetFavoriteForDevice = React.useCallback(
+    async (device: Device, isOn: boolean, displayName: string) => {
+      const favorite = {
+        id: toWidgetFavoriteId(device.id),
+        deviceMac: String(resolvedDeviceMac || "")
+          .trim()
+          .toUpperCase(),
+        serviceId: String(serviceId || service_id || ""),
+        pin: Number(device.id),
+        roomName: "",
+        boardName: String(switchboardName || ""),
+        switchName: String(displayName || device.name || `Pin ${device.id}`),
+        switchType: String(device.device_type || "light"),
+        isOn,
+      };
+
+      const result = await toggleWidgetFavoriteSwitch(favorite, 4);
+      if (result.limitReached) {
+        showToast("You can add up to 4 widget favorites.");
+        return;
+      }
+      setWidgetFavoriteIds((prev) => {
+        if (result.added) {
+          return Array.from(new Set([...prev, favorite.id]));
+        }
+        return prev.filter((id) => id !== favorite.id);
+      });
+      showToast(result.added ? "Added to widget favorites." : "Removed from widget favorites.");
+    },
+    [
+      resolvedDeviceMac,
+      serviceId,
+      service_id,
+      showToast,
+      switchboardName,
+      toWidgetFavoriteId,
+    ],
+  );
+
   const sendDataToESP = async (
     pin: number,
     command: string,
@@ -2277,6 +2350,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             };
           }),
         );
+        void updateWidgetFavoriteSwitchState(resolvedDeviceMac, dev.id, nextVal);
         void syncDeviceStates({ preferWifi: !useBle });
       }
     } catch (e) {
@@ -2445,6 +2519,36 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     const displayName = pinConfigs[device.id]?.name?.trim() || device.name;
     const isFan = device.device_type === "fan";
     const isTogglePending = !!pendingToggleById[device.id];
+    const favoriteId = toWidgetFavoriteId(device.id);
+    const isFavorite = widgetFavoriteIds.includes(favoriteId);
+
+    const favoriteButton = (
+      <Pressable
+        style={[
+          styles.favoriteActionButton,
+          isFavorite && styles.favoriteActionButtonActive,
+        ]}
+        hitSlop={12}
+        pressRetentionOffset={14}
+        onPress={() => {
+          void toggleWidgetFavoriteForDevice(device, isActive, displayName);
+        }}
+      >
+        <Star
+          size={14}
+          color={isFavorite ? "#fbbf24" : "#94a3b8"}
+          fill={isFavorite ? "#fbbf24" : "transparent"}
+        />
+        <Text
+          style={[
+            styles.favoriteActionText,
+            isFavorite && styles.favoriteActionTextActive,
+          ]}
+        >
+          {isFavorite ? "Added to Widget" : "Add to Widget"}
+        </Text>
+      </Pressable>
+    );
 
     const cardTop = (
       <>
@@ -2474,16 +2578,20 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
     if (!isFan) {
       return (
-        <TouchableOpacity
+        <View
           key={device.id}
           style={[styles.deviceCard, isActive && styles.deviceCardActive]}
-          onPress={() => toggleDevice(device.id)}
-          activeOpacity={0.85}
-          disabled={isTogglePending}
         >
-          {cardTop}
+          <TouchableOpacity
+            onPress={() => toggleDevice(device.id)}
+            activeOpacity={0.85}
+            disabled={isTogglePending}
+          >
+            {cardTop}
+          </TouchableOpacity>
+          {favoriteButton}
           {isTogglePending && <CardLoadingOverlay />}
-        </TouchableOpacity>
+        </View>
       );
     }
 
@@ -2498,6 +2606,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         >
           {cardTop}
         </TouchableOpacity>
+        {favoriteButton}
 
         <View style={styles.speedControllerBox}>
           <View style={styles.speedLabelRow}>
@@ -3989,7 +4098,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                             </Text>
                             <Text style={styles.ruleNote}>
                               Exclude hours mean this switch ignores motion
-                              during that time. Useful if you don't want lights
+                              during that time. Useful if you do not want lights
                               turning on at night and disturbing sleep.
                             </Text>
                             <View style={styles.excludeRow}>
@@ -4865,6 +4974,49 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 16,
     right: 16,
+  },
+  favoriteBadge: {
+    position: "absolute",
+    top: 10,
+    left: 10,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(15, 23, 42, 0.46)",
+    borderWidth: 1,
+    borderColor: "rgba(148, 163, 184, 0.28)",
+    zIndex: 4,
+  },
+  favoriteBadgeActive: {
+    backgroundColor: "rgba(251, 191, 36, 0.2)",
+    borderColor: "rgba(251, 191, 36, 0.45)",
+  },
+  favoriteActionButton: {
+    marginTop: 6,
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(15, 23, 42, 0.55)",
+    borderWidth: 1,
+    borderColor: "rgba(148, 163, 184, 0.25)",
+  },
+  favoriteActionButtonActive: {
+    backgroundColor: "rgba(251, 191, 36, 0.18)",
+    borderColor: "rgba(251, 191, 36, 0.45)",
+  },
+  favoriteActionText: {
+    color: "#94a3b8",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  favoriteActionTextActive: {
+    color: "#fde68a",
   },
   deviceLoadingOverlay: {
     position: "absolute",

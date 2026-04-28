@@ -21,6 +21,7 @@ import { syncAppData } from "@/db_sync/app_sync";
 import DeleteWarningModal from "@/components/DeleteWarningModal";
 import { getCanonicalId } from "@/services/bleCanonicalId";
 import BLEManagerService from "@/services/bleManager";
+import { syncHomeWidgetSnapshot } from "@/utils/widgetSync";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { MapPin, Plus, User, Wifi } from "lucide-react-native";
 import React, { useCallback, useEffect, useState } from "react";
@@ -511,6 +512,10 @@ export default function HomeScreen({ navigation }: any) {
       setBoardsLoaded(true);
     }
   }, []);
+
+  useEffect(() => {
+    void syncHomeWidgetSnapshot(roomsWithBoards);
+  }, [roomsWithBoards]);
 
   const fetchDevicesDebounced = useDebouncedCallback(
     async (ids: string[]) => {
