@@ -15,7 +15,12 @@ To finish iOS widget support, complete the Xcode wiring below once.
 1. `File` -> `New` -> `Target...` -> `Widget Extension`.
 2. Product name: `ReflektWidget` (or any name you prefer).
 3. Use SwiftUI, no intent configuration.
-4. Ensure deployment target is iOS 14+ for the widget target.
+4. Ensure deployment target is iOS 17+ for the widget target. The widget uses interactive App Intents buttons, which require iOS 17+.
+
+Important for TestFlight:
+1. If you build with EAS cloud, make sure the native `ios/` project changes are included in the build.
+2. This repository currently ignores `/ios`, so EAS cloud builds generated only from `app.json` will not include the manually added widget extension.
+3. Either commit the needed native iOS project files, build the archive locally from this workspace, or move the widget setup into an Expo config plugin.
 
 ## 3. Replace generated widget code
 

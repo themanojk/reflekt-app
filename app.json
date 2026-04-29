@@ -9,6 +9,7 @@
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "ios": {
+      "buildNumber": "18",
       "supportsTablet": false,
       "bundleIdentifier": "com.littra.reflektapp",
       "infoPlist": {

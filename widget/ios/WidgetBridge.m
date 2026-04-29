@@ -2,6 +2,7 @@
 #import <React/RCTBridgeModule.h>
 
 static NSString *const kWidgetSnapshotKey = @"home_widget_snapshot_v1";
+static NSString *const kWidgetSnapshotFileName = @"home_widget_snapshot_v1.json";
 
 @interface WidgetBridge : NSObject <RCTBridgeModule>
 @end
@@ -25,7 +26,7 @@ static NSString *const kWidgetSnapshotKey = @"home_widget_snapshot_v1";
   }
 }
 
-RCT_EXPORT_MODULE();
+RCT_EXPORT_MODULE(WidgetBridge);
 
 RCT_REMAP_METHOD(setHomeWidgetSnapshot,
                  setHomeWidgetSnapshot:(NSString *)snapshotJson
@@ -47,6 +48,13 @@ RCT_REMAP_METHOD(setHomeWidgetSnapshot,
 
   [groupDefaults setObject:snapshotJson forKey:kWidgetSnapshotKey];
   [groupDefaults synchronize];
+
+  NSURL *containerURL = [[NSFileManager defaultManager] containerURLForSecurityApplicationGroupIdentifier:appGroupId];
+  if (containerURL != nil) {
+    NSURL *snapshotURL = [containerURL URLByAppendingPathComponent:kWidgetSnapshotFileName];
+    [snapshotJson writeToURL:snapshotURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
+  }
+
   [[self class] reloadWidgetTimelines:widgetKind];
 
   resolve(@(YES));

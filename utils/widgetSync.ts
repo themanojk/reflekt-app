@@ -73,6 +73,12 @@ const getWidgetConfig = () => {
 
 const bridge = NativeModules.WidgetBridge as WidgetBridgeModule | undefined;
 
+const logWidgetSyncIssue = (message: string, error?: unknown) => {
+  if (__DEV__) {
+    console.log(message, error || "");
+  }
+};
+
 export const buildHomeWidgetSnapshot = (
   rows: RoomWithBoards[],
 ): HomeWidgetSnapshot => {
@@ -112,14 +118,18 @@ export const syncHomeWidgetSnapshot = async (rows: RoomWithBoards[]) => {
   const payload = JSON.stringify(snapshot);
   await AsyncStorage.setItem(WIDGET_SNAPSHOT_KEY, payload);
 
-  if (Platform.OS !== "ios" || !bridge?.setHomeWidgetSnapshot) return;
+  if (Platform.OS !== "ios") return;
+  if (!bridge?.setHomeWidgetSnapshot) {
+    logWidgetSyncIssue("Widget sync skipped: native WidgetBridge unavailable");
+    return;
+  }
 
   const { appGroupId, widgetKind } = getWidgetConfig();
   try {
     await bridge.setHomeWidgetSnapshot(payload, appGroupId, widgetKind);
     await bridge.reloadWidgets?.(widgetKind);
   } catch (error) {
-    console.log("Widget sync skipped:", error);
+    logWidgetSyncIssue("Widget sync skipped:", error);
   }
 };
 
@@ -214,11 +224,17 @@ export const syncWidgetSnapshotFromCache = async () => {
     snapshot.updatedAtISO = new Date().toISOString();
     const payload = JSON.stringify(snapshot);
     await AsyncStorage.setItem(WIDGET_SNAPSHOT_KEY, payload);
-    if (Platform.OS !== "ios" || !bridge?.setHomeWidgetSnapshot) return;
+    if (Platform.OS !== "ios") return;
+    if (!bridge?.setHomeWidgetSnapshot) {
+      logWidgetSyncIssue("Widget sync skipped: native WidgetBridge unavailable");
+      return;
+    }
     const { appGroupId, widgetKind } = getWidgetConfig();
     await bridge.setHomeWidgetSnapshot(payload, appGroupId, widgetKind);
     await bridge.reloadWidgets?.(widgetKind);
-  } catch {}
+  } catch (error) {
+    logWidgetSyncIssue("Widget cache sync skipped:", error);
+  }
 };
 
 export const getCachedHomeWidgetSnapshot = async () => {
@@ -234,7 +250,11 @@ export const getCachedHomeWidgetSnapshot = async () => {
 export const clearWidgetData = async () => {
   await AsyncStorage.multiRemove([WIDGET_SNAPSHOT_KEY, WIDGET_FAVORITES_KEY]);
 
-  if (Platform.OS !== "ios" || !bridge?.setHomeWidgetSnapshot) return;
+  if (Platform.OS !== "ios") return;
+  if (!bridge?.setHomeWidgetSnapshot) {
+    logWidgetSyncIssue("Widget clear skipped: native WidgetBridge unavailable");
+    return;
+  }
 
   const { appGroupId, widgetKind, appName } = getWidgetConfig();
   const cleared: HomeWidgetSnapshot = {
@@ -253,5 +273,7 @@ export const clearWidgetData = async () => {
   try {
     await bridge.setHomeWidgetSnapshot(payload, appGroupId, widgetKind);
     await bridge.reloadWidgets?.(widgetKind);
-  } catch {}
+  } catch (error) {
+    logWidgetSyncIssue("Widget clear skipped:", error);
+  }
 };
