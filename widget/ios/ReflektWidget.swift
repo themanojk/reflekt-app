@@ -2,9 +2,10 @@ import WidgetKit
 import SwiftUI
 import AppIntents
 
-private let widgetKind = "ReflektWidget"
+private let widgetKind = "expo.extra.widget.kind"
 private let appGroupId = "group.com.littra.reflekt"
 private let snapshotKey = "home_widget_snapshot_v1"
+private let snapshotFileName = "home_widget_snapshot_v1.json"
 
 struct HomeWidgetSnapshot: Codable {
   struct FavoriteSwitch: Codable {
@@ -41,6 +42,42 @@ struct HomeWidgetSnapshot: Codable {
   var lastActionAtISO: String?
 }
 
+private func snapshotFileURL() -> URL? {
+  FileManager.default
+    .containerURL(forSecurityApplicationGroupIdentifier: appGroupId)?
+    .appendingPathComponent(snapshotFileName)
+}
+
+private func decodeHomeWidgetSnapshot(_ raw: String?) -> HomeWidgetSnapshot? {
+  guard let raw, let data = raw.data(using: .utf8) else {
+    return nil
+  }
+  return try? JSONDecoder().decode(HomeWidgetSnapshot.self, from: data)
+}
+
+private func readHomeWidgetSnapshot() -> HomeWidgetSnapshot? {
+  if let defaultsSnapshot = decodeHomeWidgetSnapshot(
+    UserDefaults(suiteName: appGroupId)?.string(forKey: snapshotKey)
+  ) {
+    return defaultsSnapshot
+  }
+
+  guard
+    let url = snapshotFileURL(),
+    let raw = try? String(contentsOf: url, encoding: .utf8)
+  else {
+    return nil
+  }
+  return decodeHomeWidgetSnapshot(raw)
+}
+
+private func writeHomeWidgetSnapshotRaw(_ raw: String) {
+  UserDefaults(suiteName: appGroupId)?.set(raw, forKey: snapshotKey)
+  if let url = snapshotFileURL() {
+    try? raw.write(to: url, atomically: true, encoding: .utf8)
+  }
+}
+
 struct LittraOneTouchEntry: TimelineEntry {
   let date: Date
   let snapshot: HomeWidgetSnapshot?
@@ -75,16 +112,10 @@ struct ToggleFavoriteSwitchIntent: AppIntent {
   }
 
   func perform() async throws -> some IntentResult {
-    guard
-      let defaults = UserDefaults(suiteName: appGroupId),
-      let raw = defaults.string(forKey: snapshotKey),
-      let data = raw.data(using: .utf8)
-    else {
+    guard var snapshot = readHomeWidgetSnapshot() else {
       return .result()
     }
 
-    let decoder = JSONDecoder()
-    var snapshot = try decoder.decode(HomeWidgetSnapshot.self, from: data)
     guard
       let favorites = snapshot.favorites,
       let idx = favorites.firstIndex(where: { $0.id == favoriteId }),
@@ -137,8 +168,7 @@ struct ToggleFavoriteSwitchIntent: AppIntent {
       let encoder = JSONEncoder()
       let updatedData = try encoder.encode(snapshot)
       if let updatedRaw = String(data: updatedData, encoding: .utf8) {
-        defaults.set(updatedRaw, forKey: snapshotKey)
-        defaults.synchronize()
+        writeHomeWidgetSnapshotRaw(updatedRaw)
       }
 
       if #available(iOS 14.0, *) {
@@ -150,8 +180,7 @@ struct ToggleFavoriteSwitchIntent: AppIntent {
       let encoder = JSONEncoder()
       if let updatedData = try? encoder.encode(snapshot),
          let updatedRaw = String(data: updatedData, encoding: .utf8) {
-        defaults.set(updatedRaw, forKey: snapshotKey)
-        defaults.synchronize()
+        writeHomeWidgetSnapshotRaw(updatedRaw)
       }
       if #available(iOS 14.0, *) {
         WidgetCenter.shared.reloadTimelines(ofKind: widgetKind)
@@ -164,7 +193,7 @@ struct ToggleFavoriteSwitchIntent: AppIntent {
 
 struct LittraOneTouchProvider: TimelineProvider {
   func placeholder(in context: Context) -> LittraOneTouchEntry {
-    LittraOneTouchEntry(date: Date(), snapshot: nil)
+    LittraOneTouchEntry(date: Date(), snapshot: readSnapshot())
   }
 
   func getSnapshot(in context: Context, completion: @escaping (LittraOneTouchEntry) -> Void) {
@@ -173,25 +202,24 @@ struct LittraOneTouchProvider: TimelineProvider {
 
   func getTimeline(in context: Context, completion: @escaping (Timeline<LittraOneTouchEntry>) -> Void) {
     let now = Date()
-    let nextRefresh = Calendar.current.date(byAdding: .minute, value: 30, to: now) ?? now.addingTimeInterval(1800)
-    let entry = LittraOneTouchEntry(date: now, snapshot: readSnapshot())
+    let snapshot = readSnapshot()
+    let refreshMinutes = snapshot == nil ? 1 : 30
+    let nextRefresh = Calendar.current.date(byAdding: .minute, value: refreshMinutes, to: now) ?? now.addingTimeInterval(TimeInterval(refreshMinutes * 60))
+    let entry = LittraOneTouchEntry(date: now, snapshot: snapshot)
     completion(Timeline(entries: [entry], policy: .after(nextRefresh)))
   }
 
   private func readSnapshot() -> HomeWidgetSnapshot? {
-    guard
-      let defaults = UserDefaults(suiteName: appGroupId),
-      let raw = defaults.string(forKey: snapshotKey),
-      let data = raw.data(using: .utf8)
-    else {
-      return nil
-    }
-    return try? JSONDecoder().decode(HomeWidgetSnapshot.self, from: data)
+    readHomeWidgetSnapshot()
   }
 }
 
 struct LittraOneTouchWidgetEntryView: View {
   let entry: LittraOneTouchEntry
+
+  private func readSnapshot() -> HomeWidgetSnapshot? {
+    readHomeWidgetSnapshot()
+  }
 
   private func relativeTime(_ iso: String?) -> String? {
     guard let iso, let date = ISO8601DateFormatter().date(from: iso) else {
@@ -203,8 +231,9 @@ struct LittraOneTouchWidgetEntryView: View {
   }
 
   var body: some View {
+    let currentSnapshot = entry.snapshot ?? readSnapshot()
     let content = VStack(alignment: .leading, spacing: 8) {
-      if let snapshot = entry.snapshot {
+      if let snapshot = currentSnapshot {
         HStack {
           Text(snapshot.appName)
             .font(.headline)

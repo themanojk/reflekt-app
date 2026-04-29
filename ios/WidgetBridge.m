@@ -2,13 +2,31 @@
 #import <React/RCTBridgeModule.h>
 
 static NSString *const kWidgetSnapshotKey = @"home_widget_snapshot_v1";
+static NSString *const kWidgetSnapshotFileName = @"home_widget_snapshot_v1.json";
 
 @interface WidgetBridge : NSObject <RCTBridgeModule>
 @end
 
 @implementation WidgetBridge
 
-RCT_EXPORT_MODULE();
++ (void)reloadWidgetTimelines:(NSString *)widgetKind
+{
+  Class helperClass = NSClassFromString(@"WidgetKitReloader");
+  if (!helperClass) {
+    helperClass = NSClassFromString(@"Reflekt.WidgetKitReloader");
+  }
+  if (!helperClass) return;
+
+  SEL selector = NSSelectorFromString(@"reloadWithKind:");
+  if ([helperClass respondsToSelector:selector]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+    [helperClass performSelector:selector withObject:widgetKind];
+#pragma clang diagnostic pop
+  }
+}
+
+RCT_EXPORT_MODULE(WidgetBridge);
 
 RCT_REMAP_METHOD(setHomeWidgetSnapshot,
                  setHomeWidgetSnapshot:(NSString *)snapshotJson
@@ -31,6 +49,14 @@ RCT_REMAP_METHOD(setHomeWidgetSnapshot,
   [groupDefaults setObject:snapshotJson forKey:kWidgetSnapshotKey];
   [groupDefaults synchronize];
 
+  NSURL *containerURL = [[NSFileManager defaultManager] containerURLForSecurityApplicationGroupIdentifier:appGroupId];
+  if (containerURL != nil) {
+    NSURL *snapshotURL = [containerURL URLByAppendingPathComponent:kWidgetSnapshotFileName];
+    [snapshotJson writeToURL:snapshotURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
+  }
+
+  [[self class] reloadWidgetTimelines:widgetKind];
+
   resolve(@(YES));
 }
 
@@ -39,9 +65,7 @@ RCT_REMAP_METHOD(reloadWidgets,
                  reloadResolver:(RCTPromiseResolveBlock)resolve
                  reloadRejecter:(RCTPromiseRejectBlock)reject)
 {
-  // Intentionally no-op in ObjC bridge.
-  // Widget timeline refresh will occur based on timeline policy
-  // or after opening/reloading the app/widget.
+  [[self class] reloadWidgetTimelines:widgetKind];
   resolve(@(YES));
 }
 
