@@ -2237,9 +2237,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         isOn,
       };
 
-      const result = await toggleWidgetFavoriteSwitch(favorite, 4);
+      const result = await toggleWidgetFavoriteSwitch(favorite, 8);
       if (result.limitReached) {
-        showToast("You can add up to 4 widget favorites.");
+        showToast("You can add up to 8 widget favorites.");
         return;
       }
       setWidgetFavoriteIds((prev) => {

@@ -118,7 +118,7 @@ export const syncHomeWidgetSnapshot = async (rows: RoomWithBoards[]) => {
   const payload = JSON.stringify(snapshot);
   await AsyncStorage.setItem(WIDGET_SNAPSHOT_KEY, payload);
 
-  if (Platform.OS !== "ios") return;
+  if (Platform.OS !== "ios" && Platform.OS !== "android") return;
   if (!bridge?.setHomeWidgetSnapshot) {
     logWidgetSyncIssue("Widget sync skipped: native WidgetBridge unavailable");
     return;
@@ -145,14 +145,14 @@ export const getWidgetFavorites = async (): Promise<WidgetFavoriteSwitch[]> => {
 };
 
 export const setWidgetFavorites = async (favorites: WidgetFavoriteSwitch[]) => {
-  const next = Array.isArray(favorites) ? favorites.slice(0, 4) : [];
+  const next = Array.isArray(favorites) ? favorites.slice(0, 8) : [];
   await AsyncStorage.setItem(WIDGET_FAVORITES_KEY, JSON.stringify(next));
   await syncWidgetSnapshotFromCache();
 };
 
 export const toggleWidgetFavoriteSwitch = async (
   favorite: Omit<WidgetFavoriteSwitch, "updatedAtISO">,
-  max = 4,
+  max = 8,
 ) => {
   const current = await getWidgetFavorites();
   const idx = current.findIndex((item) => item.id === favorite.id);
@@ -224,7 +224,7 @@ export const syncWidgetSnapshotFromCache = async () => {
     snapshot.updatedAtISO = new Date().toISOString();
     const payload = JSON.stringify(snapshot);
     await AsyncStorage.setItem(WIDGET_SNAPSHOT_KEY, payload);
-    if (Platform.OS !== "ios") return;
+    if (Platform.OS !== "ios" && Platform.OS !== "android") return;
     if (!bridge?.setHomeWidgetSnapshot) {
       logWidgetSyncIssue("Widget sync skipped: native WidgetBridge unavailable");
       return;
@@ -250,7 +250,7 @@ export const getCachedHomeWidgetSnapshot = async () => {
 export const clearWidgetData = async () => {
   await AsyncStorage.multiRemove([WIDGET_SNAPSHOT_KEY, WIDGET_FAVORITES_KEY]);
 
-  if (Platform.OS !== "ios") return;
+  if (Platform.OS !== "ios" && Platform.OS !== "android") return;
   if (!bridge?.setHomeWidgetSnapshot) {
     logWidgetSyncIssue("Widget clear skipped: native WidgetBridge unavailable");
     return;

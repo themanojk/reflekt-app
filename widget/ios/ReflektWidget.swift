@@ -78,6 +78,109 @@ private func writeHomeWidgetSnapshotRaw(_ raw: String) {
   }
 }
 
+private func widgetEndpointURL(baseURL: String, path: String, queryItems: [URLQueryItem] = []) -> URL? {
+  let trimmedBase = baseURL
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+  var components = URLComponents(string: "\(trimmedBase)\(path)")
+  components?.queryItems = queryItems.isEmpty ? nil : queryItems
+  return components?.url
+}
+
+private func boolFromPinValue(_ value: Any?) -> Bool? {
+  if let bool = value as? Bool {
+    return bool
+  }
+  if let number = value as? NSNumber {
+    return number.intValue != 0
+  }
+  if let string = value as? String {
+    let normalized = string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if ["1", "true", "on"].contains(normalized) {
+      return true
+    }
+    if ["0", "false", "off"].contains(normalized) {
+      return false
+    }
+  }
+  return nil
+}
+
+private func currentPinState(baseURL: String, token: String, deviceMac: String, pin: Int) async -> Bool? {
+  guard let url = widgetEndpointURL(
+    baseURL: baseURL,
+    path: "/devices/macAddress",
+    queryItems: [URLQueryItem(name: "mac_address", value: deviceMac.uppercased())]
+  ) else {
+    return nil
+  }
+
+  var request = URLRequest(url: url)
+  request.httpMethod = "GET"
+  request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+  do {
+    let (data, response) = try await URLSession.shared.data(for: request)
+    guard
+      let httpResponse = response as? HTTPURLResponse,
+      (200..<300).contains(httpResponse.statusCode),
+      let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let status = root["status"] as? [String: Any],
+      let pins = status["pins"] as? [String: Any]
+    else {
+      return nil
+    }
+
+    return boolFromPinValue(pins[String(pin)])
+  } catch {
+    return nil
+  }
+}
+
+private func sendPresenceCommand(baseURL: String, token: String, deviceMac: String, pin: Int, isOn: Bool) async -> Bool {
+  guard let url = widgetEndpointURL(baseURL: baseURL, path: "/presence") else {
+    return false
+  }
+
+  var request = URLRequest(url: url)
+  request.httpMethod = "POST"
+  request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+  request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+  let payload: [String: Any] = [
+    "mac_address": deviceMac.uppercased(),
+    "data": [
+      "cmd": isOn ? "on" : "off",
+      "pin": pin,
+    ],
+  ]
+  request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
+  do {
+    let (data, response) = try await URLSession.shared.data(for: request)
+    guard
+      let httpResponse = response as? HTTPURLResponse,
+      (200..<300).contains(httpResponse.statusCode)
+    else {
+      return false
+    }
+
+    if let rawBool = try? JSONSerialization.jsonObject(with: data) as? Bool {
+      return rawBool
+    }
+    if let rawNumber = try? JSONSerialization.jsonObject(with: data) as? NSNumber {
+      return rawNumber.boolValue
+    }
+    if let rawObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let success = rawObject["success"] ?? rawObject["status"] {
+      return boolFromPinValue(success) ?? true
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
 struct LittraOneTouchEntry: TimelineEntry {
   let date: Date
   let snapshot: HomeWidgetSnapshot?
@@ -127,26 +230,35 @@ struct ToggleFavoriteSwitchIntent: AppIntent {
       return .result()
     }
 
-    let cmd = targetState == .on ? "on" : "off"
-    guard let url = URL(string: "\(baseURL)/presence") else {
+    guard let currentState = await currentPinState(
+      baseURL: baseURL,
+      token: token,
+      deviceMac: String(deviceMac),
+      pin: pin
+    ) else {
+      snapshot.lastActionMessage = "Could not read current switch state."
+      snapshot.lastActionAtISO = ISO8601DateFormatter().string(from: Date())
+      let encoder = JSONEncoder()
+      if let updatedData = try? encoder.encode(snapshot),
+         let updatedRaw = String(data: updatedData, encoding: .utf8) {
+        writeHomeWidgetSnapshotRaw(updatedRaw)
+      }
+      if #available(iOS 14.0, *) {
+        WidgetCenter.shared.reloadTimelines(ofKind: widgetKind)
+      }
       return .result()
     }
-    var request = URLRequest(url: url)
-    request.httpMethod = "POST"
-    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
-    let payload: [String: Any] = [
-      "mac_address": String(deviceMac).uppercased(),
-      "data": [
-        "cmd": cmd,
-        "pin": pin,
-      ],
-    ]
-    request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+    let nextState = !currentState
+    let commandSent = await sendPresenceCommand(
+      baseURL: baseURL,
+      token: token,
+      deviceMac: String(deviceMac),
+      pin: pin,
+      isOn: nextState
+    )
 
-    do {
-      _ = try await URLSession.shared.data(for: request)
+    if commandSent {
       var nextFavorites = favorites
       let current = nextFavorites[idx]
       nextFavorites[idx] = HomeWidgetSnapshot.FavoriteSwitch(
@@ -158,11 +270,11 @@ struct ToggleFavoriteSwitchIntent: AppIntent {
         boardName: current.boardName,
         switchName: current.switchName,
         switchType: current.switchType,
-        isOn: targetState == .on,
+        isOn: nextState,
         updatedAtISO: ISO8601DateFormatter().string(from: Date())
       )
       snapshot.favorites = nextFavorites
-      snapshot.lastActionMessage = "\(current.switchName): \(targetState == .on ? "ON" : "OFF")"
+      snapshot.lastActionMessage = "\(current.switchName): \(nextState ? "ON" : "OFF")"
       snapshot.lastActionAtISO = ISO8601DateFormatter().string(from: Date())
 
       let encoder = JSONEncoder()
@@ -174,7 +286,7 @@ struct ToggleFavoriteSwitchIntent: AppIntent {
       if #available(iOS 14.0, *) {
         WidgetCenter.shared.reloadTimelines(ofKind: widgetKind)
       }
-    } catch {
+    } else {
       snapshot.lastActionMessage = "Action failed. Try again."
       snapshot.lastActionAtISO = ISO8601DateFormatter().string(from: Date())
       let encoder = JSONEncoder()
@@ -216,23 +328,100 @@ struct LittraOneTouchProvider: TimelineProvider {
 
 struct LittraOneTouchWidgetEntryView: View {
   let entry: LittraOneTouchEntry
+  @Environment(\.widgetFamily) private var family
 
   private func readSnapshot() -> HomeWidgetSnapshot? {
     readHomeWidgetSnapshot()
   }
 
-  private func relativeTime(_ iso: String?) -> String? {
-    guard let iso, let date = ISO8601DateFormatter().date(from: iso) else {
-      return nil
+  private var favoriteLimit: Int {
+    family == .systemLarge ? 8 : 4
+  }
+
+  private var favoriteColumns: [GridItem] {
+    [
+      GridItem(.flexible(), spacing: 7),
+      GridItem(.flexible(), spacing: 7)
+    ]
+  }
+
+  private var buttonSize: CGFloat {
+    family == .systemSmall ? 26 : 28
+  }
+
+  private func toggleTarget(for item: HomeWidgetSnapshot.FavoriteSwitch) -> ToggleTargetState {
+    (item.isOn ?? false) ? .off : .on
+  }
+
+  @ViewBuilder
+  private func toggleButton(for item: HomeWidgetSnapshot.FavoriteSwitch) -> some View {
+    let isOn = item.isOn ?? false
+    if #available(iOS 17.0, *) {
+      Button(intent: ToggleFavoriteSwitchIntent(favoriteId: item.id, targetState: toggleTarget(for: item))) {
+        Image(systemName: "power")
+          .font(.caption.weight(.bold))
+          .foregroundColor(.white)
+          .frame(width: buttonSize, height: buttonSize)
+          .background(isOn ? Color.green.opacity(0.55) : Color.white.opacity(0.16))
+          .clipShape(Circle())
+      }
+      .buttonStyle(.plain)
+    } else {
+      Text(isOn ? "ON" : "OFF")
+        .font(.caption2)
+        .fontWeight(.semibold)
+        .foregroundColor(isOn ? .green : .gray)
     }
-    let formatter = RelativeDateTimeFormatter()
-    formatter.unitsStyle = .short
-    return formatter.localizedString(for: date, relativeTo: Date())
+  }
+
+  private func favoriteTitle(_ item: HomeWidgetSnapshot.FavoriteSwitch) -> String {
+    item.switchName.isEmpty ? "Switch" : item.switchName
+  }
+
+  @ViewBuilder
+  private func favoriteCell(_ item: HomeWidgetSnapshot.FavoriteSwitch) -> some View {
+    if family == .systemSmall {
+      VStack(spacing: 4) {
+        toggleButton(for: item)
+        Text(favoriteTitle(item))
+          .font(.caption2)
+          .fontWeight(.medium)
+          .foregroundColor(.white)
+          .lineLimit(1)
+          .minimumScaleFactor(0.75)
+      }
+      .frame(maxWidth: .infinity, minHeight: 43)
+      .padding(.vertical, 4)
+      .background(Color.white.opacity(0.08))
+      .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    } else {
+      HStack(spacing: 7) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text(favoriteTitle(item))
+            .font(.caption)
+            .foregroundColor(.white)
+            .lineLimit(1)
+          if let board = item.boardName, !board.isEmpty {
+            Text(board)
+              .font(.caption2)
+              .foregroundColor(.white.opacity(0.62))
+              .lineLimit(1)
+          }
+        }
+        Spacer(minLength: 2)
+        toggleButton(for: item)
+      }
+      .frame(maxWidth: .infinity, minHeight: 42)
+      .padding(.horizontal, 8)
+      .padding(.vertical, 6)
+      .background(Color.white.opacity(0.08))
+      .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
   }
 
   var body: some View {
     let currentSnapshot = entry.snapshot ?? readSnapshot()
-    let content = VStack(alignment: .leading, spacing: 8) {
+    let content = VStack(alignment: .leading, spacing: family == .systemSmall ? 6 : 8) {
       if let snapshot = currentSnapshot {
         HStack {
           Text(snapshot.appName)
@@ -243,72 +432,15 @@ struct LittraOneTouchWidgetEntryView: View {
             .font(.caption2)
             .foregroundColor(Color(red: 0.76, green: 0.88, blue: 1.0))
         }
-        if let msg = snapshot.lastActionMessage {
-          HStack(spacing: 4) {
-            Text(msg)
-              .font(.caption2)
-              .foregroundColor(.white.opacity(0.9))
-              .lineLimit(1)
-            if let rel = relativeTime(snapshot.lastActionAtISO) {
-              Text("· \(rel)")
-                .font(.caption2)
-                .foregroundColor(.white.opacity(0.6))
-                .lineLimit(1)
-            }
-          }
-        }
         Divider().overlay(Color.white.opacity(0.2))
         if let favorites = snapshot.favorites, !favorites.isEmpty {
-          ForEach(favorites.prefix(3), id: \.id) { item in
-            HStack {
-              VStack(alignment: .leading, spacing: 3) {
-                Text(item.switchName)
-                  .font(.caption)
-                  .foregroundColor(.white)
-                  .lineLimit(1)
-                if let board = item.boardName, !board.isEmpty {
-                  Text(board)
-                    .font(.caption2)
-                    .foregroundColor(.white.opacity(0.7))
-                    .lineLimit(1)
-                }
-              }
-              Spacer(minLength: 8)
-              if #available(iOS 17.0, *) {
-                HStack(spacing: 6) {
-                  Button(intent: ToggleFavoriteSwitchIntent(favoriteId: item.id, targetState: .on)) {
-                    Text("ON")
-                      .font(.caption2)
-                      .fontWeight(.semibold)
-                      .padding(.horizontal, 6)
-                      .padding(.vertical, 3)
-                      .background((item.isOn ?? false) ? Color.green.opacity(0.35) : Color.white.opacity(0.12))
-                      .foregroundColor(.white)
-                      .clipShape(Capsule())
-                  }
-                  .buttonStyle(.plain)
-
-                  Button(intent: ToggleFavoriteSwitchIntent(favoriteId: item.id, targetState: .off)) {
-                    Text("OFF")
-                      .font(.caption2)
-                      .fontWeight(.semibold)
-                      .padding(.horizontal, 6)
-                      .padding(.vertical, 3)
-                      .background((item.isOn ?? false) ? Color.white.opacity(0.12) : Color.gray.opacity(0.35))
-                      .foregroundColor(.white)
-                      .clipShape(Capsule())
-                  }
-                  .buttonStyle(.plain)
-                }
-              } else {
-                Text((item.isOn ?? false) ? "ON" : "OFF")
-                  .font(.caption2)
-                  .foregroundColor((item.isOn ?? false) ? .green : .gray)
-              }
+          LazyVGrid(columns: favoriteColumns, spacing: family == .systemSmall ? 7 : 8) {
+            ForEach(favorites.prefix(favoriteLimit), id: \.id) { item in
+              favoriteCell(item)
             }
           }
         } else {
-          ForEach(snapshot.rooms.prefix(3), id: \.id) { room in
+          ForEach(snapshot.rooms.prefix(family == .systemSmall ? 4 : 8), id: \.id) { room in
             HStack {
               Text(room.name)
                 .font(.caption)
@@ -329,7 +461,12 @@ struct LittraOneTouchWidgetEntryView: View {
           .foregroundColor(.white.opacity(0.8))
       }
     }
-    .padding(12)
+    .padding(EdgeInsets(
+      top: family == .systemSmall ? 12 : 14,
+      leading: family == .systemSmall ? 12 : 14,
+      bottom: family == .systemSmall ? 18 : 22,
+      trailing: family == .systemSmall ? 12 : 14
+    ))
 
     Group {
       if #available(iOS 17.0, *) {
@@ -357,6 +494,6 @@ struct LittraOneTouchWidget: Widget {
     }
     .configurationDisplayName("lOT")
     .description("View room and switchboard online status at a glance.")
-    .supportedFamilies([.systemSmall, .systemMedium])
+    .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
   }
 }
