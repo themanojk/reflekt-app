@@ -1,0 +1,13 @@
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+  android:description="@string/widget_description"
+  android:initialLayout="@layout/reflekt_home_widget_initial"
+  android:minWidth="250dp"
+  android:minHeight="48dp"
+  android:minResizeWidth="160dp"
+  android:minResizeHeight="48dp"
+  android:previewImage="@mipmap/ic_launcher"
+  android:resizeMode="horizontal|vertical"
+  android:targetCellWidth="4"
+  android:targetCellHeight="1"
+  android:updatePeriodMillis="0"
+  android:widgetCategory="home_screen" />
