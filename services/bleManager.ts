@@ -1,9 +1,9 @@
 import { sleep } from "@/utils/general";
 import { getESPServiceIds } from "@/utils/storage";
+import { requestBluetoothPermission } from "./appPermissions";
 import {
   AppState,
   AppStateStatus,
-  PermissionsAndroid,
   Platform,
 } from "react-native";
 import {
@@ -86,35 +86,8 @@ class BLEManagerService {
 
   /** Call once at app startup (or before scanning) */
   async initialize() {
-    if (Platform.OS !== "android") return true;
-
-    if (Platform.Version >= 31) {
-      const scan = await PermissionsAndroid.request(
-        "android.permission.BLUETOOTH_SCAN",
-        {
-          title: "Bluetooth permission",
-          message: "Needed to scan for devices",
-          buttonPositive: "OK",
-        },
-      );
-      const connect = await PermissionsAndroid.request(
-        "android.permission.BLUETOOTH_CONNECT",
-        {
-          title: "Bluetooth permission",
-          message: "Needed to connect to devices",
-          buttonPositive: "OK",
-        },
-      );
-      return (
-        scan === PermissionsAndroid.RESULTS.GRANTED &&
-        connect === PermissionsAndroid.RESULTS.GRANTED
-      );
-    } else {
-      const loc = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-      );
-      return loc === PermissionsAndroid.RESULTS.GRANTED;
-    }
+    const status = await requestBluetoothPermission();
+    return status === "granted" || status === "limited";
   }
 
   /**

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "197884562430",
+    "project_id": "littra-one-touch",
+    "storage_bucket": "littra-one-touch.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:197884562430:android:041eb3060eb2b024258eaf",
+        "android_client_info": {
+          "package_name": "com.littra.reflektapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDIHXGWsCYpTKAh1_t5KM5xLaOfIzehjNU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

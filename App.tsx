@@ -1,8 +1,10 @@
-import { NavigationContainer } from "@react-navigation/native";
+import { LinkingOptions, NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
 import React from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
+import AppUpdateGate from "./components/AppUpdateGate";
+import PushNotificationManager from "./components/PushNotificationManager";
 import type { RootStackParamList } from "./constants/types";
 import { ROLES } from "./constants/types";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
@@ -21,6 +23,17 @@ import SwitchboardScreen from "./screens/SwitchboardScreen";
 const Stack = createNativeStackNavigator<RootStackParamList>();
 // dropTables();
 initDB();
+
+const linking: LinkingOptions<RootStackParamList> = {
+  prefixes: ["reflekt://"],
+  config: {
+    screens: {
+      Login: "login",
+      Home: "home",
+      Profile: "settings",
+    },
+  },
+};
 
 function AuthStack() {
   return (
@@ -70,7 +83,7 @@ function Navigation() {
 
   if (!user)
     return (
-      <NavigationContainer>
+      <NavigationContainer linking={linking}>
         <AuthStack />
       </NavigationContainer>
     );
@@ -78,14 +91,14 @@ function Navigation() {
   switch (user?.role) {
     case ROLES.ADMIN:
       return (
-        <NavigationContainer>
+        <NavigationContainer linking={linking}>
           <AdminStack />
         </NavigationContainer>
       );
     case ROLES.USER:
     default:
       return (
-        <NavigationContainer>
+        <NavigationContainer linking={linking}>
           <UserStack />
         </NavigationContainer>
       );
@@ -96,8 +109,11 @@ export default function App() {
   return (
     <AuthProvider>
       <ToastProvider>
-        <StatusBar style="light" />
-        <Navigation />
+        <AppUpdateGate>
+          <PushNotificationManager />
+          <StatusBar style="light" />
+          <Navigation />
+        </AppUpdateGate>
       </ToastProvider>
     </AuthProvider>
   );

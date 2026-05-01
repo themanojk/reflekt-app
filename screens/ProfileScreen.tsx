@@ -1,8 +1,18 @@
 import { deactivateAccount, getProfile, updateProfile } from "@/api/auth";
+import {
+  getNotificationPreferences,
+  NotificationPreferences,
+  updateNotificationPreferences,
+} from "@/api/push";
 import { useAuth } from "@/contexts/AuthContext";
+import {
+  getNotificationPermissionStatus,
+  registerDeviceForPushNotifications,
+} from "@/services/pushNotifications";
 import { clearBoardCache, clearSensorCache, setUser } from "@/utils/storage";
 import Constants from "expo-constants";
 import {
+  Bell,
   CreditCard as Edit2,
   Mail,
   Phone,
@@ -17,6 +27,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -34,9 +45,14 @@ export default function ProfileScreen({ navigation }: any) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [pushPermission, setPushPermission] = useState<string>("unknown");
+  const [pushRegistering, setPushRegistering] = useState(false);
+  const [preferences, setPreferences] = useState<NotificationPreferences | null>(null);
+  const [preferencesSaving, setPreferencesSaving] = useState(false);
 
   useEffect(() => {
     loadProfile();
+    loadNotificationSettings();
   }, []);
 
   const loadProfile = async () => {
@@ -108,6 +124,77 @@ export default function ProfileScreen({ navigation }: any) {
       Alert.alert("Error", "Failed to update profile");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const loadNotificationSettings = async () => {
+    try {
+      const permission = await getNotificationPermissionStatus();
+      setPushPermission(permission.granted ? "granted" : permission.status);
+    } catch {
+      setPushPermission("unknown");
+    }
+
+    try {
+      const nextPreferences = await getNotificationPreferences();
+      setPreferences(nextPreferences);
+    } catch {
+      setPreferences({
+        deviceAlerts: true,
+        switchAlerts: true,
+        marketing: false,
+        quietHoursEnabled: false,
+        quietHoursStart: "22:00",
+        quietHoursEnd: "07:00",
+      });
+    }
+  };
+
+  const handleEnableNotifications = async () => {
+    setPushRegistering(true);
+    try {
+      const result = await registerDeviceForPushNotifications({ force: true });
+      await loadNotificationSettings();
+
+      if (result.registered) {
+        Alert.alert("Notifications Enabled", "This device is registered for push notifications.");
+      } else if (result.reason === "android-fcm-missing") {
+        Alert.alert(
+          "Firebase Setup Needed",
+          "Android push notifications need google-services.json and Firebase credentials before this device can register.",
+        );
+      } else {
+        Alert.alert(
+          "Permission Needed",
+          "Notification permission was not granted. Enable notifications in system settings and try again.",
+        );
+      }
+    } catch {
+      Alert.alert(
+        "Notification Setup Failed",
+        "Unable to register this device for push notifications right now.",
+      );
+    } finally {
+      setPushRegistering(false);
+    }
+  };
+
+  const updatePreference = async (
+    patch: Partial<NotificationPreferences>,
+  ) => {
+    if (!preferences) return;
+    const previous = preferences;
+    const next = { ...preferences, ...patch };
+
+    setPreferences(next);
+    setPreferencesSaving(true);
+    try {
+      await updateNotificationPreferences(patch);
+    } catch {
+      setPreferences(previous);
+      Alert.alert("Update Failed", "Unable to update notification preferences.");
+    } finally {
+      setPreferencesSaving(false);
     }
   };
 
@@ -377,6 +464,114 @@ export default function ProfileScreen({ navigation }: any) {
         )}
 
         <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Notifications</Text>
+
+          <View style={styles.permissionRow}>
+            <View style={styles.fieldLabel}>
+              <Bell size={18} color="#94a3b8" />
+              <Text style={styles.label}>Push Notifications</Text>
+            </View>
+            <Text style={styles.permissionStatus}>
+              {pushPermission === "granted" ? "Enabled" : "Not enabled"}
+            </Text>
+          </View>
+
+          <TouchableOpacity
+            style={[styles.actionButtonNeutral, pushRegistering && styles.buttonDisabled]}
+            onPress={handleEnableNotifications}
+            disabled={pushRegistering}
+          >
+            {pushRegistering ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.actionButtonText}>
+                {pushPermission === "granted"
+                  ? "Re-register This Device"
+                  : "Enable Notifications"}
+              </Text>
+            )}
+          </TouchableOpacity>
+
+          {preferences ? (
+            <View style={styles.preferenceList}>
+              <View style={styles.preferenceRow}>
+                <Text style={styles.preferenceLabel}>Device alerts</Text>
+                <Switch
+                  value={preferences.deviceAlerts}
+                  onValueChange={(value) => updatePreference({ deviceAlerts: value })}
+                  disabled={preferencesSaving}
+                  trackColor={{ false: "#334155", true: "#1d4ed8" }}
+                  thumbColor={preferences.deviceAlerts ? "#bfdbfe" : "#94a3b8"}
+                />
+              </View>
+              <View style={styles.preferenceRow}>
+                <Text style={styles.preferenceLabel}>Switch alerts</Text>
+                <Switch
+                  value={preferences.switchAlerts}
+                  onValueChange={(value) => updatePreference({ switchAlerts: value })}
+                  disabled={preferencesSaving}
+                  trackColor={{ false: "#334155", true: "#1d4ed8" }}
+                  thumbColor={preferences.switchAlerts ? "#bfdbfe" : "#94a3b8"}
+                />
+              </View>
+              <View style={styles.preferenceRow}>
+                <Text style={styles.preferenceLabel}>Marketing</Text>
+                <Switch
+                  value={preferences.marketing}
+                  onValueChange={(value) => updatePreference({ marketing: value })}
+                  disabled={preferencesSaving}
+                  trackColor={{ false: "#334155", true: "#1d4ed8" }}
+                  thumbColor={preferences.marketing ? "#bfdbfe" : "#94a3b8"}
+                />
+              </View>
+              <View style={styles.preferenceRow}>
+                <Text style={styles.preferenceLabel}>Quiet hours</Text>
+                <Switch
+                  value={preferences.quietHoursEnabled}
+                  onValueChange={(value) => updatePreference({ quietHoursEnabled: value })}
+                  disabled={preferencesSaving}
+                  trackColor={{ false: "#334155", true: "#1d4ed8" }}
+                  thumbColor={preferences.quietHoursEnabled ? "#bfdbfe" : "#94a3b8"}
+                />
+              </View>
+              <View style={styles.quietHoursRow}>
+                <TextInput
+                  style={styles.timeInput}
+                  value={preferences.quietHoursStart}
+                  onChangeText={(value) =>
+                    setPreferences((prev) =>
+                      prev ? { ...prev, quietHoursStart: value } : prev,
+                    )
+                  }
+                  onBlur={() =>
+                    updatePreference({ quietHoursStart: preferences.quietHoursStart })
+                  }
+                  editable={!preferencesSaving}
+                  placeholder="22:00"
+                  placeholderTextColor="#64748b"
+                />
+                <Text style={styles.timeSeparator}>to</Text>
+                <TextInput
+                  style={styles.timeInput}
+                  value={preferences.quietHoursEnd}
+                  onChangeText={(value) =>
+                    setPreferences((prev) =>
+                      prev ? { ...prev, quietHoursEnd: value } : prev,
+                    )
+                  }
+                  onBlur={() =>
+                    updatePreference({ quietHoursEnd: preferences.quietHoursEnd })
+                  }
+                  editable={!preferencesSaving}
+                  placeholder="07:00"
+                  placeholderTextColor="#64748b"
+                />
+              </View>
+            </View>
+          ) : null}
+        </View>
+
+        <View style={styles.section}>
           <Text style={styles.sectionTitle}>Account Actions</Text>
 
           <TouchableOpacity
@@ -529,6 +724,55 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#e2e8f0",
     paddingLeft: 26,
+  },
+  permissionRow: {
+    marginBottom: 14,
+  },
+  permissionStatus: {
+    color: "#cbd5e1",
+    fontSize: 14,
+    paddingLeft: 26,
+    textTransform: "capitalize",
+  },
+  preferenceList: {
+    borderTopWidth: 1,
+    borderTopColor: "#1e293b",
+    marginTop: 8,
+    paddingTop: 8,
+  },
+  preferenceRow: {
+    minHeight: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderBottomWidth: 1,
+    borderBottomColor: "#1e293b",
+  },
+  preferenceLabel: {
+    color: "#e2e8f0",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  quietHoursRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingTop: 16,
+  },
+  timeInput: {
+    flex: 1,
+    minHeight: 44,
+    backgroundColor: "#1e293b",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#334155",
+    color: "#fff",
+    fontSize: 15,
+    paddingHorizontal: 12,
+  },
+  timeSeparator: {
+    color: "#94a3b8",
+    fontSize: 14,
   },
   input: {
     backgroundColor: "#1e293b",

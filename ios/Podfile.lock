@@ -1,5 +1,9 @@
 PODS:
-  - EXConstants (18.0.9):
+  - EXApplication (7.0.8):
+    - ExpoModulesCore
+  - EXConstants (18.0.13):
+    - ExpoModulesCore
+  - EXNotifications (0.32.17):
     - ExpoModulesCore
   - Expo (54.0.12):
     - ExpoModulesCore
@@ -2145,7 +2149,9 @@ PODS:
   - Yoga (0.0.0)
 
 DEPENDENCIES:
+  - EXApplication (from `../node_modules/expo-application/ios`)
   - EXConstants (from `../node_modules/expo-constants/ios`)
+  - EXNotifications (from `../node_modules/expo-notifications/ios`)
   - Expo (from `../node_modules/expo`)
   - ExpoAsset (from `../node_modules/expo-asset/ios`)
   - ExpoBlur (from `../node_modules/expo-blur/ios`)
@@ -2253,8 +2259,12 @@ SPEC REPOS:
     - SDWebImageWebPCoder
 
 EXTERNAL SOURCES:
+  EXApplication:
+    :path: "../node_modules/expo-application/ios"
   EXConstants:
     :path: "../node_modules/expo-constants/ios"
+  EXNotifications:
+    :path: "../node_modules/expo-notifications/ios"
   Expo:
     :path: "../node_modules/expo"
   ExpoAsset:
@@ -2444,7 +2454,9 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native/ReactCommon/yoga"
 
 SPEC CHECKSUMS:
-  EXConstants: a95804601ee4a6aa7800645f9b070d753b1142b3
+  EXApplication: 1e98d4b1dccdf30627f92917f4b2c5a53c330e5f
+  EXConstants: fce59a631a06c4151602843667f7cfe35f81e271
+  EXNotifications: c67e92b9fdfe785ff9dbdc5f4c0ff935de357da7
   Expo: 24375439ae3be9e01cdd3ab8e03967d453e66d3e
   ExpoAsset: 9ba6fbd677fb8e241a3899ac00fa735bc911eadf
   ExpoBlur: b90747a3f22a8b6ceffd9cb0dc41a4184efdc656
@@ -2540,7 +2552,7 @@ SPEC CHECKSUMS:
   RNReanimated: d87360cba850e1df46f5b74d6ee74653a520b631
   RNScreens: d8d6f1792f6e7ac12b0190d33d8d390efc0c1845
   RNSVG: efc8a09e4ef50e7df0dbc9327752be127a2f610c
-  RNWorklets: 76fce72926e28e304afb44f0da23b2d24f2c1fa0
+  RNWorklets: e7adefa812b3fd2ca225f4bc8633503164fa1e23
   SDWebImage: e9c98383c7572d713c1a0d7dd2783b10599b9838
   SDWebImageAVIFCoder: afe194a084e851f70228e4be35ef651df0fc5c57
   SDWebImageSVGCoder: 15a300a97ec1c8ac958f009c02220ac0402e936c

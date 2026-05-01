@@ -1,5 +1,6 @@
 import { RequestOTP, requestOtp, verifyOtp } from '@/api/auth';
 import { fetchServiceIds } from '@/api/service';
+import { unregisterCurrentPushToken } from '@/services/pushNotifications';
 import { clearWidgetData } from '@/utils/widgetSync';
 import { clearWifi } from '@/utils/wifiCreds';
 import { createContext, ReactNode, useContext, useEffect, useState } from 'react';
@@ -65,6 +66,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = async () => {
+    try {
+      await unregisterCurrentPushToken();
+    } catch (error) {
+      console.warn("Push unregister failed", error);
+    }
     await clearWidgetData();
     await clearAuth();
     await clearWifi();
