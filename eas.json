@@ -11,6 +11,12 @@
     "preview": {
       "distribution": "internal"
     },
+    "play-validation": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      }
+    },
     "production": {
       "autoIncrement": true
     }

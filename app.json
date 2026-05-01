@@ -35,7 +35,7 @@
         "android.permission.BLUETOOTH_ADMIN",
         "android.permission.BLUETOOTH_CONNECT"
       ],
-      "package": "com.littra.reflekt",
+      "package": "com.littra.reflektapp",
       "softwareKeyboardLayoutMode": "resize",
       "versionCode": 1
     },
