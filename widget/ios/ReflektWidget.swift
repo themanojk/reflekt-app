@@ -40,6 +40,8 @@ struct HomeWidgetSnapshot: Codable {
   let authToken: String?
   var lastActionMessage: String?
   var lastActionAtISO: String?
+  var lastActionFavoriteId: String?
+  var lastActionStatus: String?
 }
 
 private func snapshotFileURL() -> URL? {
@@ -72,10 +74,41 @@ private func readHomeWidgetSnapshot() -> HomeWidgetSnapshot? {
 }
 
 private func writeHomeWidgetSnapshotRaw(_ raw: String) {
-  UserDefaults(suiteName: appGroupId)?.set(raw, forKey: snapshotKey)
+  let defaults = UserDefaults(suiteName: appGroupId)
+  defaults?.set(raw, forKey: snapshotKey)
+  defaults?.synchronize()
   if let url = snapshotFileURL() {
     try? raw.write(to: url, atomically: true, encoding: .utf8)
   }
+}
+
+private func writeHomeWidgetSnapshot(_ snapshot: HomeWidgetSnapshot) {
+  let encoder = JSONEncoder()
+  if let data = try? encoder.encode(snapshot),
+     let raw = String(data: data, encoding: .utf8) {
+    writeHomeWidgetSnapshotRaw(raw)
+  }
+}
+
+private func reloadHomeWidget() {
+  if #available(iOS 14.0, *) {
+    WidgetCenter.shared.reloadTimelines(ofKind: widgetKind)
+    WidgetCenter.shared.reloadAllTimelines()
+  }
+}
+
+private func markWidgetAction(
+  snapshot: inout HomeWidgetSnapshot,
+  favoriteId: String?,
+  status: String?,
+  message: String?
+) {
+  snapshot.lastActionFavoriteId = favoriteId
+  snapshot.lastActionStatus = status
+  snapshot.lastActionMessage = message
+  snapshot.lastActionAtISO = ISO8601DateFormatter().string(from: Date())
+  writeHomeWidgetSnapshot(snapshot)
+  reloadHomeWidget()
 }
 
 private func widgetEndpointURL(baseURL: String, path: String, queryItems: [URLQueryItem] = []) -> URL? {
@@ -230,22 +263,26 @@ struct ToggleFavoriteSwitchIntent: AppIntent {
       return .result()
     }
 
+    let currentFavorite = favorites[idx]
+    markWidgetAction(
+      snapshot: &snapshot,
+      favoriteId: currentFavorite.id,
+      status: "sending",
+      message: "\(currentFavorite.switchName): Sending..."
+    )
+
     guard let currentState = await currentPinState(
       baseURL: baseURL,
       token: token,
       deviceMac: String(deviceMac),
       pin: pin
     ) else {
-      snapshot.lastActionMessage = "Could not read current switch state."
-      snapshot.lastActionAtISO = ISO8601DateFormatter().string(from: Date())
-      let encoder = JSONEncoder()
-      if let updatedData = try? encoder.encode(snapshot),
-         let updatedRaw = String(data: updatedData, encoding: .utf8) {
-        writeHomeWidgetSnapshotRaw(updatedRaw)
-      }
-      if #available(iOS 14.0, *) {
-        WidgetCenter.shared.reloadTimelines(ofKind: widgetKind)
-      }
+      markWidgetAction(
+        snapshot: &snapshot,
+        favoriteId: currentFavorite.id,
+        status: "failed",
+        message: "Could not read current switch state."
+      )
       return .result()
     }
 
@@ -274,29 +311,19 @@ struct ToggleFavoriteSwitchIntent: AppIntent {
         updatedAtISO: ISO8601DateFormatter().string(from: Date())
       )
       snapshot.favorites = nextFavorites
-      snapshot.lastActionMessage = "\(current.switchName): \(nextState ? "ON" : "OFF")"
-      snapshot.lastActionAtISO = ISO8601DateFormatter().string(from: Date())
-
-      let encoder = JSONEncoder()
-      let updatedData = try encoder.encode(snapshot)
-      if let updatedRaw = String(data: updatedData, encoding: .utf8) {
-        writeHomeWidgetSnapshotRaw(updatedRaw)
-      }
-
-      if #available(iOS 14.0, *) {
-        WidgetCenter.shared.reloadTimelines(ofKind: widgetKind)
-      }
+      markWidgetAction(
+        snapshot: &snapshot,
+        favoriteId: current.id,
+        status: "sent",
+        message: "\(current.switchName): \(nextState ? "ON" : "OFF")"
+      )
     } else {
-      snapshot.lastActionMessage = "Action failed. Try again."
-      snapshot.lastActionAtISO = ISO8601DateFormatter().string(from: Date())
-      let encoder = JSONEncoder()
-      if let updatedData = try? encoder.encode(snapshot),
-         let updatedRaw = String(data: updatedData, encoding: .utf8) {
-        writeHomeWidgetSnapshotRaw(updatedRaw)
-      }
-      if #available(iOS 14.0, *) {
-        WidgetCenter.shared.reloadTimelines(ofKind: widgetKind)
-      }
+      markWidgetAction(
+        snapshot: &snapshot,
+        favoriteId: currentFavorite.id,
+        status: "failed",
+        message: "Action failed. Try again."
+      )
     }
 
     return .result()
@@ -318,6 +345,12 @@ struct LittraOneTouchProvider: TimelineProvider {
     let refreshMinutes = snapshot == nil ? 1 : 30
     let nextRefresh = Calendar.current.date(byAdding: .minute, value: refreshMinutes, to: now) ?? now.addingTimeInterval(TimeInterval(refreshMinutes * 60))
     let entry = LittraOneTouchEntry(date: now, snapshot: snapshot)
+    if snapshot?.lastActionStatus != nil,
+       let clearDate = Calendar.current.date(byAdding: .second, value: 2, to: now) {
+      let clearEntry = LittraOneTouchEntry(date: clearDate, snapshot: snapshot)
+      completion(Timeline(entries: [entry, clearEntry], policy: .after(nextRefresh)))
+      return
+    }
     completion(Timeline(entries: [entry], policy: .after(nextRefresh)))
   }
 
@@ -354,7 +387,7 @@ struct LittraOneTouchWidgetEntryView: View {
   }
 
   @ViewBuilder
-  private func toggleButton(for item: HomeWidgetSnapshot.FavoriteSwitch) -> some View {
+  private func toggleButton(for item: HomeWidgetSnapshot.FavoriteSwitch, status: String?) -> some View {
     let isOn = item.isOn ?? false
     if #available(iOS 17.0, *) {
       Button(intent: ToggleFavoriteSwitchIntent(favoriteId: item.id, targetState: toggleTarget(for: item))) {
@@ -362,7 +395,7 @@ struct LittraOneTouchWidgetEntryView: View {
           .font(.caption.weight(.bold))
           .foregroundColor(.white)
           .frame(width: buttonSize, height: buttonSize)
-          .background(isOn ? Color.green.opacity(0.55) : Color.white.opacity(0.16))
+          .background(favoriteButtonBackground(isOn: isOn, status: status))
           .clipShape(Circle())
       }
       .buttonStyle(.plain)
@@ -378,11 +411,60 @@ struct LittraOneTouchWidgetEntryView: View {
     item.switchName.isEmpty ? "Switch" : item.switchName
   }
 
+  private func actionStatus(for item: HomeWidgetSnapshot.FavoriteSwitch, snapshot: HomeWidgetSnapshot?) -> String? {
+    guard snapshot?.lastActionFavoriteId == item.id else {
+      return nil
+    }
+    if let rawDate = snapshot?.lastActionAtISO,
+       let actionDate = ISO8601DateFormatter().date(from: rawDate),
+       Date().timeIntervalSince(actionDate) > 2.0 {
+      return nil
+    }
+    return snapshot?.lastActionStatus
+  }
+
+  private func favoriteSubtitle(_ item: HomeWidgetSnapshot.FavoriteSwitch, status: String?) -> String {
+    switch status {
+    case "sending":
+      return "Sending..."
+    case "sent":
+      return "Command sent"
+    case "failed":
+      return "Try again"
+    default:
+      return item.boardName ?? ""
+    }
+  }
+
+  private func favoriteBackground(for status: String?) -> Color {
+    switch status {
+    case "sent":
+      return Color.green.opacity(0.22)
+    case "failed":
+      return Color.red.opacity(0.24)
+    default:
+      return Color.white.opacity(0.08)
+    }
+  }
+
+  private func favoriteButtonBackground(isOn: Bool, status: String?) -> Color {
+    switch status {
+    case "sent":
+      return Color.green.opacity(0.72)
+    case "failed":
+      return Color.red.opacity(0.72)
+    default:
+      return isOn ? Color.green.opacity(0.55) : Color.white.opacity(0.16)
+    }
+  }
+
   @ViewBuilder
-  private func favoriteCell(_ item: HomeWidgetSnapshot.FavoriteSwitch) -> some View {
+  private func favoriteCell(_ item: HomeWidgetSnapshot.FavoriteSwitch, snapshot: HomeWidgetSnapshot?) -> some View {
+    let status = actionStatus(for: item, snapshot: snapshot)
+    let subtitle = favoriteSubtitle(item, status: status)
     if family == .systemSmall {
       VStack(spacing: 4) {
-        toggleButton(for: item)
+        toggleButton(for: item, status: status)
         Text(favoriteTitle(item))
           .font(.caption2)
           .fontWeight(.medium)
@@ -392,7 +474,7 @@ struct LittraOneTouchWidgetEntryView: View {
       }
       .frame(maxWidth: .infinity, minHeight: 43)
       .padding(.vertical, 4)
-      .background(Color.white.opacity(0.08))
+      .background(favoriteBackground(for: status))
       .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     } else {
       HStack(spacing: 7) {
@@ -401,26 +483,26 @@ struct LittraOneTouchWidgetEntryView: View {
             .font(.caption)
             .foregroundColor(.white)
             .lineLimit(1)
-          if let board = item.boardName, !board.isEmpty {
-            Text(board)
+          if !subtitle.isEmpty {
+            Text(subtitle)
               .font(.caption2)
-              .foregroundColor(.white.opacity(0.62))
+              .foregroundColor(status == "failed" ? Color.red.opacity(0.88) : Color.white.opacity(0.62))
               .lineLimit(1)
           }
         }
         Spacer(minLength: 2)
-        toggleButton(for: item)
+        toggleButton(for: item, status: status)
       }
       .frame(maxWidth: .infinity, minHeight: 42)
       .padding(.horizontal, 8)
       .padding(.vertical, 6)
-      .background(Color.white.opacity(0.08))
+      .background(favoriteBackground(for: status))
       .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
   }
 
   var body: some View {
-    let currentSnapshot = entry.snapshot ?? readSnapshot()
+    let currentSnapshot = readSnapshot() ?? entry.snapshot
     let content = VStack(alignment: .leading, spacing: family == .systemSmall ? 6 : 8) {
       if let snapshot = currentSnapshot {
         HStack {
@@ -436,7 +518,7 @@ struct LittraOneTouchWidgetEntryView: View {
         if let favorites = snapshot.favorites, !favorites.isEmpty {
           LazyVGrid(columns: favoriteColumns, spacing: family == .systemSmall ? 7 : 8) {
             ForEach(favorites.prefix(favoriteLimit), id: \.id) { item in
-              favoriteCell(item)
+              favoriteCell(item, snapshot: snapshot)
             }
           }
         } else {

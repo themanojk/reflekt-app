@@ -44,9 +44,8 @@
     <item name="android:layout_width">36dp</item>
     <item name="android:layout_height">36dp</item>
     <item name="android:background">@drawable/widget_toggle_off</item>
-    <item name="android:gravity">center</item>
-    <item name="android:textColor">#FFFFFF</item>
-    <item name="android:textSize">10sp</item>
-    <item name="android:textStyle">bold</item>
+    <item name="android:padding">9dp</item>
+    <item name="android:scaleType">centerInside</item>
+    <item name="android:src">@drawable/widget_ic_power</item>
   </style>
 </resources>

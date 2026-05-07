@@ -86,9 +86,10 @@
             style="@style/WidgetFavoriteSubtitle" />
         </LinearLayout>
 
-        <TextView
+        <ImageView
           android:id="@+id/widget_slot_1_toggle"
-          style="@style/WidgetFavoriteToggle" />
+          style="@style/WidgetFavoriteToggle"
+          android:contentDescription="Send command" />
       </LinearLayout>
 
       <LinearLayout
@@ -110,9 +111,10 @@
             style="@style/WidgetFavoriteSubtitle" />
         </LinearLayout>
 
-        <TextView
+        <ImageView
           android:id="@+id/widget_slot_2_toggle"
-          style="@style/WidgetFavoriteToggle" />
+          style="@style/WidgetFavoriteToggle"
+          android:contentDescription="Send command" />
       </LinearLayout>
     </LinearLayout>
 
@@ -143,9 +145,10 @@
             style="@style/WidgetFavoriteSubtitle" />
         </LinearLayout>
 
-        <TextView
+        <ImageView
           android:id="@+id/widget_slot_3_toggle"
-          style="@style/WidgetFavoriteToggle" />
+          style="@style/WidgetFavoriteToggle"
+          android:contentDescription="Send command" />
       </LinearLayout>
 
       <LinearLayout
@@ -167,9 +170,10 @@
             style="@style/WidgetFavoriteSubtitle" />
         </LinearLayout>
 
-        <TextView
+        <ImageView
           android:id="@+id/widget_slot_4_toggle"
-          style="@style/WidgetFavoriteToggle" />
+          style="@style/WidgetFavoriteToggle"
+          android:contentDescription="Send command" />
       </LinearLayout>
     </LinearLayout>
 
@@ -200,9 +204,10 @@
             style="@style/WidgetFavoriteSubtitle" />
         </LinearLayout>
 
-        <TextView
+        <ImageView
           android:id="@+id/widget_slot_5_toggle"
-          style="@style/WidgetFavoriteToggle" />
+          style="@style/WidgetFavoriteToggle"
+          android:contentDescription="Send command" />
       </LinearLayout>
 
       <LinearLayout
@@ -224,9 +229,10 @@
             style="@style/WidgetFavoriteSubtitle" />
         </LinearLayout>
 
-        <TextView
+        <ImageView
           android:id="@+id/widget_slot_6_toggle"
-          style="@style/WidgetFavoriteToggle" />
+          style="@style/WidgetFavoriteToggle"
+          android:contentDescription="Send command" />
       </LinearLayout>
     </LinearLayout>
 
@@ -257,9 +263,10 @@
             style="@style/WidgetFavoriteSubtitle" />
         </LinearLayout>
 
-        <TextView
+        <ImageView
           android:id="@+id/widget_slot_7_toggle"
-          style="@style/WidgetFavoriteToggle" />
+          style="@style/WidgetFavoriteToggle"
+          android:contentDescription="Send command" />
       </LinearLayout>
 
       <LinearLayout
@@ -281,9 +288,10 @@
             style="@style/WidgetFavoriteSubtitle" />
         </LinearLayout>
 
-        <TextView
+        <ImageView
           android:id="@+id/widget_slot_8_toggle"
-          style="@style/WidgetFavoriteToggle" />
+          style="@style/WidgetFavoriteToggle"
+          android:contentDescription="Send command" />
       </LinearLayout>
     </LinearLayout>
   </LinearLayout>

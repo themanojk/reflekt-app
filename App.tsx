@@ -14,6 +14,7 @@ import AddRoomScreen from "./screens/AddRoomScreen";
 import AddSwitchboardAdminScreen from "./screens/AddSwitchBoardAdminScreen";
 import AddSwitchboardScreen from "./screens/AddSwitchboardScreen";
 import ConfirmNewBoardScreen from "./screens/ConfirmNewBoardScreen";
+import ContactUsScreen from "./screens/ContactUsScreen";
 import HomeScreen from "./screens/HomeScreen";
 import LoginScreen from "./screens/LoginScreen";
 import ProfileScreen from "./screens/ProfileScreen";
@@ -31,6 +32,7 @@ const linking: LinkingOptions<RootStackParamList> = {
       Login: "login",
       Home: "home",
       Profile: "settings",
+      ContactUs: "contact-us",
     },
   },
 };
@@ -52,6 +54,7 @@ function AdminStack() {
       />
       <Stack.Screen name="Switchboard" component={SwitchboardScreen} />
       <Stack.Screen name="Profile" component={ProfileScreen} />
+      <Stack.Screen name="ContactUs" component={ContactUsScreen} />
     </Stack.Navigator>
   );
 }
@@ -66,6 +69,7 @@ function UserStack() {
       <Stack.Screen name="ConfirmNewBoard" component={ConfirmNewBoardScreen} />
       <Stack.Screen name="AddSwitchboard" component={AddSwitchboardScreen} />
       <Stack.Screen name="Profile" component={ProfileScreen} />
+      <Stack.Screen name="ContactUs" component={ContactUsScreen} />
     </Stack.Navigator>
   );
 }

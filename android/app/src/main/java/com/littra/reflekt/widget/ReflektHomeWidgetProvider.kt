@@ -114,7 +114,14 @@ class ReflektHomeWidgetProvider : AppWidgetProvider() {
       return views
     }
 
-    private fun buildViews(context: Context, manager: AppWidgetManager, widgetId: Int): RemoteViews {
+    private fun buildViews(
+      context: Context,
+      manager: AppWidgetManager,
+      widgetId: Int,
+      sendingFavoriteId: String? = null,
+      sentFavoriteId: String? = null,
+      failedFavoriteId: String? = null
+    ): RemoteViews {
       val snapshot = HomeWidgetStore.readSnapshot(context)
       val views = RemoteViews(context.packageName, R.layout.reflekt_home_widget)
 
@@ -149,23 +156,60 @@ class ReflektHomeWidgetProvider : AppWidgetProvider() {
 
         views.setViewVisibility(slotId, View.VISIBLE)
         views.setTextViewText(slotTitleIds[index], favorite.switchName.ifBlank { "Switch" })
-        views.setTextViewText(slotBoardIds[index], favorite.boardName.orEmpty())
-        views.setTextViewText(slotToggleIds[index], if (favorite.isOn == true) "ON" else "OFF")
+        val isSending = favorite.id == sendingFavoriteId
+        val isSent = favorite.id == sentFavoriteId
+        val isFailed = favorite.id == failedFavoriteId
+
+        views.setTextViewText(
+          slotBoardIds[index],
+          when {
+            isSending -> "Sending..."
+            isSent -> "Command sent"
+            isFailed -> "Try again"
+            else -> favorite.boardName.orEmpty()
+          }
+        )
+        views.setImageViewResource(slotToggleIds[index], R.drawable.widget_ic_power)
         views.setInt(
           slotId,
           "setBackgroundResource",
-          if (favorite.isOn == true) R.drawable.widget_cell_on_background else R.drawable.widget_cell_background
+          when {
+            isSent -> R.drawable.widget_cell_sent_background
+            isFailed -> R.drawable.widget_cell_failed_background
+            else -> R.drawable.widget_cell_background
+          }
         )
         views.setInt(
           slotToggleIds[index],
           "setBackgroundResource",
-          if (favorite.isOn == true) R.drawable.widget_toggle_on else R.drawable.widget_toggle_off
+          when {
+            isSent -> R.drawable.widget_toggle_sent
+            isFailed -> R.drawable.widget_toggle_failed
+            else -> R.drawable.widget_toggle_off
+          }
         )
         views.setOnClickPendingIntent(slotId, toggleIntent(context, favorite.id))
         views.setOnClickPendingIntent(slotToggleIds[index], toggleIntent(context, favorite.id))
       }
 
       return views
+    }
+
+    private fun updateWidgetsWithFeedback(
+      context: Context,
+      sendingFavoriteId: String? = null,
+      sentFavoriteId: String? = null,
+      failedFavoriteId: String? = null
+    ) {
+      val manager = AppWidgetManager.getInstance(context)
+      val component = ComponentName(context, ReflektHomeWidgetProvider::class.java)
+      val widgetIds = manager.getAppWidgetIds(component)
+      widgetIds.forEach { widgetId ->
+        manager.updateAppWidget(
+          widgetId,
+          buildViews(context, manager, widgetId, sendingFavoriteId, sentFavoriteId, failedFavoriteId)
+        )
+      }
     }
 
     private fun maxSlotsFor(manager: AppWidgetManager, widgetId: Int): Int {
@@ -211,11 +255,17 @@ class ReflektHomeWidgetProvider : AppWidgetProvider() {
       val deviceMac = favorite.deviceMac ?: return
       val pin = favorite.pin ?: return
 
-      val currentState = HomeWidgetNetwork.currentPinState(baseURL, token, deviceMac, pin) ?: return
-      val nextState = !currentState
+      updateWidgetsWithFeedback(context, sendingFavoriteId = favoriteId)
+
+      val nextState = !(favorite.isOn ?: false)
       if (HomeWidgetNetwork.sendPresenceCommand(baseURL, token, deviceMac, pin, nextState)) {
         HomeWidgetStore.updateFavoriteState(context, favoriteId, nextState)
+        updateWidgetsWithFeedback(context, sentFavoriteId = favoriteId)
+      } else {
+        updateWidgetsWithFeedback(context, failedFavoriteId = favoriteId)
       }
+
+      Thread.sleep(1500)
       updateAll(context)
     }
   }
