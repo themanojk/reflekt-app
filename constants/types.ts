@@ -21,6 +21,11 @@ export type RootStackParamList = {
   AddSwitchboardAdmin: undefined;
   Profile: undefined;
   ContactUs: undefined;
+  WifiConfig: {
+    initialSSID?: string;
+    initialPassword?: string;
+    onSave?: (config: { ssid: string; password: string }) => Promise<void> | void;
+  };
   Room: {
     roomId: string;
     roomName: string;
