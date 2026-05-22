@@ -14,6 +14,7 @@ import Constants from "expo-constants";
 import {
   Bell,
   CreditCard as Edit2,
+  HelpCircle,
   Mail,
   Phone,
   Save,
@@ -576,6 +577,16 @@ export default function ProfileScreen({ navigation }: any) {
 
           <TouchableOpacity
             style={styles.actionButtonNeutral}
+            onPress={() => navigation.navigate("ContactUs")}
+          >
+            <View style={styles.actionButtonContent}>
+              <HelpCircle size={18} color="#e2e8f0" />
+              <Text style={styles.actionButtonText}>Contact Us</Text>
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.actionButtonNeutral}
             onPress={handleClearBoardCache}
           >
             <Text style={styles.actionButtonText}>Clear Board Cache</Text>
@@ -825,6 +836,12 @@ const styles = StyleSheet.create({
     color: "#e2e8f0",
     fontSize: 15,
     fontWeight: "600",
+  },
+  actionButtonContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
   },
   actionButtonTextDanger: {
     color: "#ef4444",

@@ -1,4 +1,13 @@
-import { RequestOTP, requestOtp, verifyOtp } from '@/api/auth';
+import {
+  changePasscode,
+  completeMandatoryEmail,
+  loginWithPasscode,
+  PasscodeAuthResponse,
+  PasscodeAuthenticated,
+  RequestOTP,
+  requestOtp,
+  verifyOtp,
+} from '@/api/auth';
 import { fetchServiceIds } from '@/api/service';
 import { unregisterCurrentPushToken } from '@/services/pushNotifications';
 import { clearWidgetData } from '@/utils/widgetSync';
@@ -12,6 +21,16 @@ interface AuthContextValue {
   logout: () => Promise<void>;
   signInWithPhone: (phone: string) => Promise<string>;
   verifyOTP: (phone: string, token: string) => Promise<{ error: any }> | Promise<any>;
+  loginPasscode: (phone: string, passcode: string) => Promise<PasscodeAuthResponse>;
+  changeUserPasscode: (
+    payload: {
+      currentPasscode: string;
+      newPasscode: string;
+      confirmPasscode: string;
+    },
+    token: string,
+  ) => Promise<PasscodeAuthResponse>;
+  completeEmail: (email: string, token: string) => Promise<PasscodeAuthResponse>;
 }
 export const AuthContext = createContext<AuthContextValue>(null!);
 
@@ -34,6 +53,46 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return data.transaction_id;
   };
 
+  const persistAuthenticatedUser = async (response: PasscodeAuthenticated) => {
+    const { jwtToken, user } = response;
+    await setToken(jwtToken);
+    const services = await fetchServiceIds();
+    await setESPServiceIds(services);
+    await setUser(user);
+    setUserState(user);
+  };
+
+  const loginPasscode = async (phone: string, passcode: string) => {
+    const response = await loginWithPasscode(phone, passcode);
+    if (response.success && response.status === 'authenticated') {
+      await persistAuthenticatedUser(response);
+    }
+    return response;
+  };
+
+  const changeUserPasscode = async (
+    payload: {
+      currentPasscode: string;
+      newPasscode: string;
+      confirmPasscode: string;
+    },
+    token: string,
+  ) => {
+    const response = await changePasscode(payload, token);
+    if (response.success && response.status === 'authenticated') {
+      await persistAuthenticatedUser(response);
+    }
+    return response;
+  };
+
+  const completeEmail = async (email: string, token: string) => {
+    const response = await completeMandatoryEmail(email, token);
+    if (response.success && response.status === 'authenticated') {
+      await persistAuthenticatedUser(response);
+    }
+    return response;
+  };
+
   const verifyOTP = async (transactionId: string, otp: string) => {
     if (!otp) {
       return { error: { message: "Invalid OTP" } };
@@ -46,12 +105,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       if ("jwtToken" in response) {
-        const { jwtToken, user } = response;
-        const services = await fetchServiceIds();
-        await setESPServiceIds(services);
-        await setToken(jwtToken);
-        await setUser(user);
-        setUserState(user);
+        await persistAuthenticatedUser({
+          success: true,
+          status: 'authenticated',
+          jwtToken: response.jwtToken,
+          user: response.user,
+        });
         return { error: null };
       }
       return { error: { message: "Unexpected login response" } };
@@ -78,7 +137,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, logout, signInWithPhone, verifyOTP }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        loading,
+        logout,
+        signInWithPhone,
+        verifyOTP,
+        loginPasscode,
+        changeUserPasscode,
+        completeEmail,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

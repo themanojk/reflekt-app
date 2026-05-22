@@ -20,6 +20,7 @@ export type RootStackParamList = {
     | undefined;
   AddSwitchboardAdmin: undefined;
   Profile: undefined;
+  ContactUs: undefined;
   Room: {
     roomId: string;
     roomName: string;
