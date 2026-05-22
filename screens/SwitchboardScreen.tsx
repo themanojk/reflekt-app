@@ -75,6 +75,7 @@ import {
   AppState,
   AppStateStatus,
   Easing,
+  GestureResponderEvent,
   KeyboardAvoidingView,
   Modal,
   PanResponder,
@@ -82,13 +83,21 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  StyleProp,
   Text,
   TextInput,
   TouchableOpacity,
   Vibration,
   View,
+  ViewStyle,
 } from "react-native";
 import { Device as BleDevice } from "react-native-ble-plx";
+import Reanimated, {
+  interpolate,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from "react-native-reanimated";
 import Svg, {
   Circle,
   Defs,
@@ -349,6 +358,145 @@ const CardLoadingOverlay = () => {
         ]}
       />
     </Animated.View>
+  );
+};
+
+type LiquidCardShellProps = {
+  active?: boolean;
+  style?: StyleProp<ViewStyle>;
+  children: (pressHandlers: {
+    onPressIn: (event?: GestureResponderEvent) => void;
+    onPressOut: () => void;
+  }) => React.ReactNode;
+};
+
+const LiquidCardShell = ({
+  active = false,
+  style,
+  children,
+}: LiquidCardShellProps) => {
+  const enableLiquid = Platform.OS === "ios";
+  const pressProgress = useSharedValue(0);
+  const focusX = useSharedValue(0.5);
+  const focusY = useSharedValue(0.28);
+
+  const handlePressIn = React.useCallback(
+    (event?: GestureResponderEvent) => {
+      if (!enableLiquid) return;
+      const locationX = event?.nativeEvent?.locationX ?? 0;
+      const locationY = event?.nativeEvent?.locationY ?? 0;
+      focusX.value = Math.max(0, Math.min(1, locationX / 180));
+      focusY.value = Math.max(0, Math.min(1, locationY / 170));
+      pressProgress.value = withSpring(1, {
+        damping: 16,
+        stiffness: 260,
+        mass: 0.72,
+      });
+    },
+    [enableLiquid, focusX, focusY, pressProgress],
+  );
+
+  const handlePressOut = React.useCallback(() => {
+    if (!enableLiquid) return;
+    pressProgress.value = withSpring(0, {
+      damping: 18,
+      stiffness: 240,
+      mass: 0.82,
+    });
+  }, [enableLiquid, pressProgress]);
+
+  const shellStyle = useAnimatedStyle(() => {
+    if (!enableLiquid) return {};
+    const pointerX = focusX.value - 0.5;
+    const pointerY = focusY.value - 0.5;
+    return {
+      transform: [
+        { perspective: 900 },
+        {
+          rotateX: `${interpolate(
+            pressProgress.value,
+            [0, 1],
+            [0, pointerY * -6],
+          )}deg`,
+        },
+        {
+          rotateY: `${interpolate(
+            pressProgress.value,
+            [0, 1],
+            [0, pointerX * 8],
+          )}deg`,
+        },
+        {
+          scale: interpolate(pressProgress.value, [0, 1], [1, 0.985]),
+        },
+        {
+          translateY: interpolate(pressProgress.value, [0, 1], [0, -2.5]),
+        },
+      ],
+      shadowOpacity: active
+        ? interpolate(pressProgress.value, [0, 1], [0.5, 0.62])
+        : interpolate(pressProgress.value, [0, 1], [0.25, 0.38]),
+      shadowRadius: active
+        ? interpolate(pressProgress.value, [0, 1], [12, 16])
+        : interpolate(pressProgress.value, [0, 1], [6, 10]),
+    };
+  }, [active, enableLiquid]);
+
+  const glowStyle = useAnimatedStyle(() => {
+    if (!enableLiquid) return { opacity: 0 };
+    return {
+      opacity: interpolate(pressProgress.value, [0, 1], [0.16, 0.32]),
+      transform: [
+        { translateX: interpolate(focusX.value, [0, 1], [-34, 64]) },
+        { translateY: interpolate(focusY.value, [0, 1], [-44, 64]) },
+        { scale: interpolate(pressProgress.value, [0, 1], [1, 1.08]) },
+      ],
+    };
+  });
+
+  const contentStyle = useAnimatedStyle(() => {
+    if (!enableLiquid) return {};
+    const pointerX = focusX.value - 0.5;
+    const pointerY = focusY.value - 0.5;
+    return {
+      transform: [
+        {
+          translateX: interpolate(
+            pressProgress.value,
+            [0, 1],
+            [0, pointerX * 4.5],
+          ),
+        },
+        {
+          translateY: interpolate(
+            pressProgress.value,
+            [0, 1],
+            [0, pointerY * 5 - 1.5],
+          ),
+        },
+      ],
+    };
+  }, [enableLiquid]);
+
+  return (
+    <Reanimated.View style={[style, shellStyle]}>
+      {enableLiquid ? (
+        <Reanimated.View
+          pointerEvents="none"
+          style={[
+            styles.deviceCardLiquidGlow,
+            active && styles.deviceCardLiquidGlowActive,
+            glowStyle,
+          ]}
+        />
+      ) : null}
+      <Reanimated.View style={[styles.deviceCardContent, contentStyle]}>
+        {children({
+          onPressIn: handlePressIn,
+          onPressOut: handlePressOut,
+        })}
+      </Reanimated.View>
+    </Reanimated.View>
   );
 };
 
@@ -2581,115 +2729,169 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     const favoriteId = toWidgetFavoriteId(device.id);
     const isFavorite = widgetFavoriteIds.includes(favoriteId);
 
-    const favoriteButton = (
-      <Pressable
-        style={[
-          styles.favoriteTopButton,
-          isFavorite && styles.favoriteTopButtonActive,
-        ]}
-        hitSlop={14}
-        pressRetentionOffset={14}
-        onPress={() => {
-          void toggleWidgetFavoriteForDevice(device, isActive, displayName);
-        }}
-      >
-        <Star
-          size={16}
-          color={isFavorite ? "#fbbf24" : "#94a3b8"}
-          fill={isFavorite ? "#fbbf24" : "transparent"}
-        />
-      </Pressable>
-    );
-
-    const cardTop = (
-      <>
-        <View style={[styles.deviceIcon, isActive && styles.deviceIconActive]}>
-          <IconComponent
-            size={26}
-            color={isActive ? "#fff" : "#64748b"}
-            strokeWidth={1.5}
-          />
-        </View>
-        <View style={[styles.deviceInfo, isFan && styles.deviceInfoFan]}>
-          <Text
-            style={[styles.deviceName, isActive && styles.deviceNameActive]}
-          >
-            {displayName}
-          </Text>
-        </View>
-        <View
-          style={[
-            styles.deviceStatus,
-            { backgroundColor: isActive ? "#10b981" : "#64748b" },
-          ]}
-        />
-        {favoriteButton}
-      </>
-    );
-
     if (!isFan) {
       return (
-        <View
+        <LiquidCardShell
           key={device.id}
+          active={isActive}
           style={[styles.deviceCard, isActive && styles.deviceCardActive]}
         >
-          <TouchableOpacity
-            onPress={() => toggleDevice(device.id)}
-            activeOpacity={0.85}
-            disabled={isTogglePending}
-          >
-            {cardTop}
-          </TouchableOpacity>
-          {isTogglePending && <CardLoadingOverlay />}
-        </View>
+          {({ onPressIn, onPressOut }) => (
+            <>
+              <TouchableOpacity
+                onPress={() => toggleDevice(device.id)}
+                activeOpacity={0.85}
+                disabled={isTogglePending}
+                onPressIn={onPressIn}
+                onPressOut={onPressOut}
+              >
+                <View
+                  style={[styles.deviceIcon, isActive && styles.deviceIconActive]}
+                >
+                  <IconComponent
+                    size={26}
+                    color={isActive ? "#fff" : "#64748b"}
+                    strokeWidth={1.5}
+                  />
+                </View>
+                <View style={styles.deviceInfo}>
+                  <Text
+                    style={[styles.deviceName, isActive && styles.deviceNameActive]}
+                  >
+                    {displayName}
+                  </Text>
+                </View>
+                <View
+                  style={[
+                    styles.deviceStatus,
+                    { backgroundColor: isActive ? "#10b981" : "#64748b" },
+                  ]}
+                />
+              </TouchableOpacity>
+              <Pressable
+                style={[
+                  styles.favoriteTopButton,
+                  isFavorite && styles.favoriteTopButtonActive,
+                ]}
+                hitSlop={14}
+                pressRetentionOffset={14}
+                onPressIn={onPressIn}
+                onPressOut={onPressOut}
+                onPress={() => {
+                  void toggleWidgetFavoriteForDevice(
+                    device,
+                    isActive,
+                    displayName,
+                  );
+                }}
+              >
+                <Star
+                  size={16}
+                  color={isFavorite ? "#fbbf24" : "#94a3b8"}
+                  fill={isFavorite ? "#fbbf24" : "transparent"}
+                />
+              </Pressable>
+              {isTogglePending && <CardLoadingOverlay />}
+            </>
+          )}
+        </LiquidCardShell>
       );
     }
 
     return (
-      <View
+      <LiquidCardShell
         key={device.id}
+        active={isActive}
         style={[styles.deviceCard, isActive && styles.deviceCardActive]}
       >
-        <TouchableOpacity
-          onPress={() => toggleDevice(device.id)}
-          disabled={isTogglePending}
-        >
-          {cardTop}
-        </TouchableOpacity>
-        <View style={styles.speedControllerBox}>
-          <View style={styles.speedLabelRow}>
-            <Text style={styles.label}>Speed</Text>
-          </View>
-          <View style={styles.sliderRow}>
-            <View style={styles.sliderWrap}>
-              <HingeSlider
-                value={speedValue}
-                minimumValue={0}
-                maximumValue={5}
-                step={1}
-                // live UI update (no network)
-                onValueChange={(v: number) => {
-                  const clamped = Math.max(0, Math.min(5, Math.round(v)));
-                  setDevices((prev) =>
-                    prev.map((d) =>
-                      d.id === device.id
-                        ? {
-                            ...d,
-                            speed: clamped,
-                            is_on: clamped > 0 ? true : d.is_on,
-                          }
-                        : d,
-                    ),
-                  );
-                }}
-                // commit on release
-                onSlidingComplete={(v: number) => changeDeviceSpeed(device, v)}
-                trackHeight={20}
+        {({ onPressIn, onPressOut }) => (
+          <>
+            <TouchableOpacity
+              onPress={() => toggleDevice(device.id)}
+              disabled={isTogglePending}
+              onPressIn={onPressIn}
+              onPressOut={onPressOut}
+            >
+              <View
+                style={[styles.deviceIcon, isActive && styles.deviceIconActive]}
+              >
+                <IconComponent
+                  size={26}
+                  color={isActive ? "#fff" : "#64748b"}
+                  strokeWidth={1.5}
+                />
+              </View>
+              <View style={[styles.deviceInfo, styles.deviceInfoFan]}>
+                <Text
+                  style={[styles.deviceName, isActive && styles.deviceNameActive]}
+                >
+                  {displayName}
+                </Text>
+              </View>
+              <View
+                style={[
+                  styles.deviceStatus,
+                  { backgroundColor: isActive ? "#10b981" : "#64748b" },
+                ]}
               />
+            </TouchableOpacity>
+            <Pressable
+              style={[
+                styles.favoriteTopButton,
+                isFavorite && styles.favoriteTopButtonActive,
+              ]}
+              hitSlop={14}
+              pressRetentionOffset={14}
+              onPressIn={onPressIn}
+              onPressOut={onPressOut}
+              onPress={() => {
+                void toggleWidgetFavoriteForDevice(device, isActive, displayName);
+              }}
+            >
+              <Star
+                size={16}
+                color={isFavorite ? "#fbbf24" : "#94a3b8"}
+                fill={isFavorite ? "#fbbf24" : "transparent"}
+              />
+            </Pressable>
+            <View style={styles.speedControllerBox}>
+              <View style={styles.speedLabelRow}>
+                <Text style={styles.label}>Speed</Text>
+              </View>
+              <View style={styles.sliderRow}>
+                <View style={styles.sliderWrap}>
+                  <HingeSlider
+                    value={speedValue}
+                    minimumValue={0}
+                    maximumValue={5}
+                    step={1}
+                    // live UI update (no network)
+                    onValueChange={(v: number) => {
+                      const clamped = Math.max(0, Math.min(5, Math.round(v)));
+                      setDevices((prev) =>
+                        prev.map((d) =>
+                          d.id === device.id
+                            ? {
+                                ...d,
+                                speed: clamped,
+                                is_on: clamped > 0 ? true : d.is_on,
+                              }
+                            : d,
+                        ),
+                      );
+                    }}
+                    // commit on release
+                    onSlidingComplete={(v: number) =>
+                      changeDeviceSpeed(device, v)
+                    }
+                    trackHeight={20}
+                  />
+                </View>
+              </View>
             </View>
-          </View>
-        </View>
-        {isTogglePending && <CardLoadingOverlay />}
+            {isTogglePending && <CardLoadingOverlay />}
+          </>
+        )}
 
         {/* {device.device_type === 'fan' && <View style={styles.speedControllerBox}>
           <View style={styles.sliderRow}>
@@ -2707,7 +2909,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           </View>
 
           </View>} */}
-      </View>
+      </LiquidCardShell>
     );
   };
 
@@ -4958,6 +5160,21 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     elevation: 6,
     overflow: "hidden",
+  },
+  deviceCardContent: {
+    flex: 1,
+  },
+  deviceCardLiquidGlow: {
+    position: "absolute",
+    top: -62,
+    left: -46,
+    width: 168,
+    height: 168,
+    borderRadius: 84,
+    backgroundColor: "rgba(255, 255, 255, 0.12)",
+  },
+  deviceCardLiquidGlowActive: {
+    backgroundColor: "rgba(255, 255, 255, 0.18)",
   },
   deviceCardActive: {
     backgroundColor: "rgb(70, 110, 190)",

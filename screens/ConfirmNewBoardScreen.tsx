@@ -1,5 +1,6 @@
 import { addDevice, fetchDevicesByRoomForUser } from "@/api/devics";
 import { addRoom } from "@/api/room";
+import LiquidTouchable from "@/components/LiquidTouchable";
 import { useToast } from "@/contexts/ToastContext";
 import { getRoomsLocal } from "@/db/rooms.local";
 import { clearPendingSwitchboardDeviceId } from "@/utils/storage";
@@ -225,9 +226,9 @@ export default function ConfirmNewBoardScreen({ navigation, route }: any) {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
+        <LiquidTouchable onPress={() => navigation.goBack()} borderRadius={16}>
           <Text style={styles.backButton}>Cancel</Text>
-        </TouchableOpacity>
+        </LiquidTouchable>
         <Text style={styles.title}>New Board</Text>
         <View style={styles.placeholder} />
       </View>
@@ -247,7 +248,7 @@ export default function ConfirmNewBoardScreen({ navigation, route }: any) {
             <Text style={styles.label}>Select Room</Text>
             <ScrollView style={styles.roomList} contentContainerStyle={styles.roomListContent}>
               {rooms.map((room) => (
-                <TouchableOpacity
+                <LiquidTouchable
                   key={room.id}
                   style={[
                     styles.roomRow,
@@ -257,17 +258,19 @@ export default function ConfirmNewBoardScreen({ navigation, route }: any) {
                     setSelectedRoomId(room.id);
                     setSelectedRoom(room);
                   }}
+                  borderRadius={16}
                 >
                   <Text style={styles.roomRowText}>{room.name}</Text>
-                </TouchableOpacity>
+                </LiquidTouchable>
               ))}
             </ScrollView>
-            <TouchableOpacity
+            <LiquidTouchable
               style={styles.inlineAction}
               onPress={() => setCreateRoomMode(true)}
+              borderRadius={16}
             >
               <Text style={styles.inlineActionText}>Create New Room</Text>
-            </TouchableOpacity>
+            </LiquidTouchable>
           </>
         ) : (
           <>
@@ -287,13 +290,14 @@ export default function ConfirmNewBoardScreen({ navigation, route }: any) {
                 const IconComponent = item.icon;
                 const isSelected = newRoomIcon === item.name;
                 return (
-                  <TouchableOpacity
+                  <LiquidTouchable
                     key={item.name}
                     style={[
                       styles.iconButton,
                       isSelected && styles.iconButtonSelected,
                     ]}
                     onPress={() => setNewRoomIcon(item.name)}
+                    borderRadius={18}
                   >
                     <IconComponent
                       size={24}
@@ -307,37 +311,43 @@ export default function ConfirmNewBoardScreen({ navigation, route }: any) {
                     >
                       {item.label}
                     </Text>
-                  </TouchableOpacity>
+                  </LiquidTouchable>
                 );
               })}
             </View>
             {rooms.length > 0 ? (
-              <TouchableOpacity
+              <LiquidTouchable
                 style={styles.inlineAction}
                 onPress={() => setCreateRoomMode(false)}
+                borderRadius={16}
               >
                 <Text style={styles.inlineActionText}>Back To Room Selection</Text>
-              </TouchableOpacity>
+              </LiquidTouchable>
             ) : null}
           </>
         )}
       </View>
 
       <View style={styles.footer}>
-        <TouchableOpacity style={styles.footerButtonGhost} onPress={() => navigation.goBack()}>
+        <LiquidTouchable
+          style={styles.footerButtonGhost}
+          onPress={() => navigation.goBack()}
+          borderRadius={18}
+        >
           <Text style={styles.footerGhostText}>Cancel</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
+        </LiquidTouchable>
+        <LiquidTouchable
           style={[styles.footerButton, saving && styles.buttonDisabled]}
           onPress={handleContinue}
           disabled={saving}
+          borderRadius={18}
         >
           {saving ? (
             <ActivityIndicator color="#0f172a" />
           ) : (
             <Text style={styles.footerButtonText}>Save</Text>
           )}
-        </TouchableOpacity>
+        </LiquidTouchable>
       </View>
     </View>
   );

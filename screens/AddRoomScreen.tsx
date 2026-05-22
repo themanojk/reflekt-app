@@ -1,4 +1,5 @@
 import { addRoom } from "@/api/room";
+import LiquidTouchable from "@/components/LiquidTouchable";
 import {
   Bath,
   Bed,
@@ -65,9 +66,9 @@ export default function AddRoomScreen({ navigation }: any) {
       keyboardDismissMode="on-drag"
     >
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
+        <LiquidTouchable onPress={() => navigation.goBack()} borderRadius={16}>
           <Text style={styles.cancelButton}>Cancel</Text>
-        </TouchableOpacity>
+        </LiquidTouchable>
         <Text style={styles.title}>Add Room</Text>
         <View style={styles.placeholder} />
       </View>
@@ -131,17 +132,18 @@ export default function AddRoomScreen({ navigation }: any) {
           })}
         </View>
 
-        <TouchableOpacity
+        <LiquidTouchable
           style={[styles.button, loading && styles.buttonDisabled]}
           onPress={handleAddRoom}
           disabled={loading}
+          borderRadius={18}
         >
           {loading ? (
             <ActivityIndicator color="#fff" />
           ) : (
             <Text style={styles.buttonText}>Add Room</Text>
           )}
-        </TouchableOpacity>
+        </LiquidTouchable>
       </View>
     </KeyboardAwareScrollView>
   );

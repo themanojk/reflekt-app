@@ -1,4 +1,5 @@
 import { DatabaseDevice } from "@/api/devics";
+import LiquidTouchable from "@/components/LiquidTouchable";
 import { ROOM_ICONS } from "@/constants";
 import type { RootStackParamList } from "@/constants/types";
 import { getSwitchboardsByRoomId } from "@/db/switchboards.local";
@@ -97,13 +98,14 @@ export default function RoomScreen({ route, navigation }: Props) {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity
+        <LiquidTouchable
           style={styles.backButton}
           onPress={() => navigation.goBack()}
+          borderRadius={16}
         >
           <ChevronLeft size={20} color="#fff" />
           <Text style={styles.backText}>Back</Text>
-        </TouchableOpacity>
+        </LiquidTouchable>
       </View>
 
       <ScrollView
@@ -128,9 +130,11 @@ export default function RoomScreen({ route, navigation }: Props) {
           {switchboards.map((switchboard) => {
             console.log(switchboard);
             return (
-              <TouchableOpacity
+              <LiquidTouchable
                 key={switchboard.id}
                 style={styles.switchboardCard}
+                borderRadius={26}
+                intensity="medium"
                 onPress={() =>
                   navigation.navigate("Switchboard", {
                     service_id: switchboard.service_id,
@@ -160,13 +164,13 @@ export default function RoomScreen({ route, navigation }: Props) {
                     </View>
                   )}
                 </View>
-                <TouchableOpacity
+                <LiquidTouchable
                   style={styles.toggleContainer}
                   onPress={(e) => {
                     e.stopPropagation();
                     togglePower(switchboard._id);
                   }}
-                  activeOpacity={0.8}
+                  borderRadius={18}
                 >
                   <Animated.View
                     style={[
@@ -248,18 +252,19 @@ export default function RoomScreen({ route, navigation }: Props) {
                       ]}
                     />
                   </Animated.View>
-                </TouchableOpacity>
-              </TouchableOpacity>
+                </LiquidTouchable>
+              </LiquidTouchable>
             );
           })}
 
-          <TouchableOpacity
+          <LiquidTouchable
             style={styles.addButton}
             onPress={() => navigation.navigate("AddSwitchboard", { roomId })}
+            borderRadius={20}
           >
             <Plus size={20} color="#fff" strokeWidth={2.5} />
             <Text style={styles.addButtonText}>Add Switchboard</Text>
-          </TouchableOpacity>
+          </LiquidTouchable>
         </View>
       </ScrollView>
     </View>

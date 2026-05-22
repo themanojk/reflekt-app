@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import LiquidTouchable from "@/components/LiquidTouchable";
 import {
   ActivityIndicator,
   Alert,
@@ -286,17 +287,18 @@ export default function LoginScreen() {
               autoFocus={step === "credentials" && phone.length === 10}
             />
 
-            <TouchableOpacity
+            <LiquidTouchable
               style={[styles.button, loading && styles.buttonDisabled]}
               onPress={handleLogin}
               disabled={loading}
+              borderRadius={18}
             >
               {loading ? (
                 <ActivityIndicator color="#fff" />
               ) : (
                 <Text style={styles.buttonText}>Login</Text>
               )}
-            </TouchableOpacity>
+            </LiquidTouchable>
           </View>
         )}
 
@@ -329,17 +331,18 @@ export default function LoginScreen() {
               editable={!loading}
             />
 
-            <TouchableOpacity
+            <LiquidTouchable
               style={[styles.button, loading && styles.buttonDisabled]}
               onPress={handleChangePasscode}
               disabled={loading}
+              borderRadius={18}
             >
               {loading ? (
                 <ActivityIndicator color="#fff" />
               ) : (
                 <Text style={styles.buttonText}>Save Passcode</Text>
               )}
-            </TouchableOpacity>
+            </LiquidTouchable>
           </View>
         )}
 
@@ -362,28 +365,30 @@ export default function LoginScreen() {
               ref={emailInputRef}
             />
 
-            <TouchableOpacity
+            <LiquidTouchable
               style={[styles.button, loading && styles.buttonDisabled]}
               onPress={handleCompleteEmail}
               disabled={loading}
+              borderRadius={18}
             >
               {loading ? (
                 <ActivityIndicator color="#fff" />
               ) : (
                 <Text style={styles.buttonText}>Continue</Text>
               )}
-            </TouchableOpacity>
+            </LiquidTouchable>
           </View>
         )}
 
         {step !== "credentials" && (
-          <TouchableOpacity
+          <LiquidTouchable
             style={styles.backButton}
             onPress={resetToLogin}
             disabled={loading}
+            borderRadius={16}
           >
             <Text style={styles.backButtonText}>Back to Login</Text>
-          </TouchableOpacity>
+          </LiquidTouchable>
         )}
       </View>
     </KeyboardAwareScrollView>

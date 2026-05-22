@@ -3,6 +3,7 @@ import {
   getContactContent,
   submitSupportRequest,
 } from "@/api/support";
+import LiquidTouchable from "@/components/LiquidTouchable";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   Clock,
@@ -114,9 +115,9 @@ export default function ContactUsScreen({ navigation }: any) {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
+        <LiquidTouchable onPress={() => navigation.goBack()} borderRadius={16}>
           <Text style={styles.backButton}>Back</Text>
-        </TouchableOpacity>
+        </LiquidTouchable>
         <Text style={styles.title}>{contact?.title || "Contact Us"}</Text>
         <View style={styles.placeholder} />
       </View>
@@ -137,35 +138,38 @@ export default function ContactUsScreen({ navigation }: any) {
           <Text style={styles.sectionTitle}>Support Details</Text>
 
           {supportEmail ? (
-            <TouchableOpacity
+            <LiquidTouchable
               style={styles.contactRow}
               onPress={() => openUrl(`mailto:${supportEmail}`)}
+              borderRadius={18}
             >
               <Mail size={18} color="#94a3b8" />
               <Text style={styles.contactText}>{supportEmail}</Text>
-            </TouchableOpacity>
+            </LiquidTouchable>
           ) : null}
 
           {supportPhone ? (
-            <TouchableOpacity
+            <LiquidTouchable
               style={styles.contactRow}
               onPress={() => openUrl(`tel:${supportPhone}`)}
+              borderRadius={18}
             >
               <Phone size={18} color="#94a3b8" />
               <Text style={styles.contactText}>{supportPhone}</Text>
-            </TouchableOpacity>
+            </LiquidTouchable>
           ) : null}
 
           {whatsappNumber ? (
-            <TouchableOpacity
+            <LiquidTouchable
               style={styles.contactRow}
               onPress={() =>
                 openUrl(`https://wa.me/${whatsappNumber.replace(/\D/g, "")}`)
               }
+              borderRadius={18}
             >
               <MessageCircle size={18} color="#94a3b8" />
               <Text style={styles.contactText}>{whatsappNumber}</Text>
-            </TouchableOpacity>
+            </LiquidTouchable>
           ) : null}
 
           {contact?.businessHours ? (
@@ -232,10 +236,11 @@ export default function ContactUsScreen({ navigation }: any) {
             textAlignVertical="top"
           />
 
-          <TouchableOpacity
+          <LiquidTouchable
             style={[styles.submitButton, submitting && styles.buttonDisabled]}
             onPress={handleSubmit}
             disabled={submitting}
+            borderRadius={18}
           >
             {submitting ? (
               <ActivityIndicator color="#fff" />
@@ -245,7 +250,7 @@ export default function ContactUsScreen({ navigation }: any) {
                 <Text style={styles.submitButtonText}>Submit Request</Text>
               </>
             )}
-          </TouchableOpacity>
+          </LiquidTouchable>
         </View>
       </ScrollView>
     </View>

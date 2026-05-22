@@ -10,6 +10,7 @@ import {
   registerDeviceForPushNotifications,
 } from "@/services/pushNotifications";
 import { clearBoardCache, clearSensorCache, setUser } from "@/utils/storage";
+import LiquidTouchable from "@/components/LiquidTouchable";
 import Constants from "expo-constants";
 import {
   Bell,
@@ -313,9 +314,9 @@ export default function ProfileScreen({ navigation }: any) {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
+        <LiquidTouchable onPress={() => navigation.goBack()} borderRadius={16}>
           <Text style={styles.backButton}>← Back</Text>
-        </TouchableOpacity>
+        </LiquidTouchable>
         <Text style={styles.title}>Profile</Text>
         {!editing ? (
           <Pressable
@@ -416,10 +417,11 @@ export default function ProfileScreen({ navigation }: any) {
         </View>
 
         {editing && (
-          <TouchableOpacity
+          <LiquidTouchable
             style={[styles.saveButton, saving && styles.buttonDisabled]}
             onPress={handleSave}
             disabled={saving}
+            borderRadius={18}
           >
             {saving ? (
               <ActivityIndicator color="#fff" />
@@ -429,7 +431,7 @@ export default function ProfileScreen({ navigation }: any) {
                 <Text style={styles.saveButtonText}>Save Changes</Text>
               </>
             )}
-          </TouchableOpacity>
+          </LiquidTouchable>
         )}
 
         {editing && (
@@ -448,17 +450,18 @@ export default function ProfileScreen({ navigation }: any) {
                 { icon: "👵", label: "Grandma" },
                 { icon: "👴", label: "Grandpa" },
               ].map((a) => (
-                <TouchableOpacity
+                <LiquidTouchable
                   key={a.icon}
                   style={[
                     styles.avatarOption,
                     avatar === a.icon && styles.avatarOptionActive,
                   ]}
                   onPress={() => setAvatar(a.icon)}
+                  borderRadius={18}
                 >
                   <Text style={styles.avatarEmojiSmall}>{a.icon}</Text>
                   <Text style={styles.avatarLabel}>{a.label}</Text>
-                </TouchableOpacity>
+                </LiquidTouchable>
               ))}
             </View>
           </View>
@@ -477,10 +480,11 @@ export default function ProfileScreen({ navigation }: any) {
             </Text>
           </View>
 
-          <TouchableOpacity
+          <LiquidTouchable
             style={[styles.actionButtonNeutral, pushRegistering && styles.buttonDisabled]}
             onPress={handleEnableNotifications}
             disabled={pushRegistering}
+            borderRadius={18}
           >
             {pushRegistering ? (
               <ActivityIndicator color="#fff" />
@@ -491,7 +495,7 @@ export default function ProfileScreen({ navigation }: any) {
                   : "Enable Notifications"}
               </Text>
             )}
-          </TouchableOpacity>
+          </LiquidTouchable>
 
           {preferences ? (
             <View style={styles.preferenceList}>
@@ -575,38 +579,46 @@ export default function ProfileScreen({ navigation }: any) {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Account Actions</Text>
 
-          <TouchableOpacity
+          <LiquidTouchable
             style={styles.actionButtonNeutral}
             onPress={() => navigation.navigate("ContactUs")}
+            borderRadius={18}
           >
             <View style={styles.actionButtonContent}>
               <HelpCircle size={18} color="#e2e8f0" />
               <Text style={styles.actionButtonText}>Contact Us</Text>
             </View>
-          </TouchableOpacity>
+          </LiquidTouchable>
 
-          <TouchableOpacity
+          <LiquidTouchable
             style={styles.actionButtonNeutral}
             onPress={handleClearBoardCache}
+            borderRadius={18}
           >
             <Text style={styles.actionButtonText}>Clear Board Cache</Text>
-          </TouchableOpacity>
+          </LiquidTouchable>
 
-          <TouchableOpacity
+          <LiquidTouchable
             style={styles.actionButtonNeutral}
             onPress={handleClearSensorCache}
+            borderRadius={18}
           >
             <Text style={styles.actionButtonText}>Clear Sensor Cache</Text>
-          </TouchableOpacity>
+          </LiquidTouchable>
 
-          <TouchableOpacity style={styles.actionButton} onPress={handleSignOut}>
+          <LiquidTouchable
+            style={styles.actionButton}
+            onPress={handleSignOut}
+            borderRadius={18}
+          >
             <Text style={styles.actionButtonTextDanger}>Sign Out</Text>
-          </TouchableOpacity>
+          </LiquidTouchable>
 
-          <TouchableOpacity
+          <LiquidTouchable
             style={[styles.actionButtonDelete, deleting && styles.buttonDisabled]}
             onPress={handleDeleteAccount}
             disabled={deleting}
+            borderRadius={18}
           >
             {deleting ? (
               <ActivityIndicator color="#fff" />
@@ -615,7 +627,7 @@ export default function ProfileScreen({ navigation }: any) {
                 Delete My Account & Data
               </Text>
             )}
-          </TouchableOpacity>
+          </LiquidTouchable>
         </View>
 
         <View style={styles.footer}>

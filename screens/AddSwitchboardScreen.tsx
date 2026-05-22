@@ -26,6 +26,7 @@ import {
   getLayout,
 } from "@/api/devics";
 import { fetchServiceIds } from "@/api/service";
+import LiquidTouchable from "@/components/LiquidTouchable";
 import Toast from "@/components/Toast";
 import { DATA_CHAR_UUID } from "@/constants";
 import { getCanonicalId } from "@/services/bleCanonicalId";
@@ -616,9 +617,9 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
           onHide={() => setToast({ ...toast, visible: false })}
         />
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => navigation.goBack()}>
+          <LiquidTouchable onPress={() => navigation.goBack()} borderRadius={16}>
             <Text style={styles.cancelButton}>Cancel</Text>
-          </TouchableOpacity>
+          </LiquidTouchable>
           <Text style={styles.title}>Scan Switchboard</Text>
           <View style={styles.placeholder} />
         </View>
@@ -640,11 +641,12 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
             </Text>
           </View>
 
-          <TouchableOpacity
+          <LiquidTouchable
             style={styles.scanIconWrapper}
             onPress={handleBleIconRefresh}
-            activeOpacity={0.8}
             disabled={scanning}
+            borderRadius={44}
+            intensity="medium"
           >
             {scanning && (
               <>
@@ -671,7 +673,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
             <View style={styles.scanIcon}>
               <Bluetooth size={28} color="#3b82f6" />
             </View>
-          </TouchableOpacity>
+          </LiquidTouchable>
 
           <Text style={styles.scanTitle}>
             {scanning ? "Scanning for devices..." : "Nearby Devices"}
@@ -685,7 +687,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
           {!scanning && devices.length === 0 && (
             <View style={styles.emptyState}>
               <Text style={styles.emptyText}>No devices found</Text>
-              <TouchableOpacity
+              <LiquidTouchable
                 style={styles.retryButton}
                 onPress={() => {
                   setScanning(true);
@@ -693,9 +695,10 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
                   setDevices([]);
                   runScan();
                 }}
+                borderRadius={16}
               >
                 <Text style={styles.retryButtonText}>Scan Again</Text>
-              </TouchableOpacity>
+              </LiquidTouchable>
             </View>
           )}
 
@@ -706,12 +709,13 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
                   String(dev.canonicalId || dev.id).toUpperCase()
                 );
                 return (
-                  <TouchableOpacity
+                  <LiquidTouchable
                     key={dev.id}
                     style={[styles.deviceCard, isAdded && styles.deviceCardAdded]}
                     onPress={() => !isAdded && handleDeviceSelect(dev)}
-                    activeOpacity={isAdded ? 1 : 0.7}
                     disabled={isAdded}
+                    borderRadius={20}
+                    intensity="medium"
                   >
                     <View style={styles.deviceInfo}>
                       <Bluetooth size={20} color={isAdded ? "#475569" : "#3b82f6"} />
@@ -734,21 +738,22 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
                     ) : (
                       <Text style={styles.connectText}>Connect</Text>
                     )}
-                  </TouchableOpacity>
+                  </LiquidTouchable>
                 );
               })}
             </ScrollView>
           )}
 
-          <TouchableOpacity
+          <LiquidTouchable
             style={styles.manualButton}
             onPress={() => {
               setStep("scan");
               runScan();
             }}
+            borderRadius={16}
           >
             <Text style={styles.manualButtonText}>Refresh</Text>
-          </TouchableOpacity>
+          </LiquidTouchable>
         </View>
         </ScrollView>
       </View>
@@ -762,9 +767,9 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
       extraScrollHeight={16}
     >
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => setStep("scan")}>
+        <LiquidTouchable onPress={() => setStep("scan")} borderRadius={16}>
           <Text style={styles.cancelButton}>Back</Text>
-        </TouchableOpacity>
+        </LiquidTouchable>
         <Text style={styles.title}>Configure Switchboard</Text>
         <View style={styles.placeholder} />
       </View>
@@ -794,17 +799,18 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
 
         <Text style={styles.label}>WiFi Network Name</Text>
         {Platform.OS === "android" && (
-          <TouchableOpacity
+          <LiquidTouchable
             style={styles.networkPickerButton}
             onPress={openWifiPicker}
             disabled={loading || wifiPickerLoading}
+            borderRadius={16}
           >
             {wifiPickerLoading ? (
               <ActivityIndicator color="#93c5fd" size="small" />
             ) : (
               <Text style={styles.networkPickerButtonText}>Available WiFi</Text>
             )}
-          </TouchableOpacity>
+          </LiquidTouchable>
         )}
         <TextInput
           style={styles.input}
@@ -838,17 +844,18 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
           suggestions when your device supports them.
         </Text>
 
-        <TouchableOpacity
+        <LiquidTouchable
           style={[styles.button, loading && styles.buttonDisabled]}
           onPress={handleAddSwitchboard}
           disabled={loading}
+          borderRadius={18}
         >
           {loading ? (
             <ActivityIndicator color="#fff" />
           ) : (
             <Text style={styles.buttonText}>Add Switchboard</Text>
           )}
-        </TouchableOpacity>
+        </LiquidTouchable>
       </ScrollView>
 
       <Modal
@@ -861,28 +868,33 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Available WiFi</Text>
-              <TouchableOpacity onPress={() => setWifiPickerVisible(false)}>
+              <LiquidTouchable
+                onPress={() => setWifiPickerVisible(false)}
+                borderRadius={12}
+              >
                 <Text style={styles.modalClose}>Close</Text>
-              </TouchableOpacity>
+              </LiquidTouchable>
             </View>
 
-            <TouchableOpacity
+            <LiquidTouchable
               style={styles.modalRefreshButton}
               onPress={openWifiPicker}
               disabled={wifiPickerLoading}
+              borderRadius={16}
             >
               <Text style={styles.modalRefreshButtonText}>
                 {wifiPickerLoading ? "Refreshing..." : "Refresh list"}
               </Text>
-            </TouchableOpacity>
+            </LiquidTouchable>
 
             <ScrollView style={styles.modalList}>
               {wifiNetworks.length ? (
                 wifiNetworks.map((network) => (
-                  <TouchableOpacity
+                  <LiquidTouchable
                     key={`${network.ssid}-${network.bssid || "ssid"}`}
                     style={styles.networkRow}
                     onPress={() => handleWifiNetworkSelected(network)}
+                    borderRadius={16}
                   >
                     <View>
                       <Text style={styles.networkName}>{network.ssid}</Text>
@@ -892,7 +904,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
                       </Text>
                     </View>
                     <Text style={styles.networkPickText}>Use</Text>
-                  </TouchableOpacity>
+                  </LiquidTouchable>
                 ))
               ) : (
                 <Text style={styles.emptyWifiText}>

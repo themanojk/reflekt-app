@@ -19,6 +19,7 @@ import {
 } from "@/utils/storage";
 import { syncAppData } from "@/db_sync/app_sync";
 import DeleteWarningModal from "@/components/DeleteWarningModal";
+import LiquidTouchable from "@/components/LiquidTouchable";
 import { getCanonicalId } from "@/services/bleCanonicalId";
 import BLEManagerService from "@/services/bleManager";
 import { syncHomeWidgetSnapshot } from "@/utils/widgetSync";
@@ -978,12 +979,13 @@ export default function HomeScreen({ navigation }: any) {
             </Text>
             <Text style={styles.subtitle}>Welcome back to your smart home</Text>
           </View>
-          <TouchableOpacity
+          <LiquidTouchable
             style={styles.profileButton}
             onPress={() => navigation.navigate("Profile")}
+            borderRadius={18}
           >
             <User size={20} color="#94a3b8" strokeWidth={2} />
-          </TouchableOpacity>
+          </LiquidTouchable>
         </View>
 
         <View style={styles.section}>
@@ -1004,11 +1006,13 @@ export default function HomeScreen({ navigation }: any) {
                   switchboard.is_online,
                 );
                 return (
-                  <TouchableOpacity
+                  <LiquidTouchable
                     key={switchboard.id}
                     style={styles.switchboardCardHorizontal}
                     onLongPress={() => handleRemoveSwitchboard(switchboard)}
                     delayLongPress={500}
+                    borderRadius={24}
+                    intensity="medium"
                     onPress={() =>
                       openSwitchboardFromHome({
                         switchboardId: switchboard.id,
@@ -1043,7 +1047,7 @@ export default function HomeScreen({ navigation }: any) {
                     <Text style={styles.switchboardRoom}>
                       {switchboard.room_name}
                     </Text>
-                  </TouchableOpacity>
+                  </LiquidTouchable>
                 );
               })}
             </View>
@@ -1081,11 +1085,13 @@ export default function HomeScreen({ navigation }: any) {
                     );
 
                     return (
-                      <TouchableOpacity
+                      <LiquidTouchable
                         key={switchboard.id}
                         style={styles.switchboardCardHorizontal}
                         onLongPress={() => handleRemoveSwitchboard(switchboard)}
                         delayLongPress={500}
+                        borderRadius={24}
+                        intensity="medium"
                         onPress={() =>
                           openSwitchboardFromHome({
                             switchboardId: switchboard.id,
@@ -1119,31 +1125,33 @@ export default function HomeScreen({ navigation }: any) {
                         <Text style={styles.switchboardName} numberOfLines={1}>
                           {switchboard.name}
                         </Text>
-                      </TouchableOpacity>
+                      </LiquidTouchable>
                     );
                   })}
-                  <TouchableOpacity
+                  <LiquidTouchable
                     style={styles.addSwitchboardCard}
                     onPress={() =>
                       navigation.navigate("AddSwitchboard", { roomId: room.id })
                     }
+                    borderRadius={24}
                   >
                     <Plus size={20} color="#5b8def" strokeWidth={2.5} />
                     <Text style={styles.addSwitchboardText}>Add Board</Text>
-                  </TouchableOpacity>
+                  </LiquidTouchable>
                 </View>
               </ScrollView>
             </View>
           );
         })}
 
-        <TouchableOpacity
+        <LiquidTouchable
           style={styles.createRoomFooter}
           onPress={() => navigation.navigate("AddRoom")}
+          borderRadius={22}
         >
           <Plus size={18} color="#5b8def" strokeWidth={2.5} />
           <Text style={styles.createRoomText}>Create New Room</Text>
-        </TouchableOpacity>
+        </LiquidTouchable>
       </ScrollView>
       <Modal
         visible={newBoardModalVisible}
@@ -1265,18 +1273,20 @@ export default function HomeScreen({ navigation }: any) {
               </View>
             )}
             <View style={styles.sheetActions}>
-              <TouchableOpacity
+              <LiquidTouchable
                 style={[styles.sheetButton, styles.sheetButtonGhost]}
                 onPress={handleIgnoreNewBoard}
+                borderRadius={18}
               >
                 <Text style={styles.sheetButtonGhostText}>Not Now</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
+              </LiquidTouchable>
+              <LiquidTouchable
                 style={[styles.sheetButton, styles.sheetButtonPrimary]}
                 onPress={handleAddNewBoard}
+                borderRadius={18}
               >
                 <Text style={styles.sheetButtonPrimaryText}>Add Now</Text>
-              </TouchableOpacity>
+              </LiquidTouchable>
             </View>
           </Animated.View>
         </View>

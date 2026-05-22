@@ -2,6 +2,7 @@ import {
   openAppPermissionSettings,
   requestWifiScanPermission,
 } from "@/services/appPermissions";
+import LiquidTouchable from "@/components/LiquidTouchable";
 import { getAvailableWifiNetworks, WifiNetwork } from "@/services/wifiScanner";
 import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
 import { ChevronLeft } from "lucide-react-native";
@@ -141,14 +142,15 @@ export default function WifiConfigScreen({ navigation, route }: any) {
   return (
     <View style={styles.screen}>
       <View style={styles.header}>
-        <TouchableOpacity
+        <LiquidTouchable
           style={styles.backButton}
           onPress={() => navigation.goBack()}
           hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+          borderRadius={16}
         >
           <ChevronLeft size={20} color="#cbd5e1" />
           <Text style={styles.backText}>Back</Text>
-        </TouchableOpacity>
+        </LiquidTouchable>
         <Text style={styles.title}>WiFi Config</Text>
         <View style={styles.headerSpacer} />
       </View>
@@ -181,13 +183,14 @@ export default function WifiConfigScreen({ navigation, route }: any) {
                     const selected =
                       entryMode === "network" && ssid === network.ssid;
                     return (
-                      <TouchableOpacity
+                      <LiquidTouchable
                         key={`${network.ssid}-${network.bssid || "ssid"}`}
                         style={[
                           styles.networkRow,
                           selected && styles.networkRowSelected,
                         ]}
                         onPress={() => selectNetwork(network)}
+                        borderRadius={18}
                       >
                         <View style={styles.networkInfo}>
                           <Text
@@ -214,20 +217,21 @@ export default function WifiConfigScreen({ navigation, route }: any) {
                         >
                           {selected ? "Selected" : "Use"}
                         </Text>
-                      </TouchableOpacity>
+                      </LiquidTouchable>
                     );
                   })
                 ) : (
                   <Text style={styles.emptyWifiText}>No WiFi found</Text>
                 )}
 
-                <TouchableOpacity
+                <LiquidTouchable
                   style={[
                     styles.networkRow,
                     styles.manualRow,
                     entryMode === "manual" && styles.networkRowSelected,
                   ]}
                   onPress={selectManual}
+                  borderRadius={18}
                 >
                   <View style={styles.networkInfo}>
                     <Text
@@ -250,7 +254,7 @@ export default function WifiConfigScreen({ navigation, route }: any) {
                   >
                     {entryMode === "manual" ? "Selected" : "Choose"}
                   </Text>
-                </TouchableOpacity>
+                </LiquidTouchable>
               </ScrollView>
             )}
           </View>
@@ -260,12 +264,12 @@ export default function WifiConfigScreen({ navigation, route }: any) {
               <Text style={styles.helperText}>{permissionMessage}</Text>
               {Platform.OS === "android" ? (
                 <View style={styles.helperActions}>
-                  <TouchableOpacity onPress={() => void loadNetworks()}>
+                  <LiquidTouchable onPress={() => void loadNetworks()} borderRadius={12}>
                     <Text style={styles.helperLink}>Allow WiFi Access</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={openAppPermissionSettings}>
+                  </LiquidTouchable>
+                  <LiquidTouchable onPress={openAppPermissionSettings} borderRadius={12}>
                     <Text style={styles.helperLink}>Open Settings</Text>
-                  </TouchableOpacity>
+                  </LiquidTouchable>
                 </View>
               ) : null}
             </View>
@@ -306,24 +310,26 @@ export default function WifiConfigScreen({ navigation, route }: any) {
       </KeyboardAwareScrollView>
 
       <View style={styles.footer}>
-        <TouchableOpacity
+        <LiquidTouchable
           style={[styles.saveButton, saving && styles.buttonDisabled]}
           onPress={handleSave}
           disabled={saving}
+          borderRadius={18}
         >
           {saving ? (
             <ActivityIndicator color="#fff" size="small" />
           ) : (
             <Text style={styles.saveButtonText}>Save Configuration</Text>
           )}
-        </TouchableOpacity>
+        </LiquidTouchable>
 
-        <TouchableOpacity
+        <LiquidTouchable
           style={styles.closeButton}
           onPress={() => navigation.goBack()}
+          borderRadius={18}
         >
           <Text style={styles.closeButtonText}>Close</Text>
-        </TouchableOpacity>
+        </LiquidTouchable>
       </View>
     </View>
   );
