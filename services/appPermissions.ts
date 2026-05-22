@@ -5,6 +5,7 @@ import {
   openSettings,
   PERMISSIONS,
   request,
+  requestMultiple,
   RESULTS,
 } from "react-native-permissions";
 
@@ -71,6 +72,29 @@ export async function checkBluetoothPermission(): Promise<AppPermissionStatus> {
   return normalizePermissionStatus(
     await check(PERMISSIONS.ANDROID.ACCESS_FINE_LOCATION),
   );
+}
+
+export async function requestWifiScanPermission(): Promise<AppPermissionStatus> {
+  if (Platform.OS !== "android") return "unavailable";
+
+  if (Platform.Version >= 33) {
+    const statuses = await PermissionsAndroid.requestMultiple([
+      PermissionsAndroid.PERMISSIONS.NEARBY_WIFI_DEVICES,
+      PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+    ]);
+
+    return statuses[PermissionsAndroid.PERMISSIONS.NEARBY_WIFI_DEVICES] ===
+      PermissionsAndroid.RESULTS.GRANTED &&
+      statuses[PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION] ===
+        PermissionsAndroid.RESULTS.GRANTED
+      ? "granted"
+      : "denied";
+  }
+
+  const status = await PermissionsAndroid.request(
+    PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+  );
+  return status === PermissionsAndroid.RESULTS.GRANTED ? "granted" : "denied";
 }
 
 export async function openAppPermissionSettings() {

@@ -380,7 +380,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
   const [tempColor, setTempColor] = useState("rgb(91, 141, 239)");
   const [tempIntensity, setTempIntensity] = useState(80);
-  const [showWifiModal, setShowWifiModal] = useState(false);
   const [showSensorConfigModal, setShowSensorConfigModal] = useState(false);
   const [showPinConfigModal, setShowPinConfigModal] = useState(false);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
@@ -429,6 +428,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [availableSensors, setAvailableSensors] = useState<string[]>([]);
   const [showSensorModal, setShowSensorModal] = useState(false);
   const [pendingSensor, setPendingSensor] = useState<string | null>(null);
+  const [attachInFlight, setAttachInFlight] = useState(false);
   const [sensorStep, setSensorStep] = useState<"prompt" | "attached">("prompt");
   const [ignoredSensors, setIgnoredSensors] = useState<string[]>([]);
   const [attachedSensors, setAttachedSensors] = useState<string[]>(
@@ -468,6 +468,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const sheetTranslateY = React.useRef(new Animated.Value(0)).current;
 
   const monitorRef = React.useRef<Disposable | null>(null);
+  const attachResultResolverRef = React.useRef<
+    ((result: { ok: boolean; message?: string }) => void) | null
+  >(null);
+  const attachResultMacRef = React.useRef<string | null>(null);
   const disconnectRef = React.useRef<Disposable | null>(null);
   const mountedRef = React.useRef(true);
   const activeDeviceRef = React.useRef<BleDevice | undefined>(undefined);
@@ -826,6 +830,25 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           return;
         }
         if (raw.startsWith("SENSOR_ATTACH_")) {
+          const activeAttachMac = attachResultMacRef.current;
+          if (!activeAttachMac) {
+            return;
+          }
+          if (raw === "SENSOR_ATTACH_OK") {
+            attachResultResolverRef.current?.({ ok: true });
+          } else if (raw.startsWith("SENSOR_ATTACH_FAIL:")) {
+            attachResultResolverRef.current?.({
+              ok: false,
+              message: raw.replace("SENSOR_ATTACH_FAIL:", "").trim() || "Attach failed",
+            });
+          } else {
+            attachResultResolverRef.current?.({
+              ok: false,
+              message: raw,
+            });
+          }
+          attachResultResolverRef.current = null;
+          attachResultMacRef.current = null;
           return;
         }
         if (raw.startsWith("FAN_SPEED:")) {
@@ -1321,14 +1344,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const openScheduleManager = React.useCallback(async () => {
     const hadBlockingModal =
-      showSettings ||
-      showPinConfigModal ||
-      showWifiModal ||
-      showSensorConfigModal;
+      showSettings || showPinConfigModal || showSensorConfigModal;
     if (hadBlockingModal) {
       setShowSettings(false);
       setShowPinConfigModal(false);
-      setShowWifiModal(false);
       setShowSensorConfigModal(false);
       if (Platform.OS === "ios") {
         await new Promise((resolve) => setTimeout(resolve, 220));
@@ -1344,7 +1363,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     showPinConfigModal,
     showSensorConfigModal,
     showSettings,
-    showWifiModal,
   ]);
 
   const openScheduleEditor = (pin: number) => {
@@ -1756,7 +1774,15 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const attachSensor = async () => {
     if (!pendingSensor) return;
+    const normalizedPending = String(pendingSensor).trim().toUpperCase();
     try {
+      if (!services.length || !activeDevice) {
+        Alert.alert(
+          "Failed",
+          "Hub BLE is not connected yet. Reopen this board and try again.",
+        );
+        return;
+      }
       const apiDeviceMac = await resolveApiDeviceMac();
       if (!isMacAddress(apiDeviceMac)) {
         Alert.alert(
@@ -1765,24 +1791,53 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         );
         return;
       }
-      const apiRes = await attachSensorToDevice(apiDeviceMac, pendingSensor);
-      const attached = String(pendingSensor).trim().toUpperCase();
-      if (attached) {
-        await persistAttachedSensors([...attachedSensors, attached]);
-        await loadSensorRangeState(attached);
+      setAttachInFlight(true);
+      const attachResponse = new Promise<{ ok: boolean; message?: string }>(
+        (resolve) => {
+          attachResultResolverRef.current = resolve;
+          attachResultMacRef.current = normalizedPending;
+        },
+      );
+      const timeout = new Promise<{ ok: boolean; message?: string }>(
+        (resolve) => {
+          setTimeout(() => {
+            if (attachResultMacRef.current !== normalizedPending) {
+              return;
+            }
+            attachResultResolverRef.current = null;
+            attachResultMacRef.current = null;
+            resolve({
+              ok: false,
+              message: "Hub did not confirm pairing in time.",
+            });
+          }, 20000);
+        },
+      );
+      const cmd = `SENSOR_ATTACH:${normalizedPending}`;
+      await bleManager.sendData(activeDevice, cmd, services[0]);
+      const result = await Promise.race([attachResponse, timeout]);
+      if (!result.ok) {
+        throw new Error(result.message || "Attach failed");
       }
-      if (services.length && activeDevice) {
-        const cmd = `SENSOR_ATTACH:${pendingSensor}`;
-        await bleManager.sendData(activeDevice, cmd, services[0]);
+      await attachSensorToDevice(apiDeviceMac, normalizedPending);
+      if (normalizedPending) {
+        await persistAttachedSensors([...attachedSensors, normalizedPending]);
+        await loadSensorRangeState(normalizedPending);
       }
       setShowSensorModal(false);
       setPendingSensor(null);
       await loadPinConfigs();
       setShowPinConfigModal(true);
     } catch (e: any) {
-      Alert.alert("Failed", e?.response?.data?.message || "Attach failed");
-      setShowSensorModal(false);
+      const message =
+        e?.response?.data?.message ||
+        e?.message ||
+        "Attach failed";
+      Alert.alert("Failed", message);
     } finally {
+      attachResultResolverRef.current = null;
+      attachResultMacRef.current = null;
+      setAttachInFlight(false);
     }
   };
 
@@ -2402,26 +2457,31 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     if (wifiCreds && wifiCreds.ssid) {
       setWifiSSID(wifiCreds.ssid);
       setWifiPassword(wifiCreds.pass);
+    } else {
+      setWifiSSID("");
+      setWifiPassword("");
     }
-    setShowWifiModal(true);
+    navigation.navigate("WifiConfig", {
+      initialSSID: wifiCreds?.ssid || "",
+      initialPassword: wifiCreds?.pass || "",
+      onSave: saveWifiConfig,
+    });
   };
 
-  const saveWifiConfig = async () => {
-    if (!wifiSSID.trim()) {
-      Alert.alert("Error", "Please enter a WiFi network name");
-      return;
-    }
-
-    if (!wifiPassword.trim() || wifiPassword.length < 8) {
-      Alert.alert("Error", "Password must be at least 8 characters");
-      return;
-    }
-
-    await saveWifi(wifiSSID, wifiPassword);
+  const saveWifiConfig = async ({
+    ssid,
+    password,
+  }: {
+    ssid: string;
+    password: string;
+  }) => {
+    setWifiSSID(ssid);
+    setWifiPassword(password);
+    await saveWifi(ssid, password);
 
     try {
       if (!services.length || !activeDevice) return;
-      const text = `WIFI:${wifiSSID};${wifiPassword}`;
+      const text = `WIFI:${ssid};${password}`;
       await bleManager.safeWrite({
         device: activeDevice,
         serviceUUID: services[0],
@@ -2431,7 +2491,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       //await bleManager.sendData(activeDevice, text, services[0]);
     } catch (err) {
     } finally {
-      setShowWifiModal(false);
       Alert.alert("Success", "WiFi credentials sent to device");
     }
   };
@@ -2525,34 +2584,25 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     const favoriteButton = (
       <Pressable
         style={[
-          styles.favoriteActionButton,
-          isFavorite && styles.favoriteActionButtonActive,
+          styles.favoriteTopButton,
+          isFavorite && styles.favoriteTopButtonActive,
         ]}
-        hitSlop={12}
+        hitSlop={14}
         pressRetentionOffset={14}
         onPress={() => {
           void toggleWidgetFavoriteForDevice(device, isActive, displayName);
         }}
       >
         <Star
-          size={14}
+          size={16}
           color={isFavorite ? "#fbbf24" : "#94a3b8"}
           fill={isFavorite ? "#fbbf24" : "transparent"}
         />
-        <Text
-          style={[
-            styles.favoriteActionText,
-            isFavorite && styles.favoriteActionTextActive,
-          ]}
-        >
-          {isFavorite ? "Added to Widget" : "Add to Widget"}
-        </Text>
       </Pressable>
     );
 
     const cardTop = (
       <>
-        <View style={isActive ? styles.glassOverlay : null} />
         <View style={[styles.deviceIcon, isActive && styles.deviceIconActive]}>
           <IconComponent
             size={26}
@@ -2573,6 +2623,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             { backgroundColor: isActive ? "#10b981" : "#64748b" },
           ]}
         />
+        {favoriteButton}
       </>
     );
 
@@ -2589,7 +2640,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           >
             {cardTop}
           </TouchableOpacity>
-          {favoriteButton}
           {isTogglePending && <CardLoadingOverlay />}
         </View>
       );
@@ -2606,8 +2656,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         >
           {cardTop}
         </TouchableOpacity>
-        {favoriteButton}
-
         <View style={styles.speedControllerBox}>
           <View style={styles.speedLabelRow}>
             <Text style={styles.label}>Speed</Text>
@@ -2791,64 +2839,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           {devices.map((device) => renderDeviceCard(device))}
         </View>
       </ScrollView>
-
-      <Modal
-        visible={showWifiModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowWifiModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Configure WiFi</Text>
-              <Pressable
-                onPress={() => setShowWifiModal(false)}
-                hitSlop={{ top: 20, bottom: 20, left: 20, right: 30 }}
-                pressRetentionOffset={16}
-                style={({ pressed }) => [
-                  styles.closeIconButton,
-                  pressed && styles.closeIconButtonPressed,
-                ]}
-              >
-                <X size={24} color="#94a3b8" />
-              </Pressable>
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Network Name (SSID)</Text>
-              <TextInput
-                style={styles.input}
-                value={wifiSSID}
-                onChangeText={setWifiSSID}
-                placeholder="Enter WiFi network name"
-                placeholderTextColor="#64748b"
-                autoCapitalize="none"
-              />
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Password</Text>
-              <TextInput
-                style={styles.input}
-                value={wifiPassword}
-                onChangeText={setWifiPassword}
-                placeholder="Enter WiFi password"
-                placeholderTextColor="#64748b"
-                secureTextEntry
-                autoCapitalize="none"
-              />
-            </View>
-
-            <TouchableOpacity
-              style={styles.saveButton}
-              onPress={saveWifiConfig}
-            >
-              <Text style={styles.saveButtonText}>Save Configuration</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
 
       <Modal
         visible={showSensorModal}
@@ -3043,15 +3033,23 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                   <View style={styles.sheetActions}>
                     <TouchableOpacity
                       style={[styles.sheetBtn, styles.sheetBtnGhost]}
+                      disabled={attachInFlight}
                       onPress={ignoreSensor}
                     >
                       <Text style={styles.sheetBtnGhostText}>Ignore</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
-                      style={[styles.sheetBtn, styles.sheetBtnPrimary]}
+                      style={[
+                        styles.sheetBtn,
+                        styles.sheetBtnPrimary,
+                        attachInFlight && { opacity: 0.7 },
+                      ]}
+                      disabled={attachInFlight}
                       onPress={attachSensor}
                     >
-                      <Text style={styles.sheetBtnPrimaryText}>Attach</Text>
+                      <Text style={styles.sheetBtnPrimaryText}>
+                        {attachInFlight ? "Attaching..." : "Attach"}
+                      </Text>
                     </TouchableOpacity>
                   </View>
                 </>
@@ -4562,6 +4560,21 @@ const styles = StyleSheet.create({
   inputGroup: {
     marginBottom: 20,
   },
+  wifiPickerButton: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#3b82f6",
+    backgroundColor: "#0f274f",
+    marginBottom: 10,
+  },
+  wifiPickerButtonText: {
+    color: "#bfdbfe",
+    fontSize: 14,
+    fontWeight: "600",
+  },
   inputLabel: {
     fontSize: 14,
     fontWeight: "600",
@@ -4576,6 +4589,44 @@ const styles = StyleSheet.create({
     color: "#fff",
     borderWidth: 1,
     borderColor: "#334155",
+  },
+  wifiHelperText: {
+    color: "#94a3b8",
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 8,
+  },
+  wifiNetworkList: {
+    maxHeight: 320,
+  },
+  wifiNetworkRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "#1f2937",
+  },
+  wifiNetworkName: {
+    color: "#f8fafc",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  wifiNetworkMeta: {
+    color: "#94a3b8",
+    fontSize: 12,
+    marginTop: 4,
+  },
+  wifiNetworkAction: {
+    color: "#60a5fa",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  wifiEmptyText: {
+    color: "#94a3b8",
+    fontSize: 14,
+    lineHeight: 20,
+    paddingVertical: 16,
   },
   saveButton: {
     backgroundColor: "#5b8def",
@@ -4887,7 +4938,7 @@ const styles = StyleSheet.create({
   devicesGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    paddingHorizontal: 16,
+    paddingHorizontal: 24,
     paddingTop: 16,
     gap: 16,
     marginBottom: 32,
@@ -4896,6 +4947,7 @@ const styles = StyleSheet.create({
     width: "47%",
     backgroundColor: "#1e293b",
     borderRadius: 16,
+    borderCurve: "continuous",
     padding: 16,
     borderWidth: 1,
     borderColor: "#334155",
@@ -4915,38 +4967,21 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.5,
     shadowRadius: 12,
   },
-  glassOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: "rgba(255, 255, 255, 0.08)",
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255, 255, 255, 0.1)",
-  },
   deviceIcon: {
     width: 48,
     height: 48,
     borderRadius: 14,
-    backgroundColor: "#334155",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: "rgba(100, 116, 139, 0.3)",
+    marginBottom: 8,
   },
   deviceIconActive: {
-    backgroundColor: "rgba(255, 255, 255, 0.25)",
-    borderColor: "rgba(255, 255, 255, 0.4)",
     shadowOpacity: 0,
     shadowRadius: 0,
     elevation: 0,
   },
   deviceInfo: {
-    marginBottom: 10,
+    marginBottom: 4,
   },
   deviceInfoFan: {
     marginBottom: 0,
@@ -4993,30 +5028,23 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(251, 191, 36, 0.2)",
     borderColor: "rgba(251, 191, 36, 0.45)",
   },
-  favoriteActionButton: {
-    marginTop: 6,
-    alignSelf: "flex-start",
-    flexDirection: "row",
+  favoriteTopButton: {
+    position: "absolute",
+    top: -22,
+    right: -22,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: "rgba(15, 23, 42, 0.55)",
+    justifyContent: "center",
+    backgroundColor: "rgba(15, 23, 42, 0.72)",
     borderWidth: 1,
-    borderColor: "rgba(148, 163, 184, 0.25)",
+    borderColor: "rgba(148, 163, 184, 0.28)",
+    zIndex: 5,
   },
-  favoriteActionButtonActive: {
+  favoriteTopButtonActive: {
     backgroundColor: "rgba(251, 191, 36, 0.18)",
     borderColor: "rgba(251, 191, 36, 0.45)",
-  },
-  favoriteActionText: {
-    color: "#94a3b8",
-    fontSize: 11,
-    fontWeight: "700",
-  },
-  favoriteActionTextActive: {
-    color: "#fde68a",
   },
   deviceLoadingOverlay: {
     position: "absolute",
@@ -5025,6 +5053,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     borderRadius: 16,
+    borderCurve: "continuous",
     backgroundColor: "#5b8def",
     overflow: "hidden",
     zIndex: 20,

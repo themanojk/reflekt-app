@@ -5,6 +5,7 @@ import {
   Alert,
   Animated,
   Easing,
+  Modal,
   Platform,
   RefreshControl,
   ScrollView,
@@ -29,6 +30,11 @@ import Toast from "@/components/Toast";
 import { DATA_CHAR_UUID } from "@/constants";
 import { getCanonicalId } from "@/services/bleCanonicalId";
 import BLEManagerService from "@/services/bleManager";
+import {
+  openAppPermissionSettings,
+  requestWifiScanPermission,
+} from "@/services/appPermissions";
+import { getAvailableWifiNetworks, WifiNetwork } from "@/services/wifiScanner";
 import { getLayoutButtonsByServiceId } from "@/db/layout_buttons";
 import {
   clearPendingSwitchboardDeviceId,
@@ -111,6 +117,7 @@ const extractSensorsFromAddResponse = (payload: any): string[] => {
 
 export default function AddSwitchboardScreen({ navigation, route }: any) {
   const bleManagerRef = React.useRef<BLEManagerService | null>(null);
+  const passwordInputRef = React.useRef<TextInput | null>(null);
   if (!bleManagerRef.current) {
     bleManagerRef.current = new BLEManagerService();
   }
@@ -130,6 +137,13 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
   const [serviceIdFromLayout, setServiceIdFromLayout] = useState("");
   const [wifiSSID, setWifiSSID] = useState("");
   const [wifiPassword, setWifiPassword] = useState("");
+  const [savedWifiCreds, setSavedWifiCreds] = useState<{
+    ssid: string;
+    pass: string;
+  } | null>(null);
+  const [wifiNetworks, setWifiNetworks] = useState<WifiNetwork[]>([]);
+  const [wifiPickerVisible, setWifiPickerVisible] = useState(false);
+  const [wifiPickerLoading, setWifiPickerLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<{ visible: boolean; message: string }>({
     visible: false,
@@ -252,9 +266,62 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
     const creds = await loadWifi();
     if (!creds || !creds.ssid) return;
 
+    setSavedWifiCreds(creds);
     setWifiSSID(creds.ssid);
     setWifiPassword(creds.pass);
   };
+
+  const focusPasswordField = React.useCallback(() => {
+    requestAnimationFrame(() => {
+      passwordInputRef.current?.focus();
+    });
+  }, []);
+
+  const handleWifiNetworkSelected = React.useCallback(
+    (network: WifiNetwork) => {
+      setWifiSSID(network.ssid);
+      if (savedWifiCreds?.ssid === network.ssid) {
+        setWifiPassword(savedWifiCreds.pass);
+      } else {
+        setWifiPassword("");
+      }
+      setWifiPickerVisible(false);
+      focusPasswordField();
+    },
+    [focusPasswordField, savedWifiCreds],
+  );
+
+  const openWifiPicker = React.useCallback(async () => {
+    if (Platform.OS !== "android") return;
+
+    const permission = await requestWifiScanPermission();
+    if (permission !== "granted") {
+      Alert.alert(
+        "WiFi permission required",
+        "Allow nearby WiFi access to see available networks on this device.",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Open Settings", onPress: openAppPermissionSettings },
+        ],
+      );
+      return;
+    }
+
+    setWifiPickerLoading(true);
+    try {
+      const networks = await getAvailableWifiNetworks();
+      setWifiNetworks(networks);
+      setWifiPickerVisible(true);
+    } catch (error) {
+      console.warn("[ADD_SWITCHBOARD_WIFI] failed to load networks", error);
+      Alert.alert(
+        "Unable to load WiFi networks",
+        "Please try again or enter the network name manually.",
+      );
+    } finally {
+      setWifiPickerLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (prefillName) setName(prefillName);
@@ -406,7 +473,10 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
 
   const sendWifiConfigToESP = async (device: BleDevice) => {
     if (!wifiSSID.trim() || !wifiPassword.trim()) {
-      Alert.alert("Error", "Please enter a WiFi network name");
+      Alert.alert(
+        "Error",
+        "Please choose a WiFi network and enter its password.",
+      );
       return;
     }
 
@@ -723,6 +793,19 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
         </Text>
 
         <Text style={styles.label}>WiFi Network Name</Text>
+        {Platform.OS === "android" && (
+          <TouchableOpacity
+            style={styles.networkPickerButton}
+            onPress={openWifiPicker}
+            disabled={loading || wifiPickerLoading}
+          >
+            {wifiPickerLoading ? (
+              <ActivityIndicator color="#93c5fd" size="small" />
+            ) : (
+              <Text style={styles.networkPickerButtonText}>Available WiFi</Text>
+            )}
+          </TouchableOpacity>
+        )}
         <TextInput
           style={styles.input}
           placeholder="Network SSID"
@@ -730,10 +813,13 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
           value={wifiSSID}
           onChangeText={setWifiSSID}
           editable={!loading}
+          autoCapitalize="none"
+          autoCorrect={false}
         />
 
         <Text style={styles.label}>WiFi Password</Text>
         <TextInput
+          ref={passwordInputRef}
           style={styles.input}
           placeholder="Password"
           placeholderTextColor="#64748b"
@@ -741,7 +827,16 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
           onChangeText={setWifiPassword}
           secureTextEntry
           editable={!loading}
+          autoCapitalize="none"
+          autoCorrect={false}
+          autoComplete="password"
+          textContentType="password"
+          importantForAutofill="yes"
         />
+        <Text style={styles.passwordHelpText}>
+          After choosing a network, tap the password field to use saved password
+          suggestions when your device supports them.
+        </Text>
 
         <TouchableOpacity
           style={[styles.button, loading && styles.buttonDisabled]}
@@ -755,6 +850,59 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
           )}
         </TouchableOpacity>
       </ScrollView>
+
+      <Modal
+        visible={wifiPickerVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setWifiPickerVisible(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Available WiFi</Text>
+              <TouchableOpacity onPress={() => setWifiPickerVisible(false)}>
+                <Text style={styles.modalClose}>Close</Text>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              style={styles.modalRefreshButton}
+              onPress={openWifiPicker}
+              disabled={wifiPickerLoading}
+            >
+              <Text style={styles.modalRefreshButtonText}>
+                {wifiPickerLoading ? "Refreshing..." : "Refresh list"}
+              </Text>
+            </TouchableOpacity>
+
+            <ScrollView style={styles.modalList}>
+              {wifiNetworks.length ? (
+                wifiNetworks.map((network) => (
+                  <TouchableOpacity
+                    key={`${network.ssid}-${network.bssid || "ssid"}`}
+                    style={styles.networkRow}
+                    onPress={() => handleWifiNetworkSelected(network)}
+                  >
+                    <View>
+                      <Text style={styles.networkName}>{network.ssid}</Text>
+                      <Text style={styles.networkMeta}>
+                        Signal {formatRssi(network.level ?? null)}
+                        {network.isCurrent ? " • Current network" : ""}
+                      </Text>
+                    </View>
+                    <Text style={styles.networkPickText}>Use</Text>
+                  </TouchableOpacity>
+                ))
+              ) : (
+                <Text style={styles.emptyWifiText}>
+                  No WiFi networks found. You can still type the SSID manually.
+                </Text>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </KeyboardAwareScrollView>
   );
 }
@@ -834,6 +982,27 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#334155",
   },
+  networkPickerButton: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#3b82f6",
+    backgroundColor: "#0f274f",
+    marginBottom: 10,
+  },
+  networkPickerButtonText: {
+    color: "#bfdbfe",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  passwordHelpText: {
+    color: "#94a3b8",
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 8,
+  },
   button: {
     backgroundColor: "#3b82f6",
     borderRadius: 12,
@@ -858,6 +1027,83 @@ const styles = StyleSheet.create({
   },
   scanScrollContent: {
     flexGrow: 1,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.75)",
+    justifyContent: "flex-end",
+  },
+  modalCard: {
+    maxHeight: "72%",
+    backgroundColor: "#111827",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 28,
+    borderTopWidth: 1,
+    borderColor: "#1f2937",
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  modalTitle: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  modalClose: {
+    color: "#60a5fa",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  modalRefreshButton: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "#1e3a8a",
+    marginBottom: 12,
+  },
+  modalRefreshButtonText: {
+    color: "#dbeafe",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  modalList: {
+    flexGrow: 0,
+  },
+  networkRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "#1f2937",
+  },
+  networkName: {
+    color: "#f8fafc",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  networkMeta: {
+    color: "#94a3b8",
+    fontSize: 12,
+    marginTop: 4,
+  },
+  networkPickText: {
+    color: "#60a5fa",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  emptyWifiText: {
+    color: "#94a3b8",
+    fontSize: 14,
+    lineHeight: 20,
+    paddingVertical: 16,
   },
   scanIconWrapper: {
     width: 120,
