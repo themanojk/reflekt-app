@@ -4,7 +4,7 @@ apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
 
 def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
-def nodeExecutable = System.getenv("NODE_BINARY") ?: "/Users/manojkumar/.nvm/versions/node/v20.11.1/bin/node"
+def nodeExecutable = System.getenv("NODE_BINARY") ?: "node"
 
 /**
  * This is the configuration block to customize your React Native Android app.

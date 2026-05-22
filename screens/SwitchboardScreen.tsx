@@ -429,6 +429,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [availableSensors, setAvailableSensors] = useState<string[]>([]);
   const [showSensorModal, setShowSensorModal] = useState(false);
   const [pendingSensor, setPendingSensor] = useState<string | null>(null);
+  const [attachInFlight, setAttachInFlight] = useState(false);
   const [sensorStep, setSensorStep] = useState<"prompt" | "attached">("prompt");
   const [ignoredSensors, setIgnoredSensors] = useState<string[]>([]);
   const [attachedSensors, setAttachedSensors] = useState<string[]>(
@@ -468,6 +469,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const sheetTranslateY = React.useRef(new Animated.Value(0)).current;
 
   const monitorRef = React.useRef<Disposable | null>(null);
+  const attachResultResolverRef = React.useRef<
+    ((result: { ok: boolean; message?: string }) => void) | null
+  >(null);
+  const attachResultMacRef = React.useRef<string | null>(null);
   const disconnectRef = React.useRef<Disposable | null>(null);
   const mountedRef = React.useRef(true);
   const activeDeviceRef = React.useRef<BleDevice | undefined>(undefined);
@@ -826,6 +831,25 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           return;
         }
         if (raw.startsWith("SENSOR_ATTACH_")) {
+          const activeAttachMac = attachResultMacRef.current;
+          if (!activeAttachMac) {
+            return;
+          }
+          if (raw === "SENSOR_ATTACH_OK") {
+            attachResultResolverRef.current?.({ ok: true });
+          } else if (raw.startsWith("SENSOR_ATTACH_FAIL:")) {
+            attachResultResolverRef.current?.({
+              ok: false,
+              message: raw.replace("SENSOR_ATTACH_FAIL:", "").trim() || "Attach failed",
+            });
+          } else {
+            attachResultResolverRef.current?.({
+              ok: false,
+              message: raw,
+            });
+          }
+          attachResultResolverRef.current = null;
+          attachResultMacRef.current = null;
           return;
         }
         if (raw.startsWith("FAN_SPEED:")) {
@@ -1756,7 +1780,15 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const attachSensor = async () => {
     if (!pendingSensor) return;
+    const normalizedPending = String(pendingSensor).trim().toUpperCase();
     try {
+      if (!services.length || !activeDevice) {
+        Alert.alert(
+          "Failed",
+          "Hub BLE is not connected yet. Reopen this board and try again.",
+        );
+        return;
+      }
       const apiDeviceMac = await resolveApiDeviceMac();
       if (!isMacAddress(apiDeviceMac)) {
         Alert.alert(
@@ -1765,24 +1797,53 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         );
         return;
       }
-      const apiRes = await attachSensorToDevice(apiDeviceMac, pendingSensor);
-      const attached = String(pendingSensor).trim().toUpperCase();
-      if (attached) {
-        await persistAttachedSensors([...attachedSensors, attached]);
-        await loadSensorRangeState(attached);
+      setAttachInFlight(true);
+      const attachResponse = new Promise<{ ok: boolean; message?: string }>(
+        (resolve) => {
+          attachResultResolverRef.current = resolve;
+          attachResultMacRef.current = normalizedPending;
+        },
+      );
+      const timeout = new Promise<{ ok: boolean; message?: string }>(
+        (resolve) => {
+          setTimeout(() => {
+            if (attachResultMacRef.current !== normalizedPending) {
+              return;
+            }
+            attachResultResolverRef.current = null;
+            attachResultMacRef.current = null;
+            resolve({
+              ok: false,
+              message: "Hub did not confirm pairing in time.",
+            });
+          }, 20000);
+        },
+      );
+      const cmd = `SENSOR_ATTACH:${normalizedPending}`;
+      await bleManager.sendData(activeDevice, cmd, services[0]);
+      const result = await Promise.race([attachResponse, timeout]);
+      if (!result.ok) {
+        throw new Error(result.message || "Attach failed");
       }
-      if (services.length && activeDevice) {
-        const cmd = `SENSOR_ATTACH:${pendingSensor}`;
-        await bleManager.sendData(activeDevice, cmd, services[0]);
+      await attachSensorToDevice(apiDeviceMac, normalizedPending);
+      if (normalizedPending) {
+        await persistAttachedSensors([...attachedSensors, normalizedPending]);
+        await loadSensorRangeState(normalizedPending);
       }
       setShowSensorModal(false);
       setPendingSensor(null);
       await loadPinConfigs();
       setShowPinConfigModal(true);
     } catch (e: any) {
-      Alert.alert("Failed", e?.response?.data?.message || "Attach failed");
-      setShowSensorModal(false);
+      const message =
+        e?.response?.data?.message ||
+        e?.message ||
+        "Attach failed";
+      Alert.alert("Failed", message);
     } finally {
+      attachResultResolverRef.current = null;
+      attachResultMacRef.current = null;
+      setAttachInFlight(false);
     }
   };
 
@@ -3043,15 +3104,23 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                   <View style={styles.sheetActions}>
                     <TouchableOpacity
                       style={[styles.sheetBtn, styles.sheetBtnGhost]}
+                      disabled={attachInFlight}
                       onPress={ignoreSensor}
                     >
                       <Text style={styles.sheetBtnGhostText}>Ignore</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
-                      style={[styles.sheetBtn, styles.sheetBtnPrimary]}
+                      style={[
+                        styles.sheetBtn,
+                        styles.sheetBtnPrimary,
+                        attachInFlight && { opacity: 0.7 },
+                      ]}
+                      disabled={attachInFlight}
                       onPress={attachSensor}
                     >
-                      <Text style={styles.sheetBtnPrimaryText}>Attach</Text>
+                      <Text style={styles.sheetBtnPrimaryText}>
+                        {attachInFlight ? "Attaching..." : "Attach"}
+                      </Text>
                     </TouchableOpacity>
                   </View>
                 </>
