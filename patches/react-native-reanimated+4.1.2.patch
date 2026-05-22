@@ -1,0 +1,40 @@
+diff --git a/node_modules/react-native-reanimated/android/build.gradle b/node_modules/react-native-reanimated/android/build.gradle
+index cf9bd1a..2d2050e 100644
+--- a/node_modules/react-native-reanimated/android/build.gradle
++++ b/node_modules/react-native-reanimated/android/build.gradle
+@@ -30,7 +30,7 @@ def resolveReactNativeDirectory() {
+     def reactNativePackage = file(
+         providers.exec {
+             workingDir(rootDir)
+-            commandLine("node", "--print", "require.resolve('react-native/package.json')")
++            commandLine(System.getenv("NODE_BINARY") ?: "/Users/manojkumar/.nvm/versions/node/v20.11.1/bin/node", "--print", "require.resolve('react-native/package.json')")
+         }.standardOutput.asText.get().trim()
+     )
+     if (reactNativePackage.exists()) {
+@@ -52,7 +52,7 @@ def resolveReactNativeWorkletsDirectory() {
+     def reactNativeWorkletsPackage = file(
+         providers.exec {
+             workingDir(rootDir)
+-            commandLine("node", "--print", "require.resolve('react-native-worklets/package.json')")
++            commandLine(System.getenv("NODE_BINARY") ?: "/Users/manojkumar/.nvm/versions/node/v20.11.1/bin/node", "--print", "require.resolve('react-native-worklets/package.json')")
+         }.standardOutput.asText.get().trim()
+     )
+     if (reactNativeWorkletsPackage.exists()) {
+@@ -277,7 +277,7 @@ android {
+ 
+ def validateReactNativeVersionResult = providers.exec {
+     workingDir(projectDir.path)
+-    commandLine("node", "./../scripts/validate-react-native-version.js", REACT_NATIVE_VERSION.toString())
++    commandLine(System.getenv("NODE_BINARY") ?: "/Users/manojkumar/.nvm/versions/node/v20.11.1/bin/node", "./../scripts/validate-react-native-version.js", REACT_NATIVE_VERSION.toString())
+     ignoreExitValue = true
+ }
+ 
+@@ -302,7 +302,7 @@ preBuild.dependsOn(assertNewArchitectureEnabledTask)
+ 
+ def validateWorkletsBuildResult = providers.exec {
+     workingDir(projectDir.path)
+-    commandLine("node", "./../scripts/validate-worklets-build.js")
++    commandLine(System.getenv("NODE_BINARY") ?: "/Users/manojkumar/.nvm/versions/node/v20.11.1/bin/node", "./../scripts/validate-worklets-build.js")
+     ignoreExitValue = true
+ }
+ 

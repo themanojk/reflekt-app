@@ -1,0 +1,45 @@
+diff --git a/node_modules/react-native-worklets/RNWorklets.podspec b/node_modules/react-native-worklets/RNWorklets.podspec
+index 2133f86..b4b3b06 100644
+--- a/node_modules/react-native-worklets/RNWorklets.podspec
++++ b/node_modules/react-native-worklets/RNWorklets.podspec
+@@ -55,6 +55,7 @@ Pod::Spec.new do |s|
+   #   HERMESVM_PROFILER_BB
+   # which shouldn't be defined in standard setups.
+   hermes_debug_hidden_flags = 'HERMES_ENABLE_DEBUGGER=1'
++  hermes_runtime_flags = using_hermes ? 'JS_RUNTIME_HERMES=1' : ''
+ 
+   bundle_mode_flag = $worklets_config[:bundle_mode] ? 'WORKLETS_BUNDLE_MODE=1' : ''
+   
+@@ -73,8 +74,8 @@ Pod::Spec.new do |s|
+     ].join(' '),
+     "FRAMEWORK_SEARCH_PATHS" => '"${PODS_CONFIGURATION_BUILD_DIR}/React-hermes"',
+     "CLANG_CXX_LANGUAGE_STANDARD" => "c++20",
+-    "GCC_PREPROCESSOR_DEFINITIONS[config=*Debug*]" => "$(inherited) #{hermes_debug_hidden_flags} #{bundle_mode_flag}",
+-    "GCC_PREPROCESSOR_DEFINITIONS[config=*Release*]" => "$(inherited) #{bundle_mode_flag}",
++    "GCC_PREPROCESSOR_DEFINITIONS[config=*Debug*]" => "$(inherited) #{hermes_runtime_flags} #{hermes_debug_hidden_flags} #{bundle_mode_flag}",
++    "GCC_PREPROCESSOR_DEFINITIONS[config=*Release*]" => "$(inherited) #{hermes_runtime_flags} #{bundle_mode_flag}",
+     "OTHER_CFLAGS" => "$(inherited) #{feature_flags} #{version_flags}",
+   }
+   s.xcconfig = {
+diff --git a/node_modules/react-native-worklets/android/build.gradle b/node_modules/react-native-worklets/android/build.gradle
+index 021f5bc..1ab7af9 100644
+--- a/node_modules/react-native-worklets/android/build.gradle
++++ b/node_modules/react-native-worklets/android/build.gradle
+@@ -30,7 +30,7 @@ def resolveReactNativeDirectory() {
+     def reactNativePackage = file(
+         providers.exec {
+             workingDir(rootDir)
+-            commandLine("node", "--print", "require.resolve('react-native/package.json')")
++            commandLine(System.getenv("NODE_BINARY") ?: "/Users/manojkumar/.nvm/versions/node/v20.11.1/bin/node", "--print", "require.resolve('react-native/package.json')")
+         }.standardOutput.asText.get().trim()
+     )
+     if (reactNativePackage.exists()) {
+@@ -294,7 +294,7 @@ android {
+ 
+ def validateReactNativeVersionResult = providers.exec {
+     workingDir(projectDir.path)
+-    commandLine("node", "./../scripts/validate-react-native-version.js", REACT_NATIVE_VERSION.toString())
++    commandLine(System.getenv("NODE_BINARY") ?: "/Users/manojkumar/.nvm/versions/node/v20.11.1/bin/node", "./../scripts/validate-react-native-version.js", REACT_NATIVE_VERSION.toString())
+     ignoreExitValue = true
+ }
+ 

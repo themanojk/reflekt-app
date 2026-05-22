@@ -1,5 +1,10 @@
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 
+ext {
+  REACT_NATIVE_NODE_MODULES_DIR = file("../node_modules/react-native").absolutePath
+  REACT_NATIVE_WORKLETS_NODE_MODULES_DIR = file("../node_modules/react-native-worklets").absolutePath
+}
+
 buildscript {
   repositories {
     google()
