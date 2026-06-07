@@ -28,6 +28,14 @@ export interface NearByDevice {
   sensor_ids?: string[];
 }
 
+export interface AdminNearbyDeviceDetails {
+  mac_address: string;
+  title: string | null;
+  service_id: string | null;
+  user_name: string | null;
+  user_phone: string | null;
+}
+
 export interface AddDevice {
   title: string;
   room_id: string;
@@ -91,10 +99,36 @@ export interface GetLayoutResult {
 }
 
 export async function getLayout(macAddress: string): Promise<GetLayoutResult> {
-  // 1️⃣ Call API
-  const res = await client.get(`/v2/boards/macAddress/${macAddress}/layout`);
+  const requestPath = `/v2/boards/macAddress/${macAddress}/layout`;
+  console.log("[API][getLayout][request]", {
+    method: "GET",
+    baseURL: client.defaults.baseURL,
+    url: `${client.defaults.baseURL}${requestPath}`,
+    macAddress,
+  });
+
+  const res = await client.get(requestPath);
+
+  console.log("[API][getLayout][response]", {
+    method: "GET",
+    url: `${client.defaults.baseURL}${requestPath}`,
+    status: res.status,
+    macAddress,
+    service_id: res.data?.service_id,
+    body: res.data,
+  });
 
   const layoutResponse = res.data;
+  if (!layoutResponse || typeof layoutResponse !== "object") {
+    console.warn("[API][getLayout][empty-body]", {
+      method: "GET",
+      url: `${client.defaults.baseURL}${requestPath}`,
+      status: res.status,
+      macAddress,
+      body: layoutResponse,
+    });
+    return { hasChanged: false, serviceId: undefined };
+  }
 
   // 2️⃣ Upsert into local DB + detect changes
   const hasChanged = await upsertLayoutButtonsFromServer(layoutResponse);
@@ -120,6 +154,67 @@ export async function fetchDevicesByMac(
     })
     .then((res) => res.data)
     .catch(() => undefined);
+}
+
+export async function fetchAdminDeviceDetailsByMac(
+  macAddress: string
+): Promise<AdminNearbyDeviceDetails | null> {
+  const search = String(macAddress || "").trim().toUpperCase();
+  if (!search) return null;
+
+  console.log("[API][fetchAdminDeviceDetailsByMac][request]", {
+    method: "GET",
+    baseURL: client.defaults.baseURL,
+    url: `${client.defaults.baseURL}/devices/admin`,
+    params: {
+      page: 1,
+      limit: 1,
+      search,
+    },
+  });
+
+  return client
+    .get(`/devices/admin`, {
+      params: {
+        page: 1,
+        limit: 1,
+        search,
+      },
+    })
+    .then((res) => {
+      console.log("[API][fetchAdminDeviceDetailsByMac][response]", {
+        method: "GET",
+        url: `${client.defaults.baseURL}/devices/admin`,
+        status: res.status,
+        search,
+        body: res.data,
+      });
+      const item = Array.isArray(res.data?.data) ? res.data.data[0] : null;
+      if (!item) return null;
+      const firstUser = Array.isArray(item.users) ? item.users[0] : null;
+      const userName = [firstUser?.firstName, firstUser?.lastName]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+        .join(" ");
+
+      return {
+        mac_address: String(item.mac_address || search).trim().toUpperCase(),
+        title: item.title ? String(item.title).trim() : null,
+        service_id: item.service_id ? String(item.service_id).trim() : null,
+        user_name: userName || null,
+        user_phone: firstUser?.phone ? String(firstUser.phone).trim() : null,
+      };
+    })
+    .catch((error) => {
+      console.warn("[API][fetchAdminDeviceDetailsByMac][error]", {
+        search,
+        message:
+          error instanceof Error ? error.message : String(error || "Unknown error"),
+        responseStatus: error?.response?.status,
+        responseBody: error?.response?.data,
+      });
+      return null;
+    });
 }
 
 export async function fetchDevicesByRoomForUser() {

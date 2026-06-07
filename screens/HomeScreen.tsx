@@ -241,6 +241,7 @@ export default function HomeScreen({ navigation }: any) {
   const dismissedBoardRef = React.useRef<{ id: string; at: number } | null>(
     null,
   );
+  const pendingBoardSelectionRef = React.useRef<string | null>(null);
   const bleNearbyIds = React.useMemo(
     () =>
       new Set(
@@ -664,6 +665,10 @@ export default function HomeScreen({ navigation }: any) {
         console.log("Filtered (dismissed):", id);
         return false;
       }
+      if (pendingBoardSelectionRef.current === id) {
+        console.log("Filtered (pending-selection):", id);
+        return false;
+      }
       return true;
     });
 
@@ -798,11 +803,11 @@ export default function HomeScreen({ navigation }: any) {
   const handleAddNewBoard = async () => {
     const current = candidateDevices[activeCarouselIndex];
     if (!current) return;
+    const pendingId = String(current.canonicalId || current.id);
+    pendingBoardSelectionRef.current = pendingId;
     setNewBoardModalVisible(false);
     newBoardSheetY.setValue(280);
-    const pendingId = String(current.canonicalId || current.id);
     await setPendingSwitchboardDeviceId(pendingId);
-    setCandidateDevices([]);
     setActiveCarouselIndex(0);
     navigation.navigate("ConfirmNewBoard", {
       pendingDeviceId: pendingId,

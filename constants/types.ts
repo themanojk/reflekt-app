@@ -13,6 +13,7 @@ export type RootStackParamList = {
     iosBleId: string | undefined;
     bleId?: string | undefined;
     service_id: string;
+    roomName?: string;
     sensors?: string[];
   };
   AddSwitchboard:
