@@ -261,7 +261,11 @@ export default function LoginScreen() {
     >
       <View style={styles.content}>
         <View style={styles.header}>
-          <Text style={styles.title}>Neytri One Touch</Text>
+          <Text style={styles.title}>
+            <Text>NoColour </Text>
+            <Text style={styles.titleMuted}>by </Text>
+            <Text style={styles.titleAccent}>Littra</Text>
+          </Text>
           <Text style={styles.subtitle}>Control your home from anywhere</Text>
         </View>
 
@@ -410,6 +414,14 @@ const styles = StyleSheet.create({
     color: "#fff",
     marginBottom: 8,
     textAlign: "center",
+  },
+  titleMuted: {
+    color: "#cbd5e1",
+    fontWeight: "600",
+  },
+  titleAccent: {
+    color: "#5b8def",
+    fontWeight: "800",
   },
   subtitle: {
     fontSize: 16,

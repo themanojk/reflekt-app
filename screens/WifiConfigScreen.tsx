@@ -4,7 +4,7 @@ import {
 } from "@/services/appPermissions";
 import { getAvailableWifiNetworks, WifiNetwork } from "@/services/wifiScanner";
 import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
-import { ChevronLeft } from "lucide-react-native";
+import { ChevronLeft, Eye, EyeOff } from "lucide-react-native";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -29,6 +29,7 @@ export default function WifiConfigScreen({ navigation, route }: any) {
 
   const [ssid, setSsid] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [entryMode, setEntryMode] = useState<EntryMode>("network");
   const [wifiNetworks, setWifiNetworks] = useState<WifiNetwork[]>([]);
   const [loadingNetworks, setLoadingNetworks] = useState(false);
@@ -288,19 +289,31 @@ export default function WifiConfigScreen({ navigation, route }: any) {
 
           <View style={styles.inputGroup}>
             <Text style={styles.inputLabel}>Password</Text>
-            <TextInput
-              style={styles.input}
-              value={password}
-              onChangeText={setPassword}
-              placeholder="Enter WiFi password"
-              placeholderTextColor="#64748b"
-              secureTextEntry
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoComplete="password"
-              textContentType="password"
-              importantForAutofill="yes"
-            />
+            <View style={styles.inputRow}>
+              <TextInput
+                style={[styles.input, styles.inputWithAction]}
+                value={password}
+                onChangeText={setPassword}
+                placeholder="Enter WiFi password"
+                placeholderTextColor="#64748b"
+                secureTextEntry={!showPassword}
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete="password"
+                textContentType="password"
+                importantForAutofill="yes"
+              />
+              <TouchableOpacity
+                style={styles.inputActionButton}
+                onPress={() => setShowPassword((prev) => !prev)}
+              >
+                {showPassword ? (
+                  <EyeOff size={18} color="#94a3b8" />
+                ) : (
+                  <Eye size={18} color="#94a3b8" />
+                )}
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </KeyboardAwareScrollView>
@@ -494,6 +507,20 @@ const styles = StyleSheet.create({
     color: "#fff",
     borderWidth: 1,
     borderColor: "#334155",
+  },
+  inputRow: {
+    position: "relative",
+    justifyContent: "center",
+  },
+  inputWithAction: {
+    paddingRight: 48,
+  },
+  inputActionButton: {
+    position: "absolute",
+    right: 14,
+    height: "100%",
+    justifyContent: "center",
+    alignItems: "center",
   },
   footer: {
     paddingHorizontal: 18,

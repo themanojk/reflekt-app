@@ -18,7 +18,6 @@ import {
   updateSensorRange,
   WifiPayload,
 } from "@/api/devics";
-import HingeSlider from "@/components/HingeSlider";
 import { DATA_CHAR_UUID, ROOM_ICONS } from "@/constants";
 import { RootStackParamList } from "@/constants/types";
 import { useToast } from "@/contexts/ToastContext";
@@ -124,7 +123,89 @@ const COLOR_PALETTE = [
   "rgb(251, 146, 60)",
 ];
 
-const FAN_SPEED_LEVELS = [30, 45, 60, 75, 90, 100];
+const parseRgbColor = (color: string) => {
+  const parts =
+    String(color || "")
+      .match(/\d+/g)
+      ?.map((value) => Math.max(0, Math.min(255, Number(value) || 0))) || [];
+
+  return {
+    r: parts[0] ?? 91,
+    g: parts[1] ?? 141,
+    b: parts[2] ?? 239,
+  };
+};
+
+const rgbToColorString = (r: number, g: number, b: number) =>
+  `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
+
+const hsvToRgb = (h: number, s: number, v: number) => {
+  const safeHue = ((h % 360) + 360) % 360;
+  const safeSaturation = Math.max(0, Math.min(1, s));
+  const safeValue = Math.max(0, Math.min(1, v));
+  const chroma = safeValue * safeSaturation;
+  const hueSection = safeHue / 60;
+  const x = chroma * (1 - Math.abs((hueSection % 2) - 1));
+  const match = safeValue - chroma;
+
+  let red = 0;
+  let green = 0;
+  let blue = 0;
+
+  if (hueSection >= 0 && hueSection < 1) {
+    red = chroma;
+    green = x;
+  } else if (hueSection < 2) {
+    red = x;
+    green = chroma;
+  } else if (hueSection < 3) {
+    green = chroma;
+    blue = x;
+  } else if (hueSection < 4) {
+    green = x;
+    blue = chroma;
+  } else if (hueSection < 5) {
+    red = x;
+    blue = chroma;
+  } else {
+    red = chroma;
+    blue = x;
+  }
+
+  return {
+    r: (red + match) * 255,
+    g: (green + match) * 255,
+    b: (blue + match) * 255,
+  };
+};
+
+const rgbToHsv = (r: number, g: number, b: number) => {
+  const red = r / 255;
+  const green = g / 255;
+  const blue = b / 255;
+  const max = Math.max(red, green, blue);
+  const min = Math.min(red, green, blue);
+  const delta = max - min;
+
+  let hue = 0;
+  if (delta !== 0) {
+    if (max === red) {
+      hue = 60 * (((green - blue) / delta) % 6);
+    } else if (max === green) {
+      hue = 60 * ((blue - red) / delta + 2);
+    } else {
+      hue = 60 * ((red - green) / delta + 4);
+    }
+  }
+
+  return {
+    h: (hue + 360) % 360,
+    s: max === 0 ? 0 : delta / max,
+    v: max,
+  };
+};
+
+const FAN_SPEED_LEVELS = [30, 45, 60, 75, 100];
 const DEFAULT_EXCLUDE_START = 22;
 const DEFAULT_EXCLUDE_END = 7;
 const DEFAULT_LOAD_WATT = 0;
@@ -380,6 +461,12 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
   const [tempColor, setTempColor] = useState("rgb(91, 141, 239)");
   const [tempIntensity, setTempIntensity] = useState(80);
+  const [showCustomColorPicker, setShowCustomColorPicker] = useState(false);
+  const [pickerHue, setPickerHue] = useState(216);
+  const [pickerSaturation, setPickerSaturation] = useState(0.6);
+  const [pickerValue, setPickerValue] = useState(0.94);
+  const [colorPanelSize, setColorPanelSize] = useState({ width: 0, height: 0 });
+  const [hueStripWidth, setHueStripWidth] = useState(0);
   const [showSensorConfigModal, setShowSensorConfigModal] = useState(false);
   const [showPinConfigModal, setShowPinConfigModal] = useState(false);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
@@ -415,6 +502,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           return {
             ...d,
             is_on: actual,
+            speed: d.device_type === "fan" && !actual ? 0 : d.speed,
             pin_status_ble: source === "ble" ? actual : d.pin_status_ble,
             pin_status_wifi: source === "wifi" ? actual : d.pin_status_wifi,
           };
@@ -423,6 +511,47 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     },
     [],
   );
+
+  const applyFanStateSnapshot = React.useCallback(
+    (pin: number, power: number, source: "ble" | "wifi") => {
+      if (!Number.isFinite(pin) || !Number.isFinite(power)) return;
+
+      const normalizedPower = Math.max(0, Math.min(100, Math.round(power)));
+      const speedLevel = percentToLevel(normalizedPower);
+      const isFanOn = normalizedPower > 0;
+
+      setDevices((prev) =>
+        prev.map((device) =>
+          device.id === pin
+            ? {
+                ...device,
+                speed: speedLevel,
+                is_on: isFanOn,
+                pin_status_ble:
+                  source === "ble" ? isFanOn : device.pin_status_ble,
+                pin_status_wifi:
+                  source === "wifi" ? isFanOn : device.pin_status_wifi,
+              }
+            : device,
+        ),
+      );
+    },
+    [percentToLevel],
+  );
+
+  useEffect(() => {
+    const rgb = parseRgbColor(tempColor);
+    const hsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
+    setPickerHue(hsv.h);
+    setPickerSaturation(hsv.s);
+    setPickerValue(hsv.v);
+  }, [tempColor]);
+
+  useEffect(() => {
+    if (!showSettings) {
+      setShowCustomColorPicker(false);
+    }
+  }, [showSettings]);
 
   const [speed, setSpeed] = useState(0);
   const [availableSensors, setAvailableSensors] = useState<string[]>([]);
@@ -488,18 +617,26 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       ...args,
     );
 
-  const levelToPercent = (level: number) =>
-    FAN_SPEED_LEVELS[Math.max(0, Math.min(5, Math.round(level)))];
+  const levelToPercent = (level: number) => {
+    const safeLevel = Math.max(0, Math.min(5, Math.round(level)));
+    if (safeLevel === 0) return 0;
+    return (
+      FAN_SPEED_LEVELS[safeLevel - 1] ??
+      FAN_SPEED_LEVELS[FAN_SPEED_LEVELS.length - 1]
+    );
+  };
   const percentToLevel = (percent: number) => {
-    const idx = FAN_SPEED_LEVELS.findIndex((value) => value === percent);
-    if (idx >= 0) return idx;
-    return FAN_SPEED_LEVELS.reduce(
+    const safePercent = Math.max(0, Math.round(Number(percent) || 0));
+    if (safePercent <= 0) return 0;
+
+    const closestIndex = FAN_SPEED_LEVELS.reduce(
       (bestIdx, value, index, arr) =>
-        Math.abs(value - percent) < Math.abs(arr[bestIdx] - percent)
+        Math.abs(value - safePercent) < Math.abs(arr[bestIdx] - safePercent)
           ? index
           : bestIdx,
       0,
     );
+    return closestIndex + 1;
   };
 
   useEffect(() => {
@@ -858,19 +995,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           if (!Number.isFinite(pin) || !Number.isFinite(power)) {
             return;
           }
-          const speedLevel = percentToLevel(power);
-          setDevices((prev) =>
-            prev.map((d) =>
-              d.id !== pin
-                ? d
-                : {
-                    ...d,
-                    speed: speedLevel,
-                    is_on: power > 0,
-                    pin_status_ble: power > 0,
-                  },
-            ),
-          );
+          applyFanStateSnapshot(pin, power, "ble");
           return;
         }
 
@@ -945,7 +1070,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       disconnectRef.current?.unsubscribe?.();
       disconnectRef.current = null;
     };
-  }, [activeDevice, services]);
+  }, [activeDevice, applyFanStateSnapshot, services]);
 
   const onReceivedOverWifi = React.useCallback(
     (pins: any) => {
@@ -965,26 +1090,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     const fanPin = Number(status?.fan_pin);
     const fanPower = Number(status?.fan_speed);
     if (!Number.isFinite(fanPin) || !Number.isFinite(fanPower)) return;
-
-    const speedLevel = percentToLevel(fanPower);
-    const isFanOn =
-      typeof status?.fan_status === "boolean"
-        ? !!status.fan_status
-        : fanPower > 0;
-
-    setDevices((prev) =>
-      prev.map((device) =>
-        device.id === fanPin
-          ? {
-              ...device,
-              speed: speedLevel,
-              is_on: isFanOn,
-              pin_status_wifi: isFanOn,
-            }
-          : device,
-      ),
-    );
-  }, []);
+    applyFanStateSnapshot(fanPin, fanPower, "wifi");
+  }, [applyFanStateSnapshot]);
 
   const loadSwitchboardData = async () => {
     setLoading(true);
@@ -1153,8 +1260,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       const useBle =
         !options?.preferWifi && !!activeDevice && services.length > 0;
       if (useBle && activeDevice) {
-        await delay(80);
+        await delay(120);
         await getCurrentState(activeDevice, services[0]);
+        await delay(220);
         return;
       }
 
@@ -2426,6 +2534,99 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     requestSensorRefresh();
   };
 
+  const updateTempColorFromHsv = React.useCallback(
+    (hue: number, saturation: number, value: number) => {
+      const rgb = hsvToRgb(hue, saturation, value);
+      setTempColor(rgbToColorString(rgb.r, rgb.g, rgb.b));
+    },
+    [],
+  );
+
+  const applyColorPanelLocation = React.useCallback(
+    (locationX: number, locationY: number) => {
+      if (!colorPanelSize.width || !colorPanelSize.height) return;
+      const nextSaturation = Math.max(
+        0,
+        Math.min(1, locationX / colorPanelSize.width),
+      );
+      const nextValue = Math.max(
+        0,
+        Math.min(1, 1 - locationY / colorPanelSize.height),
+      );
+
+      setPickerSaturation(nextSaturation);
+      setPickerValue(nextValue);
+      updateTempColorFromHsv(pickerHue, nextSaturation, nextValue);
+    },
+    [colorPanelSize.height, colorPanelSize.width, pickerHue, updateTempColorFromHsv],
+  );
+
+  const applyHueLocation = React.useCallback(
+    (locationX: number) => {
+      if (!hueStripWidth) return;
+      const nextHue = Math.max(0, Math.min(360, (locationX / hueStripWidth) * 360));
+      setPickerHue(nextHue);
+      updateTempColorFromHsv(nextHue, pickerSaturation, pickerValue);
+    },
+    [hueStripWidth, pickerSaturation, pickerValue, updateTempColorFromHsv],
+  );
+
+  const colorPanelResponder = React.useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderGrant: (evt) => {
+          applyColorPanelLocation(
+            evt.nativeEvent.locationX,
+            evt.nativeEvent.locationY,
+          );
+        },
+        onPanResponderMove: (evt) => {
+          applyColorPanelLocation(
+            evt.nativeEvent.locationX,
+            evt.nativeEvent.locationY,
+          );
+        },
+      }),
+    [applyColorPanelLocation],
+  );
+
+  const hueStripResponder = React.useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderGrant: (evt) => {
+          applyHueLocation(evt.nativeEvent.locationX);
+        },
+        onPanResponderMove: (evt) => {
+          applyHueLocation(evt.nativeEvent.locationX);
+        },
+      }),
+    [applyHueLocation],
+  );
+
+  const hueMarkerColor = React.useMemo(() => {
+    const rgb = hsvToRgb(pickerHue, 1, 1);
+    return rgbToColorString(rgb.r, rgb.g, rgb.b);
+  }, [pickerHue]);
+
+  const colorPanelThumbStyle = React.useMemo(
+    () => ({
+      left: pickerSaturation * colorPanelSize.width,
+      top: (1 - pickerValue) * colorPanelSize.height,
+    }),
+    [colorPanelSize.height, colorPanelSize.width, pickerSaturation, pickerValue],
+  );
+
+  const hueStripThumbStyle = React.useMemo(
+    () => ({
+      left: (pickerHue / 360) * hueStripWidth,
+    }),
+    [hueStripWidth, pickerHue],
+  );
+
   const applySettings = async () => {
     if (!tempColor) return;
 
@@ -2496,7 +2697,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   };
 
   const sendFanSpeed = async (speed: number, device: Device) => {
-    const val = Math.max(30, Math.min(100, Math.round(speed)));
+    const val = Math.max(0, Math.min(100, Math.round(speed)));
 
     if (!services.length || !activeDevice) {
       // Wi-Fi fallback
@@ -2523,16 +2724,17 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         if (idx === -1) return prev;
 
         const old = prev[idx].speed ?? 0;
+        const oldIsOn = prev[idx].is_on;
+        const oldBleStatus = prev[idx].pin_status_ble;
+        const oldWifiStatus = prev[idx].pin_status_wifi;
         const useBle = !!activeDevice && services.length > 0;
         const next = [...prev];
         next[idx] = {
           ...prev[idx],
           speed: clamped,
-          is_on: clamped > 0 ? true : prev[idx].is_on,
-          pin_status_ble:
-            useBle && clamped > 0 ? true : prev[idx].pin_status_ble,
-          pin_status_wifi:
-            !useBle && clamped > 0 ? true : prev[idx].pin_status_wifi,
+          is_on: clamped > 0,
+          pin_status_ble: useBle ? clamped > 0 : prev[idx].pin_status_ble,
+          pin_status_wifi: !useBle ? clamped > 0 : prev[idx].pin_status_wifi,
         };
 
         (async () => {
@@ -2548,6 +2750,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
               copy[j] = {
                 ...copy[j],
                 speed: old,
+                is_on: oldIsOn,
+                pin_status_ble: oldBleStatus,
+                pin_status_wifi: oldWifiStatus,
               };
               return copy;
             });
@@ -2648,7 +2853,11 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     return (
       <View
         key={device.id}
-        style={[styles.deviceCard, isActive && styles.deviceCardActive]}
+        style={[
+          styles.deviceCard,
+          styles.deviceCardFan,
+          isActive && styles.deviceCardActive,
+        ]}
       >
         <TouchableOpacity
           onPress={() => toggleDevice(device.id)}
@@ -2662,12 +2871,12 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           </View>
           <View style={styles.sliderRow}>
             <View style={styles.sliderWrap}>
-              <HingeSlider
+              <CustomSlider
                 value={speedValue}
                 minimumValue={0}
                 maximumValue={5}
                 step={1}
-                // live UI update (no network)
+                fullBleed
                 onValueChange={(v: number) => {
                   const clamped = Math.max(0, Math.min(5, Math.round(v)));
                   setDevices((prev) =>
@@ -2682,9 +2891,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                     ),
                   );
                 }}
-                // commit on release
                 onSlidingComplete={(v: number) => changeDeviceSpeed(device, v)}
-                trackHeight={20}
+                minimumTrackTintColor="#5b8def"
+                maximumTrackTintColor="#334155"
+                thumbTintColor="#5b8def"
               />
             </View>
           </View>
@@ -3266,7 +3476,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
             contentContainerStyle={styles.settingsBodyContent}
           >
             <View style={styles.settingsCard}>
-              <Text style={styles.sectionLabel}>LED Color</Text>
+              <Text style={styles.sectionLabel}>Board Color</Text>
               <View style={styles.colorGrid}>
                 {COLOR_PALETTE.map((color) => (
                   <TouchableOpacity
@@ -3279,7 +3489,156 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                     onPress={() => setTempColor(color)}
                   />
                 ))}
+                <TouchableOpacity
+                  style={[
+                    styles.colorButton,
+                    styles.customColorButton,
+                    showCustomColorPicker && styles.colorButtonSelected,
+                  ]}
+                  onPress={() =>
+                    setShowCustomColorPicker((current) => !current)
+                  }
+                >
+                  <Plus size={22} color="#dbeafe" />
+                </TouchableOpacity>
               </View>
+              {showCustomColorPicker ? (
+                <>
+                  <Text style={styles.sectionSubLabel}>Choose any color</Text>
+                  <View style={styles.colorGamutCard}>
+                    <View
+                      style={styles.colorGamutSurface}
+                      onLayout={(event) => {
+                        const { width, height } = event.nativeEvent.layout;
+                        if (!width || !height) return;
+                        setColorPanelSize({ width, height });
+                      }}
+                      {...colorPanelResponder.panHandlers}
+                    >
+                      <View
+                        style={[
+                          styles.colorGamutBase,
+                          { backgroundColor: hueMarkerColor },
+                        ]}
+                      />
+                      <Svg
+                        pointerEvents="none"
+                        width="100%"
+                        height="100%"
+                        style={styles.colorGamutSvg}
+                      >
+                        <Defs>
+                          <LinearGradient
+                            id="colorWhiteFade"
+                            x1="0%"
+                            y1="0%"
+                            x2="100%"
+                            y2="0%"
+                          >
+                            <Stop
+                              offset="0%"
+                              stopColor="#ffffff"
+                              stopOpacity="1"
+                            />
+                            <Stop
+                              offset="100%"
+                              stopColor="#ffffff"
+                              stopOpacity="0"
+                            />
+                          </LinearGradient>
+                          <LinearGradient
+                            id="colorBlackFade"
+                            x1="0%"
+                            y1="0%"
+                            x2="0%"
+                            y2="100%"
+                          >
+                            <Stop
+                              offset="0%"
+                              stopColor="#000000"
+                              stopOpacity="0"
+                            />
+                            <Stop
+                              offset="100%"
+                              stopColor="#000000"
+                              stopOpacity="1"
+                            />
+                          </LinearGradient>
+                        </Defs>
+                        <Rect
+                          x="0"
+                          y="0"
+                          width="100%"
+                          height="100%"
+                          fill="url(#colorWhiteFade)"
+                        />
+                        <Rect
+                          x="0"
+                          y="0"
+                          width="100%"
+                          height="100%"
+                          fill="url(#colorBlackFade)"
+                        />
+                      </Svg>
+                      <View
+                        pointerEvents="none"
+                        style={[styles.colorGamutThumb, colorPanelThumbStyle]}
+                      />
+                    </View>
+                    <View
+                      style={styles.hueStripSurface}
+                      onLayout={(event) => {
+                        const { width } = event.nativeEvent.layout;
+                        if (!width) return;
+                        setHueStripWidth(width);
+                      }}
+                      {...hueStripResponder.panHandlers}
+                    >
+                      <Svg
+                        pointerEvents="none"
+                        width="100%"
+                        height="100%"
+                        style={styles.hueStripSvg}
+                      >
+                        <Defs>
+                          <LinearGradient
+                            id="boardHueRamp"
+                            x1="0%"
+                            y1="0%"
+                            x2="100%"
+                            y2="0%"
+                          >
+                            <Stop offset="0%" stopColor="#ff0000" />
+                            <Stop offset="17%" stopColor="#ffff00" />
+                            <Stop offset="33%" stopColor="#00ff00" />
+                            <Stop offset="50%" stopColor="#00ffff" />
+                            <Stop offset="67%" stopColor="#0000ff" />
+                            <Stop offset="83%" stopColor="#ff00ff" />
+                            <Stop offset="100%" stopColor="#ff0000" />
+                          </LinearGradient>
+                        </Defs>
+                        <Rect
+                          x="0"
+                          y="0"
+                          width="100%"
+                          height="100%"
+                          rx="10"
+                          ry="10"
+                          fill="url(#boardHueRamp)"
+                        />
+                      </Svg>
+                      <View
+                        pointerEvents="none"
+                        style={[
+                          styles.hueStripThumb,
+                          hueStripThumbStyle,
+                          { backgroundColor: hueMarkerColor },
+                        ]}
+                      />
+                    </View>
+                  </View>
+                </>
+              ) : null}
               <View
                 style={[
                   styles.selectedColorPreview,
@@ -3289,10 +3648,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                   },
                 ]}
               />
-            </View>
-
-            <View style={styles.settingsCard}>
-              <Text style={styles.sectionLabel}>
+              <Text style={[styles.sectionSubLabel, styles.brightnessLabel]}>
                 Brightness: {tempIntensity}%
               </Text>
               <CustomSlider
@@ -4299,6 +4655,7 @@ const styles = StyleSheet.create({
   },
   speedControllerBox: {
     flexDirection: "column",
+    marginTop: 2,
   },
   speedController: {
     flexDirection: "row",
@@ -4317,15 +4674,17 @@ const styles = StyleSheet.create({
   speedLabelRow: {
     flexDirection: "row",
     justifyContent: "flex-end",
-    marginBottom: 2,
+    marginBottom: 0,
   },
   sliderRow: {
-    marginTop: 2,
+    marginTop: 0,
     flexDirection: "column",
     alignItems: "stretch",
   },
   sliderWrap: {
     width: "100%",
+    marginLeft: -11,
+    marginRight: -11,
   },
   label: { color: "#cbd5e1", fontSize: 13 },
   speedMarks: {
@@ -4383,10 +4742,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-start",
-    paddingHorizontal: 20,
+    paddingHorizontal: 14,
     paddingVertical: 20,
     backgroundColor: "#1e293b",
-    marginHorizontal: 24,
+    marginHorizontal: 12,
     marginTop: 0,
     borderRadius: 20,
     borderWidth: 1,
@@ -4877,18 +5236,36 @@ const styles = StyleSheet.create({
     color: "#fff",
     marginBottom: 12,
   },
+  sectionSubLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#e2e8f0",
+    marginBottom: 10,
+  },
+  brightnessLabel: {
+    marginTop: 10,
+  },
   colorGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
-    marginBottom: 16,
+    justifyContent: "flex-start",
+    columnGap: "1.4%",
+    rowGap: 8,
+    marginBottom: 14,
   },
   colorButton: {
-    width: 52,
-    height: 52,
-    borderRadius: 14,
+    width: "15.5%",
+    height: 46,
+    borderRadius: 12,
     borderWidth: 3,
+    alignItems: "center",
+    justifyContent: "center",
     borderColor: "transparent",
+  },
+  customColorButton: {
+    backgroundColor: "#132033",
+    borderColor: "rgba(91, 141, 239, 0.24)",
+    borderWidth: 1.5,
   },
   colorButtonSelected: {
     borderColor: "#fff",
@@ -4903,6 +5280,70 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
     shadowRadius: 6,
+    elevation: 4,
+  },
+  colorGamutCard: {
+    marginBottom: 16,
+  },
+  colorGamutSurface: {
+    width: "100%",
+    aspectRatio: 1.42,
+    borderRadius: 18,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(148, 163, 184, 0.18)",
+    backgroundColor: "#0f172a",
+    position: "relative",
+  },
+  colorGamutBase: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  colorGamutSvg: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  colorGamutThumb: {
+    position: "absolute",
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 3,
+    borderColor: "#ffffff",
+    backgroundColor: "transparent",
+    marginLeft: -12,
+    marginTop: -12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  hueStripSurface: {
+    marginTop: 14,
+    width: "100%",
+    height: 24,
+    borderRadius: 12,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(148, 163, 184, 0.18)",
+    backgroundColor: "#111827",
+    position: "relative",
+  },
+  hueStripSvg: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  hueStripThumb: {
+    position: "absolute",
+    top: -3,
+    width: 16,
+    height: 30,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: "#ffffff",
+    marginLeft: -8,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
     elevation: 4,
   },
   intensitySection: {
@@ -4938,26 +5379,31 @@ const styles = StyleSheet.create({
   devicesGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    paddingHorizontal: 24,
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
     paddingTop: 16,
-    gap: 16,
+    rowGap: 10,
     marginBottom: 32,
   },
   deviceCard: {
-    width: "47%",
+    width: "48.5%",
     backgroundColor: "#1e293b",
     borderRadius: 16,
     borderCurve: "continuous",
     padding: 16,
     borderWidth: 1,
     borderColor: "#334155",
-    minHeight: 140,
+    minHeight: 122,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.25,
     shadowRadius: 6,
     elevation: 6,
     overflow: "hidden",
+  },
+  deviceCardFan: {
+    paddingBottom: 10,
+    minHeight: 112,
   },
   deviceCardActive: {
     backgroundColor: "rgb(70, 110, 190)",
@@ -5166,7 +5612,7 @@ const styles = StyleSheet.create({
     borderBottomColor: "#1f2937",
   },
   settingsBody: {
-    paddingHorizontal: 20,
+    paddingHorizontal: 14,
     paddingTop: 16,
   },
   settingsBodyContent: {
@@ -5175,7 +5621,7 @@ const styles = StyleSheet.create({
   settingsCard: {
     backgroundColor: "#111827",
     borderRadius: 16,
-    padding: 16,
+    padding: 12,
     marginBottom: 16,
     borderWidth: 1,
     borderColor: "#1f2937",

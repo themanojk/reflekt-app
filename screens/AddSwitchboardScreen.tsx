@@ -1,4 +1,4 @@
-import { Bluetooth } from "lucide-react-native";
+import { Bluetooth, Eye, EyeOff } from "lucide-react-native";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -137,6 +137,7 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
   const [serviceIdFromLayout, setServiceIdFromLayout] = useState("");
   const [wifiSSID, setWifiSSID] = useState("");
   const [wifiPassword, setWifiPassword] = useState("");
+  const [showWifiPassword, setShowWifiPassword] = useState(false);
   const [savedWifiCreds, setSavedWifiCreds] = useState<{
     ssid: string;
     pass: string;
@@ -818,21 +819,34 @@ export default function AddSwitchboardScreen({ navigation, route }: any) {
         />
 
         <Text style={styles.label}>WiFi Password</Text>
-        <TextInput
-          ref={passwordInputRef}
-          style={styles.input}
-          placeholder="Password"
-          placeholderTextColor="#64748b"
-          value={wifiPassword}
-          onChangeText={setWifiPassword}
-          secureTextEntry
-          editable={!loading}
-          autoCapitalize="none"
-          autoCorrect={false}
-          autoComplete="password"
-          textContentType="password"
-          importantForAutofill="yes"
-        />
+        <View style={styles.inputRow}>
+          <TextInput
+            ref={passwordInputRef}
+            style={[styles.input, styles.inputWithAction]}
+            placeholder="Password"
+            placeholderTextColor="#64748b"
+            value={wifiPassword}
+            onChangeText={setWifiPassword}
+            secureTextEntry={!showWifiPassword}
+            editable={!loading}
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="password"
+            textContentType="password"
+            importantForAutofill="yes"
+          />
+          <TouchableOpacity
+            style={styles.inputActionButton}
+            onPress={() => setShowWifiPassword((prev) => !prev)}
+            disabled={loading}
+          >
+            {showWifiPassword ? (
+              <EyeOff size={18} color="#94a3b8" />
+            ) : (
+              <Eye size={18} color="#94a3b8" />
+            )}
+          </TouchableOpacity>
+        </View>
         <Text style={styles.passwordHelpText}>
           After choosing a network, tap the password field to use saved password
           suggestions when your device supports them.
@@ -981,6 +995,20 @@ const styles = StyleSheet.create({
     color: "#fff",
     borderWidth: 1,
     borderColor: "#334155",
+  },
+  inputRow: {
+    position: "relative",
+    justifyContent: "center",
+  },
+  inputWithAction: {
+    paddingRight: 54,
+  },
+  inputActionButton: {
+    position: "absolute",
+    right: 14,
+    height: "100%",
+    justifyContent: "center",
+    alignItems: "center",
   },
   networkPickerButton: {
     alignSelf: "flex-start",

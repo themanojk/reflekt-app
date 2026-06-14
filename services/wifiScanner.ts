@@ -15,6 +15,11 @@ type WifiScannerModule = {
 
 const wifiScannerModule: WifiScannerModule = NativeModules.WifiScanner ?? {};
 
+const isLikely5GHzNetwork = (network: WifiNetwork) => {
+  const frequency = Number(network.frequency);
+  return Number.isFinite(frequency) && frequency >= 4900;
+};
+
 export async function getAvailableWifiNetworks(): Promise<WifiNetwork[]> {
   if (Platform.OS !== "android" || !wifiScannerModule.getAvailableNetworks) {
     return [];
@@ -25,6 +30,7 @@ export async function getAvailableWifiNetworks(): Promise<WifiNetwork[]> {
 
   return networks
     .filter((network): network is WifiNetwork => !!network?.ssid)
+    .filter((network) => !isLikely5GHzNetwork(network))
     .sort((a, b) => {
       if (a.isCurrent && !b.isCurrent) return -1;
       if (!a.isCurrent && b.isCurrent) return 1;
