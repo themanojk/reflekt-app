@@ -16,6 +16,15 @@ export type RootStackParamList = {
     roomName?: string;
     sensors?: string[];
   };
+  RealtimeMotionView: {
+    switchboardName: string;
+    deviceId: string;
+    iosBleId: string | undefined;
+    bleId?: string | undefined;
+    service_id: string;
+    sensorMac: string;
+    coverageRangeCm: number;
+  };
   AddSwitchboard:
     | { roomId: string; pendingDeviceId?: string; prefillName?: string; roomName?: string; roomIcon?: string }
     | undefined;

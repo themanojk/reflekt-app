@@ -18,6 +18,7 @@ import ContactUsScreen from "./screens/ContactUsScreen";
 import HomeScreen from "./screens/HomeScreen";
 import LoginScreen from "./screens/LoginScreen";
 import ProfileScreen from "./screens/ProfileScreen";
+import RealtimeMotionViewScreen from "./screens/RealtimeMotionViewScreen";
 import RoomScreen from "./screens/RoomScreen";
 import SwitchboardScreen from "./screens/SwitchboardScreen";
 import WifiConfigScreen from "./screens/WifiConfigScreen";
@@ -54,6 +55,10 @@ function AdminStack() {
         component={AddSwitchboardAdminScreen}
       />
       <Stack.Screen name="Switchboard" component={SwitchboardScreen} />
+      <Stack.Screen
+        name="RealtimeMotionView"
+        component={RealtimeMotionViewScreen}
+      />
       <Stack.Screen name="WifiConfig" component={WifiConfigScreen} />
       <Stack.Screen name="Profile" component={ProfileScreen} />
       <Stack.Screen name="ContactUs" component={ContactUsScreen} />
@@ -68,6 +73,10 @@ function UserStack() {
       <Stack.Screen name="AddRoom" component={AddRoomScreen} />
       <Stack.Screen name="Room" component={RoomScreen} />
       <Stack.Screen name="Switchboard" component={SwitchboardScreen} />
+      <Stack.Screen
+        name="RealtimeMotionView"
+        component={RealtimeMotionViewScreen}
+      />
       <Stack.Screen name="WifiConfig" component={WifiConfigScreen} />
       <Stack.Screen name="ConfirmNewBoard" component={ConfirmNewBoardScreen} />
       <Stack.Screen name="AddSwitchboard" component={AddSwitchboardScreen} />
