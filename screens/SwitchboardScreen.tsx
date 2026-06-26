@@ -205,7 +205,8 @@ const rgbToHsv = (r: number, g: number, b: number) => {
   };
 };
 
-const FAN_SPEED_LEVELS = [30, 45, 60, 75, 100];
+const MIN_FAN_SPEED_PERCENT = 30;
+const MAX_FAN_SPEED_PERCENT = 100;
 const DEFAULT_EXCLUDE_START = 22;
 const DEFAULT_EXCLUDE_END = 7;
 const DEFAULT_LOAD_WATT = 0;
@@ -498,11 +499,13 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       setDevices((prev) =>
         prev.map((d) => {
           if (pinObj[d.id] === undefined) return d;
+          if (d.device_type === "fan") {
+            return d;
+          }
           const actual = !!pinObj[d.id];
           return {
             ...d,
             is_on: actual,
-            speed: d.device_type === "fan" && !actual ? 0 : d.speed,
             pin_status_ble: source === "ble" ? actual : d.pin_status_ble,
             pin_status_wifi: source === "wifi" ? actual : d.pin_status_wifi,
           };
@@ -513,30 +516,38 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   );
 
   const applyFanStateSnapshot = React.useCallback(
-    (pin: number, power: number, source: "ble" | "wifi") => {
+    (
+      pin: number,
+      power: number,
+      source: "ble" | "wifi",
+      explicitStatus?: boolean,
+    ) => {
       if (!Number.isFinite(pin) || !Number.isFinite(power)) return;
 
       const normalizedPower = Math.max(0, Math.min(100, Math.round(power)));
-      const speedLevel = percentToLevel(normalizedPower);
-      const isFanOn = normalizedPower > 0;
+      const savedPower =
+        normalizedPower > 0 ? normalizedPower : MIN_FAN_SPEED_PERCENT;
+      const isFanOn =
+        typeof explicitStatus === "boolean"
+          ? explicitStatus
+          : normalizedPower > 0;
 
       setDevices((prev) =>
-        prev.map((device) =>
-          device.id === pin
-            ? {
-                ...device,
-                speed: speedLevel,
-                is_on: isFanOn,
-                pin_status_ble:
-                  source === "ble" ? isFanOn : device.pin_status_ble,
-                pin_status_wifi:
-                  source === "wifi" ? isFanOn : device.pin_status_wifi,
-              }
-            : device,
-        ),
+        prev.map((device) => {
+          if (device.id !== pin) return device;
+          return {
+            ...device,
+            speed: savedPower,
+            is_on: isFanOn,
+            pin_status_ble:
+              source === "ble" ? isFanOn : device.pin_status_ble,
+            pin_status_wifi:
+              source === "wifi" ? isFanOn : device.pin_status_wifi,
+          };
+        }),
       );
     },
-    [percentToLevel],
+    [],
   );
 
   useEffect(() => {
@@ -617,28 +628,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       `[SwitchboardBLE][${resolvedDeviceMac || initialDeviceMac}]`,
       ...args,
     );
-
-  const levelToPercent = (level: number) => {
-    const safeLevel = Math.max(0, Math.min(5, Math.round(level)));
-    if (safeLevel === 0) return 0;
-    return (
-      FAN_SPEED_LEVELS[safeLevel - 1] ??
-      FAN_SPEED_LEVELS[FAN_SPEED_LEVELS.length - 1]
-    );
-  };
-  const percentToLevel = (percent: number) => {
-    const safePercent = Math.max(0, Math.round(Number(percent) || 0));
-    if (safePercent <= 0) return 0;
-
-    const closestIndex = FAN_SPEED_LEVELS.reduce(
-      (bestIdx, value, index, arr) =>
-        Math.abs(value - safePercent) < Math.abs(arr[bestIdx] - safePercent)
-          ? index
-          : bestIdx,
-      0,
-    );
-    return closestIndex + 1;
-  };
 
   useEffect(() => {
     return () => {
@@ -1001,10 +990,23 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           const parts = raw.split(":");
           const pin = Number(parts[1]);
           const power = Number(parts[2]);
+          const statusPart = parts[3];
+          const explicitStatus =
+            statusPart === "1"
+              ? true
+              : statusPart === "0"
+                ? false
+                : undefined;
           if (!Number.isFinite(pin) || !Number.isFinite(power)) {
             return;
           }
-          applyFanStateSnapshot(pin, power, "ble");
+          console.log("[FanState][BLE][received]", {
+            raw,
+            pin,
+            power,
+            explicitStatus,
+          });
+          applyFanStateSnapshot(pin, power, "ble", explicitStatus);
           return;
         }
 
@@ -1098,9 +1100,22 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const applyFanStateFromWifi = React.useCallback((status: any) => {
     const fanPin = Number(status?.fan_pin);
     const fanPower = Number(status?.fan_speed);
+    const explicitStatus =
+      typeof status?.fan_status === "boolean" ? status.fan_status : undefined;
     if (!Number.isFinite(fanPin) || !Number.isFinite(fanPower)) return;
-    applyFanStateSnapshot(fanPin, fanPower, "wifi");
-  }, [applyFanStateSnapshot]);
+    console.log("[FanState][WiFi][received]", {
+      fanPin,
+      fanPower,
+      explicitStatus,
+      rawStatus: status,
+    });
+    const hasLiveBle = !!activeDevice && services.length > 0;
+    const currentFan = devices.find((device) => device.id === fanPin);
+    if (hasLiveBle && currentFan?.pin_status_ble !== undefined) {
+      return;
+    }
+    applyFanStateSnapshot(fanPin, fanPower, "wifi", explicitStatus);
+  }, [activeDevice, applyFanStateSnapshot, devices, services.length]);
 
   const loadSwitchboardData = async () => {
     setLoading(true);
@@ -2571,8 +2586,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const changeDeviceSpeed = React.useCallback(
     (device: Device, speed: number) => {
-      const clamped = Math.max(0, Math.min(5, Math.round(speed)));
-      const percent = levelToPercent(clamped);
+      const clamped = Math.max(
+        MIN_FAN_SPEED_PERCENT,
+        Math.min(MAX_FAN_SPEED_PERCENT, Math.round(speed)),
+      );
 
       setDevices((prev) => {
         const idx = prev.findIndex((d) => d.id === device.id);
@@ -2587,14 +2604,14 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         next[idx] = {
           ...prev[idx],
           speed: clamped,
-          is_on: clamped > 0,
-          pin_status_ble: useBle ? clamped > 0 : prev[idx].pin_status_ble,
-          pin_status_wifi: !useBle ? clamped > 0 : prev[idx].pin_status_wifi,
+          is_on: true,
+          pin_status_ble: useBle ? true : prev[idx].pin_status_ble,
+          pin_status_wifi: !useBle ? true : prev[idx].pin_status_wifi,
         };
 
         (async () => {
           try {
-            await sendFanSpeed(percent, device);
+            await sendFanSpeed(clamped, device);
             await syncDeviceStates({ preferWifi: !useBle });
           } catch {
             // revert only that device
@@ -2622,19 +2639,29 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   const resolvePinStatus = (device: Device) => {
     const hasLiveBle = !!activeDevice && services.length > 0;
-    if (hasLiveBle && blePinsReceived && device.pin_status_ble !== undefined) {
+    if (device.device_type === "fan" && device.pin_status_ble !== undefined) {
       return !!device.pin_status_ble;
     }
-    if (device.pin_status_wifi !== undefined) {
-      return !!device.pin_status_wifi;
+    let resolved = !!device.is_on;
+    let source: "ble" | "wifi" | "local" = "local";
+    if (hasLiveBle && blePinsReceived && device.pin_status_ble !== undefined) {
+      resolved = !!device.pin_status_ble;
+      source = "ble";
+    } else if (device.pin_status_wifi !== undefined) {
+      resolved = !!device.pin_status_wifi;
+      source = "wifi";
     }
-    return !!device.is_on;
+    return resolved;
   };
 
   const renderDeviceCard = (device: Device) => {
     const IconComponent = ROOM_ICONS[device.device_type] || Lightbulb;
     const isActive = resolvePinStatus(device);
     const speedValue = device.speed ?? 0;
+    const sliderValue = Math.max(
+      MIN_FAN_SPEED_PERCENT,
+      Math.min(MAX_FAN_SPEED_PERCENT, Math.round(speedValue || MIN_FAN_SPEED_PERCENT)),
+    );
     const displayName = pinConfigs[device.id]?.name?.trim() || device.name;
     const isFan = device.device_type === "fan";
     const isTogglePending = !!pendingToggleById[device.id];
@@ -2721,26 +2748,26 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           {cardTop}
         </TouchableOpacity>
         <View style={styles.speedControllerBox}>
-          <View style={styles.speedLabelRow}>
-            <Text style={styles.label}>Speed</Text>
-          </View>
           <View style={styles.sliderRow}>
             <View style={styles.sliderWrap}>
               <CustomSlider
-                value={speedValue}
-                minimumValue={0}
-                maximumValue={5}
+                value={sliderValue}
+                minimumValue={MIN_FAN_SPEED_PERCENT}
+                maximumValue={MAX_FAN_SPEED_PERCENT}
                 step={1}
                 fullBleed
                 onValueChange={(v: number) => {
-                  const clamped = Math.max(0, Math.min(5, Math.round(v)));
+                  const clamped = Math.max(
+                    MIN_FAN_SPEED_PERCENT,
+                    Math.min(MAX_FAN_SPEED_PERCENT, Math.round(v)),
+                  );
                   setDevices((prev) =>
                     prev.map((d) =>
                       d.id === device.id
                         ? {
                             ...d,
                             speed: clamped,
-                            is_on: clamped > 0 ? true : d.is_on,
+                            is_on: true,
                           }
                         : d,
                     ),

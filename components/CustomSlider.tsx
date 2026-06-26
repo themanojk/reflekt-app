@@ -58,8 +58,8 @@ const styles = StyleSheet.create({
     height: 32,
   },
   sliderFullBleed: {
-    width: '145%',
+    width: '138%',
     marginLeft: -12,
-    marginRight: -34,
+    marginRight: -18,
   },
 });
