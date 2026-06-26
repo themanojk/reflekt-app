@@ -32,7 +32,7 @@ import {
   getSwitchboardsLocal,
   updateSwitchboardSensorsLocal,
 } from "@/db/switchboards.local";
-import { getCanonicalId } from "@/services/bleCanonicalId";
+import { resolveBleConnection } from "@/services/bleConnection";
 import BLEManagerService from "@/services/bleManager";
 import {
   addIgnoredSensor,
@@ -609,6 +609,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     null,
   );
   const reconnectAttemptsRef = React.useRef<number>(0);
+  const realtimeHandoffRef = React.useRef<boolean>(false);
   const appStateRef = React.useRef<AppStateStatus>(AppState.currentState);
   const IconComponent = ROOM_ICONS[roomIcon] ?? ROOM_ICONS["home"];
   const bleLog = (...args: any[]) =>
@@ -832,6 +833,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const scheduleReconnect = React.useCallback(
     (reason: string) => {
       if (!mountedRef.current || !isFocused) return;
+      if (realtimeHandoffRef.current) {
+        bleLog("Skipping BLE reconnect during realtime handoff", { reason });
+        return;
+      }
       if (reconnectAttemptsRef.current >= 2) return;
       if (reconnectTimerRef.current) return;
       reconnectAttemptsRef.current += 1;
@@ -892,6 +897,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     const wasFocused = prevFocusedRef.current;
     if (isFocused && !wasFocused) {
       prevFocusedRef.current = true;
+      if (realtimeHandoffRef.current) {
+        bleLog("Realtime handoff finished; allowing BLE reconnection");
+        realtimeHandoffRef.current = false;
+      }
       if (resolvedDeviceMac) {
         bleLog("Switchboard focused; ensuring BLE connection");
         getBleConnection(resolvedDeviceMac);
@@ -907,7 +916,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   }, [isFocused, resolvedDeviceMac]);
 
   useEffect(() => {
-    if (!activeDevice || !services.length) return;
+    if (!isFocused || !activeDevice || !services.length) return;
     teardownBle();
     bleLog("Subscribing to BLE data", {
       activeDeviceId: activeDevice.id,
@@ -1070,7 +1079,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       disconnectRef.current?.unsubscribe?.();
       disconnectRef.current = null;
     };
-  }, [activeDevice, applyFanStateSnapshot, services]);
+  }, [activeDevice, applyFanStateSnapshot, isFocused, services, teardownBle]);
 
   const onReceivedOverWifi = React.useCallback(
     (pins: any) => {
@@ -1964,6 +1973,75 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
 
   // pin configuration handled in separate full-screen modal
 
+  const openRealtimeMotionView = React.useCallback(
+    async (sensorMac: string) => {
+      const sensorState = sensorRanges[sensorMac];
+      const inputRange = Number(sensorState?.rangeCm || 0);
+      const appliedRange = Number(sensorState?.appliedRangeCm || 0);
+
+      if (sensorState?.saving || sensorState?.loading) {
+        Alert.alert(
+          "Realtime View",
+          "Wait for the current range sync to finish before opening realtime view.",
+        );
+        return;
+      }
+
+      if (!appliedRange) {
+        Alert.alert(
+          "Realtime View",
+          "Save the motion coverage range first so the live graph matches the applied sensor range.",
+        );
+        return;
+      }
+
+      if (inputRange && inputRange !== appliedRange) {
+        Alert.alert(
+          "Realtime View",
+          "Save the updated motion range first, then open realtime view.",
+        );
+        return;
+      }
+
+      realtimeHandoffRef.current = true;
+      setShowSettings(false);
+
+      try {
+        if (activeDevice || services.length) {
+          teardownBle();
+          await disconnectBleConnection();
+          await new Promise((resolve) => setTimeout(resolve, 450));
+        }
+      } catch {}
+
+      setTimeout(() => {
+        navigation.navigate("RealtimeMotionView", {
+          switchboardName,
+          deviceId: resolvedDeviceMac,
+          iosBleId,
+          bleId: activeDevice?.id || bleId,
+          service_id: serviceId || service_id,
+          sensorMac,
+          coverageRangeCm: appliedRange,
+        });
+      }, 80);
+    },
+    [
+      activeDevice,
+      bleId,
+      disconnectBleConnection,
+      iosBleId,
+      navigation,
+      resolvedDeviceMac,
+      sensorRanges,
+      serviceId,
+      service_id,
+      switchboardName,
+      services.length,
+      teardownBle,
+    ],
+  );
+
   const detachSensor = async (macOverride?: string) => {
     const targetMac = macOverride || pendingSensor;
     if (!targetMac) return;
@@ -2042,246 +2120,23 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         routeBleId: bleId,
         routeIosBleId: iosBleId,
       });
-      let transportId = (bleId || iosBleId || "").toString();
-      let hasTransportCandidate = !!transportId;
-      const normalizedMac = String(macAddress || "")
-        .trim()
-        .toUpperCase();
-
-      const validateTransportForCanonical = async (candidateId: string) => {
-        const candidate = String(candidateId || "").trim();
-        if (!candidate) return false;
-        try {
-          const mappedCanonical = await AsyncStorage.getItem(
-            `ble:canonical:${candidate}`,
-          );
-          return (
-            String(mappedCanonical || "")
-              .trim()
-              .toUpperCase() === normalizedMac
-          );
-        } catch {
-          return false;
-        }
-      };
-
-      if (!transportId) {
-        try {
-          const direct = await AsyncStorage.getItem(
-            `ble:byCanonical:${normalizedMac}`,
-          );
-          if (direct && (await validateTransportForCanonical(direct))) {
-            transportId = direct;
-            hasTransportCandidate = true;
-          } else if (direct) {
-            bleLog("Ignoring stale direct canonical->transport mapping", {
-              canonical: normalizedMac,
-              mappedTransport: direct,
-            });
-            await AsyncStorage.removeItem(`ble:byCanonical:${normalizedMac}`);
-          }
-
-          if (!transportId) {
-            const keys = await AsyncStorage.getAllKeys();
-            const canonicalKeys = keys.filter((k) =>
-              k.startsWith("ble:canonical:"),
-            );
-            for (const k of canonicalKeys) {
-              const val = await AsyncStorage.getItem(k);
-              if (
-                String(val || "")
-                  .trim()
-                  .toUpperCase() !== normalizedMac
-              ) {
-                continue;
-              }
-              const candidate = k.replace("ble:canonical:", "");
-              if (
-                candidate &&
-                (await validateTransportForCanonical(candidate))
-              ) {
-                transportId = candidate;
-                hasTransportCandidate = true;
-                break;
-              }
-            }
-          }
-        } catch {}
-      }
-      if (!transportId) {
-        transportId = (macAddress || "").toString();
-        hasTransportCandidate = false;
-      }
-
-      const normalizedTargetId = String(transportId || "")
-        .trim()
-        .toUpperCase();
-      bleLog("Resolved target transport id", { targetId: transportId });
-      await bleManager.stopScan();
-      const already = await bleManager.getAlreadyConnected();
-      bleLog("Already connected devices", {
-        count: already.length,
-        ids: already.map((d) => d.id),
+      const { connectedDevice, serviceIds } = await resolveBleConnection({
+        bleManager,
+        bleId,
+        iosBleId,
+        macAddress,
+        activeDevice,
+        activeServices: services,
+        log: bleLog,
       });
 
-      const rawCandidates = [
-        String(bleId || "").trim(),
-        String(iosBleId || "").trim(),
-        String(transportId || "").trim(),
-        // only try canonical MAC directly when no transport mapping is available
-        ...(hasTransportCandidate ? [] : [String(macAddress || "").trim()]),
-      ].filter(Boolean);
-      const seenNormalized = new Set<string>();
-      const candidateIds: string[] = [];
-      for (const candidate of rawCandidates) {
-        const key = candidate.trim().toUpperCase();
-        if (!key || seenNormalized.has(key)) continue;
-        seenNormalized.add(key);
-        candidateIds.push(candidate);
-      }
-
-      let connected: BleDevice | null =
-        already.find((d) =>
-          candidateIds.some(
-            (candidate) =>
-              String(d.id || "").toLowerCase() === candidate.toLowerCase(),
-          ),
-        ) || null;
-      if (
-        activeDevice &&
-        String(activeDevice.id || "")
-          .trim()
-          .toUpperCase() === normalizedTargetId &&
-        services.length > 0
-      ) {
-        bleLog("Skipping connect: already active with services", {
-          activeDeviceId: activeDevice.id,
-          servicesCount: services.length,
-        });
-        connectingBleRef.current = false;
-        return;
-      }
-      if (!connected) {
-        for (const candidate of candidateIds) {
-          bleLog("Connecting via connectSafely (direct)", { candidate });
-          connected = await bleManager.connectSafely(candidate, {
-            retries: 2,
-            connectTimeoutMs: 6000,
-            autoConnect: false,
-            skipScan: true,
-            scanTimeoutMs: 2500,
-          });
-          if (connected) break;
-        }
-      }
-
-      if (!connected) {
-        bleLog(
-          "Trying discovery fallback to resolve live transport id by DIS MAC",
-          {
-            canonicalMac: normalizedMac,
-          },
-        );
-        let discoveredTransportId: string | null = null;
-        try {
-          const { stop, done } = bleManager.startScan_new(
-            (dev) => {
-              (async () => {
-                try {
-                  const canonical = await getCanonicalId(dev, {
-                    disconnectAfter: false,
-                  });
-                  if (
-                    String(canonical || "")
-                      .trim()
-                      .toUpperCase() === normalizedMac
-                  ) {
-                    discoveredTransportId = dev.id;
-                    bleLog("Discovery fallback matched canonical MAC", {
-                      canonical: normalizedMac,
-                      transportId: dev.id,
-                    });
-                    stop();
-                  }
-                } catch {}
-              })();
-            },
-            { stopAfterMs: 5000 },
-          );
-          await done;
-        } catch (e) {
-          bleLog("Discovery fallback scan failed", e);
-        }
-
-        if (discoveredTransportId) {
-          try {
-            await AsyncStorage.setItem(
-              `ble:byCanonical:${normalizedMac}`,
-              discoveredTransportId,
-            );
-          } catch {}
-          try {
-            await bleManager.stopScan();
-          } catch {}
-          await new Promise((r) => setTimeout(r, 180));
-          bleLog("Connecting using discovery-resolved transport", {
-            discoveredTransportId,
-          });
-          connected = await bleManager.connectSafely(discoveredTransportId, {
-            retries: 2,
-            connectTimeoutMs: 7000,
-            autoConnect: false,
-            skipScan: true,
-            scanTimeoutMs: 8000,
-          });
-        }
-      }
-
-      if (!connected) {
-        for (const candidate of candidateIds) {
-          bleLog("Retrying connect via scan-assisted connectSafely", {
-            candidate,
-          });
-          connected = await bleManager.connectSafely(candidate, {
-            retries: 1,
-            connectTimeoutMs: 5000,
-            autoConnect: false,
-            skipScan: false,
-            scanTimeoutMs: 4500,
-          });
-          if (connected) break;
-        }
-      }
-
-      if (connected) {
-        bleLog("Connected to BLE device", { connectedId: connected.id });
-        // Show BLE online as soon as link is up; service resolution follows immediately.
+      if (connectedDevice) {
         setIsOnline(true);
-        try {
-          await connected.discoverAllServicesAndCharacteristics();
-        } catch (e) {
-          bleLog("Service discovery failed on first attempt", e);
-        }
-        setActiveDevice(connected);
-        let serviceIds = await bleManager.getCustomServiceId(connected);
-        if (!serviceIds.length) {
-          bleLog("No custom services found; retrying discovery once");
-          try {
-            await connected.discoverAllServicesAndCharacteristics();
-            serviceIds = await bleManager.getCustomServiceId(connected);
-          } catch (e) {
-            bleLog("Service discovery retry failed", e);
-          }
-        }
-        bleLog("Resolved custom services", {
-          connectedId: connected.id,
-          serviceIds,
-        });
+        setActiveDevice(connectedDevice);
         setServices(serviceIds);
         setIsOnline(true);
         reconnectAttemptsRef.current = 0;
       } else {
-        bleLog("Failed to connect: connected device is null");
         scheduleReconnect("connected_null");
       }
     } catch (err) {
@@ -3763,6 +3618,16 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                   {sensorRanges[mac]?.loading ? (
                     <Text style={styles.sensorRangeMeta}>Loading range...</Text>
                   ) : null}
+                  <TouchableOpacity
+                    style={styles.sensorRealtimeBtn}
+                    onPress={() => {
+                      void openRealtimeMotionView(mac);
+                    }}
+                  >
+                    <Text style={styles.sensorRealtimeBtnText}>
+                      View Realtime Motion Range
+                    </Text>
+                  </TouchableOpacity>
                 </View>
               ))}
             </View>
@@ -5821,6 +5686,21 @@ const styles = StyleSheet.create({
     color: "#94a3b8",
     fontSize: 12,
     marginTop: 6,
+  },
+  sensorRealtimeBtn: {
+    marginTop: 12,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    backgroundColor: "rgba(56, 189, 248, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(56, 189, 248, 0.34)",
+    alignItems: "center",
+  },
+  sensorRealtimeBtnText: {
+    color: "#67e8f9",
+    fontSize: 13,
+    fontWeight: "700",
   },
   sensorRemoveBtn: {
     paddingVertical: 8,
