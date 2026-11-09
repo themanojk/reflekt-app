@@ -80,6 +80,36 @@ export function initDB() {
     CREATE INDEX IF NOT EXISTS idx_pin_configs_device
     ON pin_configs(device_mac);
 
+    CREATE TABLE IF NOT EXISTS ir_widget_bindings (
+    binding_id TEXT PRIMARY KEY,
+    service_id TEXT,
+    hub_device_mac TEXT,
+    hub_pin INTEGER,
+    ir_module_mac TEXT,
+    device_type TEXT,
+    catalog_id TEXT,
+    command_mode TEXT,
+    display_name TEXT,
+    quick_actions_json TEXT,
+    last_known_state_json TEXT,
+    status TEXT,
+    updatedAt INTEGER,
+    pending_sync INTEGER DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ir_widget_bindings_service
+    ON ir_widget_bindings(service_id);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ir_widget_bindings_pin
+    ON ir_widget_bindings(service_id, hub_pin);
+
+    CREATE TABLE IF NOT EXISTS ir_catalog_cache (
+    catalog_id TEXT PRIMARY KEY,
+    profile_json TEXT,
+    command_template_json TEXT,
+    updatedAt INTEGER
+    );
+
   `);
 
   // Lightweight migration for older installs

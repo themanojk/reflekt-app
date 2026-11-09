@@ -66,6 +66,12 @@ export interface WifiPayload {
     brightness?: number;
     power?: number;
     speed?: number;
+    temp?: number;
+    mode?: number;
+    fan?: number;
+    ir_module_mac?: string;
+    payload?: Record<string, unknown>;
+    [key: string]: unknown;
   };
 }
 
@@ -241,12 +247,14 @@ export async function checkSensorAttachment(sensorMac: string) {
 
 export async function attachSensorToDevice(
   deviceMac: string,
-  sensorMac: string
+  sensorMac: string,
+  sensorType?: string,
 ) {
   return client
     .post(`/sensor/attach-sensor`, {
       device_mac: deviceMac,
       sensor_mac: sensorMac,
+      ...(sensorType ? { sensor_type: sensorType } : {}),
     })
     .then((res) => res.data);
 }
@@ -278,6 +286,12 @@ export async function detachSensorFromDevice(
       device_mac: deviceMac,
       sensor_mac: sensorMac,
     })
+    .then((res) => res.data);
+}
+
+export async function fetchDeviceSensors(deviceMac: string) {
+  return client
+    .get(`/sensor/rules/device/${encodeURIComponent(deviceMac)}`)
     .then((res) => res.data);
 }
 

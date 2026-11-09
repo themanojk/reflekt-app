@@ -1,10 +1,10 @@
 import {
   attachSensorToDevice,
   checkSensorAttachment,
-  createSensorRule,
   createSwitchSchedule,
   deleteSwitchSchedule,
   detachSensorFromDevice,
+  fetchDeviceSensors,
   fetchDevicesByMac,
   fetchPinConfigs,
   fetchSensorRange,
@@ -18,10 +18,35 @@ import {
   updateSensorRange,
   WifiPayload,
 } from "@/api/devics";
+import {
+  createIrWidgetBinding,
+  fetchIrCatalogProfile,
+  fetchIrBrands,
+  fetchIrDeviceTypes,
+  fetchIrModels,
+  fetchIrWidgetBindingsByService,
+  updateIrWidgetBinding,
+} from "@/api/ir";
 import { DATA_CHAR_UUID, ROOM_ICONS } from "@/constants";
 import { RootStackParamList } from "@/constants/types";
+import type {
+  CreateIrWidgetBindingInput,
+  IrCatalogProfile,
+  IrCommandTemplate,
+  IrDeviceType,
+  IrWidgetBinding,
+} from "@/types/ir";
 import { useToast } from "@/contexts/ToastContext";
 import { getLayoutButtonsByServiceId } from "@/db/layout_buttons";
+import {
+  deleteIrWidgetBindingLocal,
+  getIrCatalogCacheLocal,
+  getIrWidgetBindingsLocal,
+  getPendingIrWidgetBindingsLocal,
+  markIrWidgetBindingSynced,
+  upsertIrCatalogCacheLocal,
+  upsertIrWidgetBindingLocal,
+} from "@/db/ir_config";
 import {
   getPendingPinConfigs,
   getPinConfigsByDevice,
@@ -47,10 +72,28 @@ import {
   toggleWidgetFavoriteSwitch,
   updateWidgetFavoriteSwitchState,
 } from "@/utils/widgetSync";
+import { buildFanStatusSignature } from "@/utils/deviceStatus";
+import {
+  buildLocalIrWidgetBinding,
+  getDefaultIrQuickActions,
+} from "@/utils/irBinding";
+import { buildIrExecutePayloadFromTemplate } from "@/utils/irTemplates";
 import { loadWifi, saveWifi } from "@/utils/wifiCreds";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { RouteProp, useIsFocused } from "@react-navigation/native";
 import { Buffer } from "buffer";
+import AcControlModal, {
+  AcControlState,
+  AcFanSpeed,
+  AcMode,
+  AcPowerMode,
+} from "../components/AcControlModal";
+import IrModuleConfigModal from "../components/IrModuleConfigModal";
+import IrWidgetSetupModal from "../components/IrWidgetSetupModal";
+import RgbLightControlModal, {
+  RgbPaletteColor,
+} from "../components/RgbLightControlModal";
+import SensorPairingSheetContent from "../components/SensorPairingSheetContent";
 import {
   Bluetooth,
   ChevronDown,
@@ -62,6 +105,7 @@ import {
   Power,
   Settings,
   SlidersHorizontal,
+  Snowflake,
   Star,
   Trash2,
   Wifi,
@@ -89,10 +133,8 @@ import {
 } from "react-native";
 import { Device as BleDevice } from "react-native-ble-plx";
 import Svg, {
-  Circle,
   Defs,
   LinearGradient,
-  Polygon,
   Rect,
   Stop,
 } from "react-native-svg";
@@ -111,6 +153,50 @@ interface Device {
   speed?: number;
   command: string;
 }
+export type { Device };
+
+const DEFAULT_AC_STATE: AcControlState = {
+  power: false,
+  temperature: 24,
+  mode: "cool",
+  fan: "auto",
+  swing: false,
+  powerMode: "normal",
+};
+
+const AC_MODE_TO_FW: Record<AcMode, number> = {
+  cool: 0,
+  dry: 1,
+  fan: 2,
+  auto: 3,
+  heat: 4,
+};
+
+const AC_FAN_TO_FW: Record<AcFanSpeed, number> = {
+  auto: 0,
+  low: 1,
+  medium: 2,
+  high: 3,
+  max: 4,
+};
+
+const AC_POWER_MODE_TO_FW: Record<AcPowerMode, number> = {
+  normal: 0,
+  eco: 1,
+  turbo: 2,
+  sleep: 3,
+};
+
+const RGB_WIDGET_COLORS: RgbPaletteColor[] = [
+  { key: "red", label: "Red", hex: "#ef4444" },
+  { key: "green", label: "Green", hex: "#22c55e" },
+  { key: "blue", label: "Blue", hex: "#3b82f6" },
+  { key: "white", label: "White", hex: "#f8fafc" },
+  { key: "warm_white", label: "Warm White", hex: "#fbbf24" },
+  { key: "yellow", label: "Yellow", hex: "#fde047" },
+  { key: "cyan", label: "Cyan", hex: "#22d3ee" },
+  { key: "magenta", label: "Magenta", hex: "#e879f9" },
+];
 
 const COLOR_PALETTE = [
   "rgb(91, 141, 239)",
@@ -476,6 +562,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [blePinsReceived, setBlePinsReceived] = useState(false);
   const lastSensorListRef = React.useRef<string>("");
   const lastSensorCheckRef = React.useRef<number>(0);
+  const lastIrModuleListRef = React.useRef<string>("");
+  const lastIrModuleCheckRef = React.useRef<number>(0);
+  const lastWifiFanStatusRef = React.useRef<string>("");
   const resolvingBleRef = React.useRef<boolean>(false);
   const connectingBleRef = React.useRef<boolean>(false);
   const [isOnline, setIsOnline] = useState<boolean>(status);
@@ -484,6 +573,16 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     Record<number, boolean>
   >({});
   const [widgetFavoriteIds, setWidgetFavoriteIds] = useState<string[]>([]);
+  const [attachedIrModules, setAttachedIrModules] = useState<string[]>([]);
+  const [showAcControlModal, setShowAcControlModal] = useState(false);
+  const [activeAcDeviceId, setActiveAcDeviceId] = useState<number | null>(null);
+  const [acControlDraft, setAcControlDraft] = useState<AcControlState>(
+    DEFAULT_AC_STATE,
+  );
+  const [acStateByPin, setAcStateByPin] = useState<Record<number, AcControlState>>(
+    {},
+  );
+  const [acCommandBusy, setAcCommandBusy] = useState(false);
 
   const toWidgetFavoriteId = React.useCallback(
     (pin: number) =>
@@ -570,7 +669,38 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   const [pendingSensor, setPendingSensor] = useState<string | null>(null);
   const [attachInFlight, setAttachInFlight] = useState(false);
   const [sensorStep, setSensorStep] = useState<"prompt" | "attached">("prompt");
+  const [availableIrModules, setAvailableIrModules] = useState<string[]>([]);
+  const [showIrModuleModal, setShowIrModuleModal] = useState(false);
+  const [pendingIrModule, setPendingIrModule] = useState<string | null>(null);
+  const [irAttachInFlight, setIrAttachInFlight] = useState(false);
+  const [irStep, setIrStep] = useState<"prompt" | "attached">("prompt");
   const [ignoredSensors, setIgnoredSensors] = useState<string[]>([]);
+  const [showIrWidgetSetupModal, setShowIrWidgetSetupModal] = useState(false);
+  const [irWidgetSetupBusy, setIrWidgetSetupBusy] = useState(false);
+  const [showIrModuleConfigModal, setShowIrModuleConfigModal] = useState(false);
+  const [irSetupMode, setIrSetupMode] = useState<"ac_pin" | "widget">("ac_pin");
+  const [irWidgetBindings, setIrWidgetBindings] = useState<IrWidgetBinding[]>([]);
+  const [selectedIrWidgetBinding, setSelectedIrWidgetBinding] = useState<IrWidgetBinding | null>(null);
+  const [showRgbWidgetModal, setShowRgbWidgetModal] = useState(false);
+  const [activeRgbBindingId, setActiveRgbBindingId] = useState<string | null>(null);
+  const [rgbWidgetDraft, setRgbWidgetDraft] = useState<{
+    colorKey: string;
+    brightness: number;
+  }>({
+    colorKey: "white",
+    brightness: 100,
+  });
+  const [rgbWidgetBusy, setRgbWidgetBusy] = useState(false);
+  const irCommandTemplateCacheRef = React.useRef<
+    Record<string, IrCommandTemplate | null | undefined>
+  >({});
+  const [irDeviceTypes, setIrDeviceTypes] = useState<IrDeviceType[]>([]);
+  const [irBrands, setIrBrands] = useState<string[]>([]);
+  const [irModels, setIrModels] = useState<IrCatalogProfile[]>([]);
+  const [selectedIrSetupDevice, setSelectedIrSetupDevice] = useState<Device | null>(null);
+  const [selectedIrDeviceType, setSelectedIrDeviceType] = useState<IrDeviceType | null>(null);
+  const [selectedIrBrand, setSelectedIrBrand] = useState<string | null>(null);
+  const [selectedIrModelId, setSelectedIrModelId] = useState<string | null>(null);
   const [attachedSensors, setAttachedSensors] = useState<string[]>(
     Array.isArray(initialSensors) ? initialSensors : [],
   );
@@ -612,6 +742,15 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     ((result: { ok: boolean; message?: string }) => void) | null
   >(null);
   const attachResultMacRef = React.useRef<string | null>(null);
+  const irAttachResultResolverRef = React.useRef<
+    ((result: { ok: boolean; message?: string }) => void) | null
+  >(null);
+  const irAttachResultMacRef = React.useRef<string | null>(null);
+  const acCommandResolverRef = React.useRef<
+    ((result: { ok: boolean; message?: string }) => void) | null
+  >(null);
+  const acCommandIdRef = React.useRef<string | null>(null);
+  const queuedAcControlStateRef = React.useRef<AcControlState | null>(null);
   const disconnectRef = React.useRef<Disposable | null>(null);
   const mountedRef = React.useRef(true);
   const activeDeviceRef = React.useRef<BleDevice | undefined>(undefined);
@@ -692,6 +831,68 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   useEffect(() => {
     getIgnoredSensors(resolvedDeviceMac).then(setIgnoredSensors);
   }, [resolvedDeviceMac]);
+
+  useEffect(() => {
+    if (!showIrWidgetSetupModal || !selectedIrDeviceType) {
+      setIrBrands([]);
+      return;
+    }
+
+    let cancelled = false;
+    setIrWidgetSetupBusy(true);
+    fetchIrBrands(selectedIrDeviceType)
+      .then((brands) => {
+        if (cancelled) return;
+        setIrBrands(brands);
+      })
+      .catch((error) => {
+        console.warn("[IR][catalog][brands][error]", error);
+        if (!cancelled) {
+          setIrBrands([]);
+          showToast("Unable to load IR brands.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIrWidgetSetupBusy(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedIrDeviceType, showIrWidgetSetupModal, showToast]);
+
+  useEffect(() => {
+    if (!showIrWidgetSetupModal || !selectedIrDeviceType || !selectedIrBrand) {
+      setIrModels([]);
+      return;
+    }
+
+    let cancelled = false;
+    setIrWidgetSetupBusy(true);
+    fetchIrModels(selectedIrDeviceType, selectedIrBrand)
+      .then((models) => {
+        if (cancelled) return;
+        setIrModels(models);
+      })
+      .catch((error) => {
+        console.warn("[IR][catalog][models][error]", error);
+        if (!cancelled) {
+          setIrModels([]);
+          showToast("Unable to load IR models.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIrWidgetSetupBusy(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedIrBrand, selectedIrDeviceType, showIrWidgetSetupModal, showToast]);
 
   useEffect(() => {
     Animated.loop(
@@ -788,6 +989,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     }).start(() => {
       sheetTranslateY.setValue(0);
       setShowSensorModal(false);
+      setShowIrModuleModal(false);
     });
   }, [sheetTranslateY]);
 
@@ -920,8 +1122,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         .filter(Boolean);
 
       messages.forEach((raw) => {
-        console.log("Printing Raw data");
-        console.log(raw);
         if (raw.startsWith("SENSORS:")) {
           const list = raw
             .replace("SENSORS:", "")
@@ -962,6 +1162,104 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           } else {
             handleAttachedSensors(list);
           }
+          return;
+        }
+        if (raw.startsWith("IR_MODULES:")) {
+          const list = raw
+            .replace("IR_MODULES:", "")
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const validList = list.filter((s) => isLikelySensorMac(s));
+          if (!validList.length && list.length) {
+            console.log("Ignoring malformed IR_MODULES payload:", list);
+            return;
+          }
+          const key = validList.join(",");
+          const now = Date.now();
+          const minGapMs = 10000;
+          if (
+            key !== lastIrModuleListRef.current ||
+            now - lastIrModuleCheckRef.current > minGapMs
+          ) {
+            lastIrModuleListRef.current = key;
+            lastIrModuleCheckRef.current = now;
+            handleAvailableIrModules(validList);
+          }
+          return;
+        }
+        if (raw.startsWith("IR_MODULES_ATTACHED:")) {
+          const list = raw
+            .replace("IR_MODULES_ATTACHED:", "")
+            .split(",")
+            .map((s) => s.trim().toUpperCase())
+            .filter(Boolean);
+          const next = Array.from(new Set(list));
+          const activeAttachMac = irAttachResultMacRef.current;
+          if (activeAttachMac && next.includes(activeAttachMac)) {
+            irAttachResultResolverRef.current?.({ ok: true });
+            irAttachResultResolverRef.current = null;
+            irAttachResultMacRef.current = null;
+          }
+          setAttachedIrModules((prev) => {
+            if (prev.length === next.length && prev.every((item, index) => item === next[index])) {
+              return prev;
+            }
+            return next;
+          });
+          return;
+        }
+        if (raw.startsWith("AC_COMMAND_SENT:")) {
+          acCommandIdRef.current = raw.replace("AC_COMMAND_SENT:", "").trim();
+          acCommandResolverRef.current?.({ ok: true });
+          acCommandResolverRef.current = null;
+          acCommandIdRef.current = null;
+          return;
+        }
+        if (raw.startsWith("AC_ACK:")) {
+          const payload = raw.replace("AC_ACK:", "");
+          const [commandId, status, detail] = payload.split(":");
+          if (!commandId || acCommandIdRef.current !== commandId.trim()) {
+            return;
+          }
+          const statusCode = Number(status);
+          if (statusCode === 3) {
+            acCommandResolverRef.current?.({ ok: true });
+            acCommandResolverRef.current = null;
+            acCommandIdRef.current = null;
+            return;
+          }
+          if (statusCode === 4 || statusCode === 5) {
+            acCommandResolverRef.current?.({
+              ok: false,
+              message: `AC command failed (${detail || statusCode})`,
+            });
+            acCommandResolverRef.current = null;
+            acCommandIdRef.current = null;
+            return;
+          }
+          return;
+        }
+        if (raw.startsWith("IR_ATTACH_")) {
+          const activeAttachMac = irAttachResultMacRef.current;
+          if (!activeAttachMac) {
+            return;
+          }
+          if (raw === "IR_ATTACH_OK") {
+            irAttachResultResolverRef.current?.({ ok: true });
+          } else if (raw.startsWith("IR_ATTACH_FAIL:")) {
+            irAttachResultResolverRef.current?.({
+              ok: false,
+              message: raw.replace("IR_ATTACH_FAIL:", "").trim() || "Attach failed",
+            });
+          } else {
+            irAttachResultResolverRef.current?.({
+              ok: false,
+              message: raw,
+            });
+          }
+          irAttachResultResolverRef.current = null;
+          irAttachResultMacRef.current = null;
           return;
         }
         if (raw.startsWith("SENSOR_ATTACH_")) {
@@ -1103,12 +1401,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     const explicitStatus =
       typeof status?.fan_status === "boolean" ? status.fan_status : undefined;
     if (!Number.isFinite(fanPin) || !Number.isFinite(fanPower)) return;
-    console.log("[FanState][WiFi][received]", {
-      fanPin,
-      fanPower,
-      explicitStatus,
-      rawStatus: status,
-    });
+    const signature = buildFanStatusSignature(status);
+    if (signature === lastWifiFanStatusRef.current) return;
+    lastWifiFanStatusRef.current = signature;
     const hasLiveBle = !!activeDevice && services.length > 0;
     const currentFan = devices.find((device) => device.id === fanPin);
     if (hasLiveBle && currentFan?.pin_status_ble !== undefined) {
@@ -1228,6 +1523,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       // 5️⃣ Non-blocking side calls
       loadWifiStatusData();
       refreshAttachedSensorsFromBackend();
+      refreshAttachedIrModulesFromBackend();
       loadAllSensorRanges();
     } catch (err) {
     } finally {
@@ -1319,6 +1615,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     await getCurrentState(activeDevice, services[0]);
   };
 
+
   const resolveApiDeviceMac = React.useCallback(async () => {
     const current = String(resolvedDeviceMac || "")
       .trim()
@@ -1376,6 +1673,47 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       await persistAttachedSensors(fromApi);
     } catch {}
   }, [persistAttachedSensors, resolvedDeviceMac]);
+
+  const refreshAttachedIrModulesFromBackend = React.useCallback(async () => {
+    if (activeDevice && services.length > 0) {
+      return;
+    }
+    try {
+      const response = await fetchDeviceSensors(resolvedDeviceMac);
+      const sensors = Array.isArray(response?.sensors) ? response.sensors : [];
+      const irModules = sensors
+        .filter(
+          (sensor: any) =>
+            String(sensor?.type || "").trim().toUpperCase() === "IR_REMOTE",
+        )
+        .map((sensor: any) => String(sensor?.sensor_mac || "").trim().toUpperCase())
+        .filter(Boolean);
+      setAttachedIrModules(Array.from(new Set(irModules)));
+    } catch {}
+  }, [activeDevice, resolvedDeviceMac, services.length]);
+
+  const requestIrModuleRefresh = React.useCallback(async () => {
+    if (!services.length || !activeDevice) {
+      showToast("Connect to the hub over BLE to detect IR modules.");
+      return;
+    }
+
+    try {
+      lastIrModuleListRef.current = "";
+      lastIrModuleCheckRef.current = 0;
+      setPendingIrModule(null);
+      await getCurrentState(activeDevice, services[0]);
+      await refreshAttachedIrModulesFromBackend();
+      showToast("Checking for IR modules...");
+    } catch {
+      showToast("Unable to refresh IR module detection.");
+    }
+  }, [
+    activeDevice,
+    refreshAttachedIrModulesFromBackend,
+    services,
+    showToast,
+  ]);
 
   const loadPinConfigs = async () => {
     const local = await getPinConfigsByDevice(resolvedDeviceMac);
@@ -1751,7 +2089,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   };
 
   const saveAllPinConfigs = async () => {
-    const targetSensor = attachedSensors[0];
     const saveTasks: Promise<any>[] = [];
     const changedPins: number[] = [];
     for (const d of devices) {
@@ -1802,28 +2139,6 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         })(),
       );
 
-      if (targetSensor) {
-        saveTasks.push(
-          (async () => {
-            try {
-              if (cfg.autoOn) {
-                await createSensorRule(targetSensor, d.id, "active", "on");
-              }
-              if (cfg.autoOff) {
-                await createSensorRule(
-                  targetSensor,
-                  d.id,
-                  "inactive",
-                  "off",
-                  cfg.offDelay || DEFAULT_AUTO_OFF_DELAY_SEC,
-                );
-              }
-            } catch {
-              // ignore rule errors
-            }
-          })(),
-        );
-      }
     }
     if (!saveTasks.length) {
       showToast("No changes to save.");
@@ -1858,6 +2173,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         const res = await checkSensorAttachment(mac);
         console.log(res, mac);
         if (!res?.attached) {
+          setShowSettings(false);
+          setShowAcControlModal(false);
+          setShowPinConfigModal(false);
           setPendingSensor(mac);
           setShowSensorModal(true);
           setSensorStep("prompt");
@@ -1865,11 +2183,50 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         }
       } catch {
         // fallback: show prompt if check fails (offline/timeout)
+        setShowSettings(false);
+        setShowAcControlModal(false);
+        setShowPinConfigModal(false);
         setPendingSensor(mac);
         setShowSensorModal(true);
         setSensorStep("prompt");
         return;
       }
+    }
+  };
+
+  const handleAvailableIrModules = async (list: string[]) => {
+    if (!list.length) return;
+    const unique = Array.from(new Set(list.map((item) => item.toUpperCase())));
+    setAvailableIrModules(unique);
+    for (const mac of unique) {
+      if (ignoredSensors.includes(mac)) {
+        console.log("[IR][discovery][ignored]", { mac });
+        continue;
+      }
+      console.log("[IR][discovery][prompt-open]", { mac });
+      setShowSettings(false);
+      setShowAcControlModal(false);
+      setShowPinConfigModal(false);
+      setPendingIrModule(mac);
+      setShowIrModuleModal(true);
+      setIrStep("prompt");
+      void checkSensorAttachment(mac)
+        .then((res) => {
+          const attachedToCurrentDevice =
+            !!res?.attached &&
+            String(res?.device_mac || "")
+              .trim()
+              .toUpperCase() === resolvedDeviceMac.toUpperCase();
+          if (attachedToCurrentDevice) {
+            console.log("[IR][repair][required]", {
+              mac,
+              reason:
+                "hub rediscovered module as available while backend still shows attached",
+            });
+          }
+        })
+        .catch(() => {});
+      return;
     }
   };
 
@@ -1973,12 +2330,90 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     }
   };
 
+  const attachIrModule = async () => {
+    if (!pendingIrModule) return;
+    const normalizedPending = String(pendingIrModule).trim().toUpperCase();
+    try {
+      if (!services.length || !activeDevice) {
+        Alert.alert(
+          "Failed",
+          "Hub BLE is not connected yet. Reopen this board and try again.",
+        );
+        return;
+      }
+      const apiDeviceMac = await resolveApiDeviceMac();
+      if (!isMacAddress(apiDeviceMac)) {
+        Alert.alert(
+          "Failed",
+          "Device MAC not resolved yet. Reopen this board and try again.",
+        );
+        return;
+      }
+      setIrAttachInFlight(true);
+      const attachResponse = new Promise<{ ok: boolean; message?: string }>(
+        (resolve) => {
+          irAttachResultResolverRef.current = resolve;
+          irAttachResultMacRef.current = normalizedPending;
+        },
+      );
+      const timeout = new Promise<{ ok: boolean; message?: string }>(
+        (resolve) => {
+          setTimeout(() => {
+            if (irAttachResultMacRef.current !== normalizedPending) {
+              return;
+            }
+            irAttachResultResolverRef.current = null;
+            irAttachResultMacRef.current = null;
+            resolve({
+              ok: false,
+              message: "Hub did not confirm AC module pairing in time.",
+            });
+          }, 20000);
+        },
+      );
+      const cmd = `IR_ATTACH:${normalizedPending}`;
+      await bleManager.sendData(activeDevice, cmd, services[0]);
+      const result = await Promise.race([attachResponse, timeout]);
+      if (!result.ok) {
+        throw new Error(result.message || "Attach failed");
+      }
+      await attachSensorToDevice(apiDeviceMac, normalizedPending, "IR_REMOTE");
+      setAvailableIrModules((prev) =>
+        prev.filter((item) => item !== normalizedPending),
+      );
+      setAttachedIrModules((prev) =>
+        Array.from(new Set([...prev, normalizedPending])),
+      );
+      setShowIrModuleModal(false);
+      setPendingIrModule(null);
+      showToast("AC module linked with hub.");
+    } catch (e: any) {
+      const message =
+        e?.response?.data?.message ||
+        e?.message ||
+        "AC module attach failed";
+      Alert.alert("Failed", message);
+    } finally {
+      irAttachResultResolverRef.current = null;
+      irAttachResultMacRef.current = null;
+      setIrAttachInFlight(false);
+    }
+  };
+
   const ignoreSensor = async () => {
     if (!pendingSensor) return;
     await addIgnoredSensor(resolvedDeviceMac, pendingSensor);
     setIgnoredSensors((prev) => Array.from(new Set([...prev, pendingSensor])));
     setShowSensorModal(false);
     setPendingSensor(null);
+  };
+
+  const ignoreIrModule = async () => {
+    if (!pendingIrModule) return;
+    await addIgnoredSensor(resolvedDeviceMac, pendingIrModule);
+    setIgnoredSensors((prev) => Array.from(new Set([...prev, pendingIrModule])));
+    setShowIrModuleModal(false);
+    setPendingIrModule(null);
   };
 
   const resetIgnoredSensors = async () => {
@@ -2123,6 +2558,65 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     );
   };
 
+  const detachIrModule = async (macOverride?: string) => {
+    const targetMac = macOverride || attachedIrModules[0];
+    if (!targetMac) return;
+    const normalizedTarget = String(targetMac).trim().toUpperCase();
+
+    Alert.alert(
+      "Detach AC Module",
+      "This will detach the IR sensor from this hub. Continue?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Detach",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const apiDeviceMac = await resolveApiDeviceMac();
+              if (!isMacAddress(apiDeviceMac)) {
+                Alert.alert(
+                  "Failed",
+                  "Device MAC not resolved yet. Reopen this board and try again.",
+                );
+                return;
+              }
+
+              await detachSensorFromDevice(apiDeviceMac, normalizedTarget);
+
+              if (services.length && activeDevice) {
+                const cmd = `IR_DETACH:${normalizedTarget}`;
+                await bleManager.sendData(activeDevice, cmd, services[0]);
+              }
+
+              setAttachedIrModules((prev) =>
+                prev.filter((item) => item !== normalizedTarget),
+              );
+              showToast("AC module detached from hub.");
+            } catch (e: any) {
+              const message = String(
+                e?.response?.data?.message || e?.message || "",
+              ).toLowerCase();
+
+              if (message.includes("sensor not attached to this device")) {
+                setAttachedIrModules((prev) =>
+                  prev.filter((item) => item !== normalizedTarget),
+                );
+                showToast("AC module removed from local list.");
+                return;
+              }
+
+              Alert.alert(
+                "Failed",
+                e?.response?.data?.message || e?.message || "Detach failed",
+              );
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const getBleConnection = async (macAddress: string) => {
     try {
       if (connectingBleRef.current) {
@@ -2252,7 +2746,7 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [resolvedDeviceMac]);
+  }, [activeDevice, resolvedDeviceMac, services.length]);
 
   const toggleWidgetFavoriteForDevice = React.useCallback(
     async (device: Device, isOn: boolean, displayName: string) => {
@@ -2317,6 +2811,439 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
       return false;
     }
   };
+
+  const buildAcStateForDevice = (device: Device): AcControlState => {
+    const saved = acStateByPin[device.id];
+    if (saved) {
+      return {
+        ...saved,
+        power: resolvePinStatus(device),
+      };
+    }
+    const binding = getIrBindingForPin(device.id);
+    const bindingState = (binding?.last_known_state || {}) as Record<string, unknown>;
+    return {
+      ...DEFAULT_AC_STATE,
+      temperature: Number(bindingState.temperature ?? bindingState.temp ?? DEFAULT_AC_STATE.temperature),
+      mode: String(bindingState.mode || DEFAULT_AC_STATE.mode).toLowerCase() as AcMode,
+      fan: String(bindingState.fan || DEFAULT_AC_STATE.fan).toLowerCase() as AcFanSpeed,
+      swing: Boolean(bindingState.swing ?? DEFAULT_AC_STATE.swing),
+      powerMode: String(
+        bindingState.powerMode ??
+          bindingState.power_mode ??
+          DEFAULT_AC_STATE.powerMode,
+      ).toLowerCase() as AcPowerMode,
+      power: resolvePinStatus(device),
+    };
+  };
+
+  const getIrBindingForPin = React.useCallback(
+    (pin: number) =>
+      irWidgetBindings.find(
+        (binding) =>
+          binding.status === "active" &&
+          binding.device_type === "AC" &&
+          binding.hub_pin === pin,
+      ) || null,
+    [irWidgetBindings],
+  );
+
+  const widgetBindings = React.useMemo(
+    () =>
+      irWidgetBindings.filter(
+        (binding) => binding.status === "active" && binding.device_type !== "AC",
+      ),
+    [irWidgetBindings],
+  );
+
+  const getNextVirtualWidgetPin = React.useCallback(() => {
+    const virtualPins = irWidgetBindings
+      .map((binding) => Number(binding.hub_pin))
+      .filter((pin) => Number.isFinite(pin) && pin <= 0);
+    if (!virtualPins.length) return -1;
+    return Math.min(...virtualPins) - 1;
+  }, [irWidgetBindings]);
+
+  const loadIrCommandTemplate = React.useCallback(async (catalogId: string) => {
+    const cached = irCommandTemplateCacheRef.current[catalogId];
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    try {
+      const response = await fetchIrCatalogProfile(catalogId);
+      const commandTemplate = response?.command_template || null;
+      irCommandTemplateCacheRef.current[catalogId] = commandTemplate;
+      if (response?.profile) {
+        await upsertIrCatalogCacheLocal(response.profile, commandTemplate);
+      }
+      return commandTemplate;
+    } catch (error) {
+      const local = await getIrCatalogCacheLocal(catalogId);
+      const commandTemplate = local.commandTemplate || null;
+      irCommandTemplateCacheRef.current[catalogId] = commandTemplate;
+      if (!commandTemplate) {
+        console.warn("[IR][template][offline-miss]", { catalogId, error });
+      }
+      return commandTemplate;
+    }
+  }, []);
+
+  const resolveTemplateActionKey = React.useCallback(
+    (commandTemplate: IrCommandTemplate | null | undefined, candidates: string[]) =>
+      candidates.find((candidate) => commandTemplate?.templates?.[candidate]) || null,
+    [],
+  );
+
+  const resolveActiveIrModuleMac = React.useCallback(
+    (preferredMac?: string | null) => {
+      const normalizedPreferred = String(preferredMac || "")
+        .trim()
+        .toUpperCase();
+      const attached = attachedIrModules.map((mac) =>
+        String(mac || "").trim().toUpperCase(),
+      );
+
+      if (normalizedPreferred && attached.includes(normalizedPreferred)) {
+        return normalizedPreferred;
+      }
+
+      return attached[0] || normalizedPreferred || "";
+    },
+    [attachedIrModules],
+  );
+
+  const sendIrExecuteOverBle = React.useCallback(
+    async (
+      device: Device,
+      irModuleMac: string,
+      payload: ReturnType<typeof buildIrExecutePayloadFromTemplate>,
+    ) => {
+      if (!payload || !activeDevice || !services.length) {
+        return false;
+      }
+
+      const text =
+        payload.kind === "raw"
+          ? `IR_EXECUTE:KIND:RAW;MAC:${irModuleMac};CARRIER:${payload.carrier_khz ?? 38};REPEAT:${payload.repeat ?? 0};TIMINGS:${payload.timings.join(",")}`
+          : payload.kind === "protocol"
+            ? `IR_EXECUTE:KIND:PROTOCOL;MAC:${irModuleMac};PROTOCOL_CODE:${payload.protocol_code};VALUE:${payload.value};BITS:${payload.bits};REPEAT:${payload.repeat ?? 1};CARRIER:${payload.carrier_khz ?? 38}`
+            : `IR_EXECUTE:KIND:AC_STATE;MAC:${irModuleMac};PIN:${device.id};POWER:${payload.power ? 1 : 0};TEMP:${payload.temperature};MODE:${payload.mode};FAN:${payload.fan}`;
+
+      console.log("[IR][BLE][send]", {
+        pin: device.id,
+        irModuleMac,
+        kind: payload.kind,
+        text,
+      });
+
+      const ackPromise = new Promise<{ ok: boolean; message?: string }>((resolve) => {
+        acCommandResolverRef.current = resolve;
+        acCommandIdRef.current = null;
+      });
+      const timeout = new Promise<{ ok: boolean; message?: string }>((resolve) => {
+        setTimeout(() => {
+          acCommandResolverRef.current = null;
+          acCommandIdRef.current = null;
+          resolve({
+            ok: false,
+            message: "AC module did not acknowledge the command in time.",
+          });
+        }, 20000);
+      });
+
+      await bleManager.sendData(activeDevice, text, services[0]);
+      const result = await Promise.race([ackPromise, timeout]);
+      if (!result.ok) {
+        throw new Error(result.message || "AC command failed");
+      }
+      return true;
+    },
+    [activeDevice, bleManager, services],
+  );
+
+  const executeIrPayload = React.useCallback(
+    async (
+      binding: IrWidgetBinding,
+      payload: ReturnType<typeof buildIrExecutePayloadFromTemplate>,
+    ) => {
+      if (!payload) {
+        throw new Error("Selected IR command is unavailable for this widget.");
+      }
+
+      const activeIrModuleMac = resolveActiveIrModuleMac(binding.ir_module_mac);
+      if (!activeIrModuleMac) {
+        throw new Error("No IR module is attached to this hub.");
+      }
+
+      if (!services.length || !activeDevice) {
+        const wifiPayload: WifiPayload = {
+          mac_address: resolvedDeviceMac,
+          data: {
+            cmd: "ir_execute",
+            pin: binding.hub_pin,
+            ir_module_mac: activeIrModuleMac,
+            payload,
+          },
+        };
+        await sendCommandOverWifi(wifiPayload);
+        return true;
+      }
+
+      return sendIrExecuteOverBle(
+        { id: binding.hub_pin } as Device,
+        activeIrModuleMac,
+        payload,
+      );
+    },
+    [
+      activeDevice,
+      resolveActiveIrModuleMac,
+      resolvedDeviceMac,
+      sendIrExecuteOverBle,
+      services,
+    ],
+  );
+
+  const persistIrBindingState = React.useCallback(
+    async (bindingId: string, patch: Record<string, unknown>) => {
+      const current = irWidgetBindings.find((binding) => binding.binding_id === bindingId);
+      if (!current) return;
+      const updated = {
+        ...current,
+        last_known_state: {
+          ...(current.last_known_state || {}),
+          ...patch,
+        },
+      };
+      setIrWidgetBindings((prev) =>
+        prev.map((binding) =>
+          binding.binding_id === bindingId ? updated : binding,
+        ),
+      );
+      await upsertIrWidgetBindingLocal(updated, 1);
+      try {
+        const synced = await updateIrWidgetBinding(bindingId, {
+          last_known_state: updated.last_known_state ?? null,
+        });
+        await upsertIrWidgetBindingLocal(synced, 0);
+      } catch {}
+    },
+    [irWidgetBindings],
+  );
+
+  const applyRgbWidget = React.useCallback(async () => {
+    const binding = widgetBindings.find((item) => item.binding_id === activeRgbBindingId);
+    if (!binding) return;
+
+    setRgbWidgetBusy(true);
+    try {
+      const commandTemplate = await loadIrCommandTemplate(binding.catalog_id);
+      const colorAction = resolveTemplateActionKey(commandTemplate, [
+        `color_${rgbWidgetDraft.colorKey}`,
+        rgbWidgetDraft.colorKey,
+      ]);
+      const brightnessBucket =
+        rgbWidgetDraft.brightness <= 25
+          ? 25
+          : rgbWidgetDraft.brightness <= 50
+            ? 50
+            : rgbWidgetDraft.brightness <= 75
+              ? 75
+              : 100;
+      const brightnessAction = resolveTemplateActionKey(commandTemplate, [
+        `brightness_${brightnessBucket}`,
+        `brightness_${String(brightnessBucket / 25).trim()}`,
+        brightnessBucket === 100 ? "brightness_max" : "",
+      ].filter(Boolean));
+      const powerAction =
+        rgbWidgetDraft.brightness === 0
+          ? resolveTemplateActionKey(commandTemplate, ["power_off", "off"])
+          : resolveTemplateActionKey(commandTemplate, ["power_on", "on"]);
+
+      const actionKeys =
+        rgbWidgetDraft.brightness === 0
+          ? [powerAction]
+          : [powerAction, colorAction, brightnessAction].filter(Boolean);
+
+      if (!actionKeys.length) {
+        throw new Error("No RGB IR actions are available for this model.");
+      }
+
+      for (const actionKey of actionKeys) {
+        const payload = buildIrExecutePayloadFromTemplate(commandTemplate, actionKey as string);
+        await executeIrPayload(binding, payload);
+      }
+
+      await persistIrBindingState(binding.binding_id, {
+        colorKey: rgbWidgetDraft.colorKey,
+        brightness: rgbWidgetDraft.brightness,
+      });
+      showToast("RGB widget command sent.");
+      setShowRgbWidgetModal(false);
+    } catch (e: any) {
+      showToast(e?.message || "Unable to apply RGB widget command.");
+    } finally {
+      setRgbWidgetBusy(false);
+    }
+  }, [
+    activeRgbBindingId,
+    executeIrPayload,
+    loadIrCommandTemplate,
+    persistIrBindingState,
+    resolveTemplateActionKey,
+    rgbWidgetDraft,
+    showToast,
+    widgetBindings,
+  ]);
+
+  const sendAcCommand = React.useCallback(
+    async (device: Device, nextState: AcControlState) => {
+      if (!attachedIrModules.length) {
+        Alert.alert(
+          "AC Module Missing",
+          "Link an AC IR module with this hub before sending AC commands.",
+        );
+        return false;
+      }
+
+      const hasLiveBle = !!activeDevice && services.length > 0;
+      const currentPower =
+        hasLiveBle && device.pin_status_ble !== undefined
+          ? !!device.pin_status_ble
+          : device.pin_status_wifi !== undefined
+            ? !!device.pin_status_wifi
+            : !!device.is_on;
+      const irBinding = getIrBindingForPin(device.id);
+      const activeIrModuleMac = resolveActiveIrModuleMac(
+        irBinding?.ir_module_mac || attachedIrModules[0],
+      );
+      const actionKey =
+        !currentPower && nextState.power
+          ? "power_on"
+          : currentPower && !nextState.power
+            ? "power_off"
+            : null;
+
+      // Keep quick-action templating for power-on only. Power-off is safer
+      // through the regular AC state path because it preserves the latest
+      // control state and avoids regressions in the template wrapper flow.
+      if (irBinding && actionKey === "power_on") {
+        console.log("[IR][binding][found]", {
+          pin: device.id,
+          actionKey,
+          bindingId: irBinding.binding_id,
+          catalogId: irBinding.catalog_id,
+          irModuleMac: irBinding.ir_module_mac,
+        });
+        const commandTemplate = await loadIrCommandTemplate(irBinding.catalog_id);
+        const executePayload = buildIrExecutePayloadFromTemplate(
+          commandTemplate,
+          actionKey,
+        );
+
+        if (executePayload) {
+          console.log("[IR][template][using]", {
+            pin: device.id,
+            actionKey,
+            kind: executePayload.kind,
+            catalogId: irBinding.catalog_id,
+          });
+          if (!services.length || !activeDevice) {
+            const payload: WifiPayload = {
+              mac_address: resolvedDeviceMac,
+              data: {
+                cmd: "ir_execute",
+                pin: device.id,
+                ir_module_mac: activeIrModuleMac,
+                payload: executePayload,
+              },
+            };
+            await sendCommandOverWifi(payload);
+            return true;
+          }
+
+          return sendIrExecuteOverBle(
+            device,
+            activeIrModuleMac,
+            executePayload,
+          );
+        }
+
+        console.log("[IR][template][missing-action]", {
+          pin: device.id,
+          actionKey,
+          catalogId: irBinding.catalog_id,
+        });
+      }
+
+      if (!irBinding) {
+        console.log("[IR][fallback][no-binding]", {
+          pin: device.id,
+          nextPower: nextState.power,
+        });
+      } else if (!actionKey) {
+        console.log("[IR][fallback][no-discrete-action]", {
+          pin: device.id,
+          currentPower,
+          nextPower: nextState.power,
+        });
+      }
+
+      const fwMode = AC_MODE_TO_FW[nextState.mode];
+      const fwFan = AC_FAN_TO_FW[nextState.fan];
+      const fwSwing = nextState.swing ? 1 : 0;
+      const fwPowerMode = AC_POWER_MODE_TO_FW[nextState.powerMode];
+
+      if (!services.length || !activeDevice) {
+        const payload: WifiPayload = {
+          mac_address: resolvedDeviceMac,
+          data: {
+            cmd: "ac_state",
+            pin: device.id,
+            power: nextState.power ? 1 : 0,
+            temp: nextState.temperature,
+            mode: fwMode,
+            fan: fwFan,
+          },
+        };
+        await sendCommandOverWifi(payload);
+        return true;
+      }
+
+      const executePayload = {
+        kind: "ac_state" as const,
+        power: nextState.power,
+        temperature: nextState.temperature,
+        mode: fwMode,
+        fan: fwFan,
+        swing: fwSwing,
+        power_mode: fwPowerMode,
+        repeat: 0,
+      };
+      console.log("[IR][fallback][ac-state]", {
+        pin: device.id,
+        irModuleMac: activeIrModuleMac,
+        nextState,
+      });
+      return sendIrExecuteOverBle(
+        device,
+        activeIrModuleMac,
+        executePayload,
+      );
+    },
+    [
+      activeDevice,
+      attachedIrModules,
+      attachedIrModules.length,
+      getIrBindingForPin,
+      loadIrCommandTemplate,
+      resolveActiveIrModuleMac,
+      resolvedDeviceMac,
+      sendIrExecuteOverBle,
+      services,
+    ],
+  );
 
   const triggerTapHaptic = React.useCallback(() => {
     try {
@@ -2393,6 +3320,83 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     }
   };
 
+  const openAcControl = (device: Device) => {
+    setActiveAcDeviceId(device.id);
+    setAcControlDraft(buildAcStateForDevice(device));
+    setShowAcControlModal(true);
+  };
+
+  const commitAcControl = async (nextState: AcControlState) => {
+    const device = devices.find((entry) => entry.id === activeAcDeviceId);
+    if (!device) return;
+
+    setAcControlDraft(nextState);
+
+    if (acCommandBusy) {
+      queuedAcControlStateRef.current = nextState;
+      return;
+    }
+
+    try {
+      setAcCommandBusy(true);
+      let stateToSend: AcControlState | null = nextState;
+
+      while (stateToSend) {
+        const currentState = stateToSend;
+        queuedAcControlStateRef.current = null;
+        await sendAcCommand(device, currentState);
+        setAcStateByPin((prev) => ({ ...prev, [device.id]: currentState }));
+        setIrWidgetBindings((prev) =>
+          prev.map((binding) =>
+            binding.hub_pin === device.id
+              ? {
+                  ...binding,
+                  last_known_state: {
+                    ...(binding.last_known_state || {}),
+                    power: currentState.power,
+                    temperature: currentState.temperature,
+                    mode: currentState.mode,
+                    fan: currentState.fan,
+                    swing: currentState.swing,
+                    powerMode: currentState.powerMode,
+                  },
+                }
+              : binding,
+          ),
+        );
+        setDevices((prev) =>
+          prev.map((entry) =>
+            entry.id === device.id
+              ? {
+                  ...entry,
+                  is_on: currentState.power,
+                  pin_status_ble: currentState.power,
+                  pin_status_wifi: currentState.power,
+                }
+              : entry,
+          ),
+        );
+
+        const queued = queuedAcControlStateRef.current;
+        if (
+          queued &&
+          JSON.stringify(queued) !== JSON.stringify(currentState)
+        ) {
+          stateToSend = queued;
+          continue;
+        }
+
+        stateToSend = null;
+      }
+
+      showToast("AC command sent.");
+    } catch (e: any) {
+      showToast(e?.message || "Unable to send AC command.");
+    } finally {
+      setAcCommandBusy(false);
+    }
+  };
+
   const openSettings = () => {
     if (showSettings) {
       setShowSettings(false);
@@ -2402,7 +3406,286 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     loadPinConfigs();
     loadAllSensorRanges();
     requestSensorRefresh();
+    if (serviceId) {
+      void loadIrWidgetBindings(serviceId);
+    }
   };
+
+  const openIrModuleConfig = React.useCallback(() => {
+    setShowIrModuleConfigModal(true);
+  }, []);
+
+  const loadIrWidgetBindings = React.useCallback(
+    async (targetServiceId?: string) => {
+      const effectiveServiceId = String(targetServiceId || serviceId || "").trim();
+      if (!effectiveServiceId) return;
+      const localBindings = await getIrWidgetBindingsLocal(effectiveServiceId);
+      if (localBindings.length) {
+        setIrWidgetBindings(localBindings);
+      }
+      try {
+        const bindings = await fetchIrWidgetBindingsByService(effectiveServiceId);
+        for (const binding of bindings) {
+          await upsertIrWidgetBindingLocal(binding, 0);
+        }
+        setIrWidgetBindings(bindings);
+      } catch (error) {
+        console.warn("[IR][bindings][load][error]", error);
+      }
+    },
+    [serviceId],
+  );
+
+  const syncPendingIrWidgetBindings = React.useCallback(async () => {
+    const pendingBindings = await getPendingIrWidgetBindingsLocal();
+    for (const pendingBinding of pendingBindings) {
+      const payload = {
+        display_name: pendingBinding.display_name,
+        quick_actions: pendingBinding.quick_actions,
+        last_known_state: pendingBinding.last_known_state ?? null,
+      };
+
+      try {
+        if (String(pendingBinding.binding_id).startsWith("local:")) {
+          const created = await createIrWidgetBinding({
+            service_id: pendingBinding.service_id,
+            hub_device_mac: pendingBinding.hub_device_mac,
+            hub_pin: pendingBinding.hub_pin,
+            ir_module_mac: pendingBinding.ir_module_mac,
+            catalog_id: pendingBinding.catalog_id,
+            display_name: pendingBinding.display_name,
+            quick_actions: pendingBinding.quick_actions,
+            last_known_state: pendingBinding.last_known_state ?? null,
+          });
+          await deleteIrWidgetBindingLocal(pendingBinding.binding_id);
+          await upsertIrWidgetBindingLocal(created, 0);
+          continue;
+        }
+
+        const updated = await updateIrWidgetBinding(
+          pendingBinding.binding_id,
+          payload,
+        );
+        await upsertIrWidgetBindingLocal(updated, 0);
+        await markIrWidgetBindingSynced(updated.binding_id);
+      } catch (error) {
+        console.warn("[IR][bindings][sync][error]", {
+          bindingId: pendingBinding.binding_id,
+          error,
+        });
+      }
+    }
+  }, []);
+
+  const resetIrSetupSelection = React.useCallback(() => {
+    setIrBrands([]);
+    setIrModels([]);
+    setSelectedIrDeviceType(null);
+    setSelectedIrBrand(null);
+    setSelectedIrModelId(null);
+  }, []);
+
+  const openIrWidgetSetup = React.useCallback(
+    async (device: Device) => {
+      if (String(device.device_type || "").trim().toLowerCase() !== "ac") {
+        showToast("IR widget setup is only available for AC pins.");
+        return;
+      }
+      if (!attachedIrModules.length) {
+        showToast("Link an AC module with this hub first.");
+        return;
+      }
+      setIrSetupMode("ac_pin");
+      setSelectedIrWidgetBinding(null);
+      setSelectedIrSetupDevice(device);
+      resetIrSetupSelection();
+      setShowIrWidgetSetupModal(true);
+      setIrWidgetSetupBusy(true);
+      try {
+        const deviceTypes = await fetchIrDeviceTypes();
+        setIrDeviceTypes(deviceTypes);
+        const existingBinding = getIrBindingForPin(device.id);
+        if (existingBinding) {
+          const localCatalog = await getIrCatalogCacheLocal(existingBinding.catalog_id);
+          if (localCatalog.profile) {
+            setSelectedIrDeviceType(localCatalog.profile.device_type);
+            setSelectedIrBrand(localCatalog.profile.brand);
+            setSelectedIrModelId(existingBinding.catalog_id);
+          }
+        }
+      } catch (error) {
+        console.warn("[IR][catalog][deviceTypes][error]", error);
+        showToast("Unable to load IR device catalog.");
+      } finally {
+        setIrWidgetSetupBusy(false);
+      }
+    },
+    [attachedIrModules.length, getIrBindingForPin, resetIrSetupSelection, showToast],
+  );
+
+  const closeIrWidgetSetup = React.useCallback(() => {
+    setShowIrWidgetSetupModal(false);
+    setSelectedIrSetupDevice(null);
+    setSelectedIrWidgetBinding(null);
+    setIrSetupMode("ac_pin");
+    resetIrSetupSelection();
+  }, [resetIrSetupSelection]);
+
+  const openIrWidgetSetupForWidget = React.useCallback(
+    async (binding?: IrWidgetBinding | null) => {
+      if (!attachedIrModules.length) {
+        showToast("Link an IR module with this hub first.");
+        return;
+      }
+      setIrSetupMode("widget");
+      setSelectedIrWidgetBinding(binding || null);
+      setSelectedIrSetupDevice(null);
+      resetIrSetupSelection();
+      setShowIrWidgetSetupModal(true);
+      setIrWidgetSetupBusy(true);
+      try {
+        const deviceTypes = await fetchIrDeviceTypes();
+        setIrDeviceTypes(deviceTypes);
+        if (binding) {
+          const localCatalog = await getIrCatalogCacheLocal(binding.catalog_id);
+          if (localCatalog.profile) {
+            setSelectedIrDeviceType(localCatalog.profile.device_type);
+            setSelectedIrBrand(localCatalog.profile.brand);
+            setSelectedIrModelId(binding.catalog_id);
+          }
+        }
+      } catch (error) {
+        console.warn("[IR][catalog][widgetSetup][error]", error);
+        showToast("Unable to load IR device catalog.");
+      } finally {
+        setIrWidgetSetupBusy(false);
+      }
+    },
+    [attachedIrModules.length, resetIrSetupSelection, showToast],
+  );
+
+  const saveIrWidgetSetup = React.useCallback(async () => {
+    if (
+      irSetupMode === "ac_pin" &&
+      !selectedIrSetupDevice
+    ) {
+      showToast("Select an AC pin first.");
+      return;
+    }
+    if (!selectedIrModelId) {
+      showToast("Select an IR model first.");
+      return;
+    }
+
+    const existingBinding =
+      irSetupMode === "widget"
+        ? selectedIrWidgetBinding
+        : irWidgetBindings.find(
+            (binding) =>
+              binding.status === "active" &&
+              Number(binding.hub_pin) === Number(selectedIrSetupDevice?.id),
+          ) || null;
+
+    const selectedProfile = irModels.find(
+      (profile) => profile.catalog_id === selectedIrModelId,
+    );
+    if (!selectedProfile) {
+      showToast("Selected IR model is unavailable.");
+      return;
+    }
+
+    const payload: CreateIrWidgetBindingInput = {
+      service_id: String(serviceId || service_id || "").trim(),
+      hub_device_mac: String(resolvedDeviceMac || "").trim().toUpperCase(),
+      hub_pin:
+        irSetupMode === "widget"
+          ? existingBinding?.hub_pin ?? getNextVirtualWidgetPin()
+          : (selectedIrSetupDevice as Device).id,
+      ir_module_mac: attachedIrModules[0],
+      catalog_id: selectedProfile.catalog_id,
+      display_name:
+        irSetupMode === "widget"
+          ? existingBinding?.display_name || selectedProfile.display_name
+          : pinConfigs[(selectedIrSetupDevice as Device).id]?.name?.trim() ||
+            (selectedIrSetupDevice as Device).name?.trim() ||
+            `${selectedProfile.display_name} Widget`,
+      quick_actions: getDefaultIrQuickActions(selectedProfile.device_type),
+      last_known_state:
+        (selectedProfile.default_state as Record<string, unknown> | null | undefined) ??
+        null,
+    };
+
+    const localBinding = buildLocalIrWidgetBinding({
+      payload,
+      profile: selectedProfile,
+      existingBindingId: existingBinding?.binding_id || null,
+    });
+
+    setIrWidgetSetupBusy(true);
+    try {
+      try {
+        const catalogResponse = await fetchIrCatalogProfile(selectedProfile.catalog_id);
+        await upsertIrCatalogCacheLocal(
+          catalogResponse?.profile || selectedProfile,
+          catalogResponse?.command_template || null,
+        );
+      } catch {
+        await upsertIrCatalogCacheLocal(selectedProfile, null);
+      }
+
+      await upsertIrWidgetBindingLocal(localBinding, 1);
+      setIrWidgetBindings((prev) => {
+        const rest = prev.filter(
+          (binding) => Number(binding.hub_pin) !== Number(localBinding.hub_pin),
+        );
+        return [...rest, localBinding].sort((a, b) => a.hub_pin - b.hub_pin);
+      });
+
+      if (existingBinding && !String(existingBinding.binding_id).startsWith("local:")) {
+        const updated = await updateIrWidgetBinding(existingBinding.binding_id, {
+          display_name: payload.display_name,
+          quick_actions: payload.quick_actions,
+          last_known_state: payload.last_known_state ?? null,
+        });
+        await upsertIrWidgetBindingLocal(updated, 0);
+      } else {
+        const created = await createIrWidgetBinding(payload);
+        await deleteIrWidgetBindingLocal(localBinding.binding_id);
+        await upsertIrWidgetBindingLocal(created, 0);
+      }
+
+      await loadIrWidgetBindings(payload.service_id);
+      showToast(existingBinding ? "IR remote config updated." : "IR remote config saved.");
+      closeIrWidgetSetup();
+    } catch (error: any) {
+      await upsertIrWidgetBindingLocal(localBinding, 1);
+      showToast("Remote config saved offline. It will sync when online.");
+    } finally {
+      setIrWidgetSetupBusy(false);
+    }
+  }, [
+    attachedIrModules,
+    closeIrWidgetSetup,
+    getNextVirtualWidgetPin,
+    irSetupMode,
+    irModels,
+    irWidgetBindings,
+    loadIrWidgetBindings,
+    pinConfigs,
+    resolvedDeviceMac,
+    selectedIrWidgetBinding,
+    selectedIrModelId,
+    selectedIrSetupDevice,
+    serviceId,
+    service_id,
+    showToast,
+  ]);
+
+  useEffect(() => {
+    if (!serviceId) return;
+    void loadIrWidgetBindings(serviceId);
+    void syncPendingIrWidgetBindings();
+  }, [loadIrWidgetBindings, serviceId, syncPendingIrWidgetBindings]);
 
   const updateTempColorFromHsv = React.useCallback(
     (hue: number, saturation: number, value: number) => {
@@ -2655,7 +3938,10 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
   };
 
   const renderDeviceCard = (device: Device) => {
-    const IconComponent = ROOM_ICONS[device.device_type] || Lightbulb;
+    const isAc = device.device_type === "ac";
+    const IconComponent = isAc
+      ? Snowflake
+      : ROOM_ICONS[device.device_type] || Lightbulb;
     const isActive = resolvePinStatus(device);
     const speedValue = device.speed ?? 0;
     const sliderValue = Math.max(
@@ -2667,6 +3953,8 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
     const isTogglePending = !!pendingToggleById[device.id];
     const favoriteId = toWidgetFavoriteId(device.id);
     const isFavorite = widgetFavoriteIds.includes(favoriteId);
+    const acState = isAc ? buildAcStateForDevice(device) : null;
+    const irBinding = isAc ? getIrBindingForPin(device.id) : null;
 
     const favoriteButton = (
       <Pressable
@@ -2703,6 +3991,11 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           >
             {displayName}
           </Text>
+          {isAc && acState ? (
+            <Text style={styles.deviceMetaText}>
+              {acState.temperature}°C • {acState.mode}
+            </Text>
+          ) : null}
         </View>
         <View
           style={[
@@ -2721,7 +4014,9 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           style={[styles.deviceCard, isActive && styles.deviceCardActive]}
         >
           <TouchableOpacity
-            onPress={() => toggleDevice(device.id)}
+            onPress={() => (isAc ? openAcControl(device) : toggleDevice(device.id))}
+            onLongPress={isAc ? () => void openIrWidgetSetup(device) : undefined}
+            delayLongPress={240}
             activeOpacity={0.85}
             disabled={isTogglePending}
           >
@@ -2799,6 +4094,46 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           </View>
 
           </View>} */}
+      </View>
+    );
+  };
+
+  const renderWidgetCard = (binding: IrWidgetBinding) => {
+    const isRgb = binding.device_type === "RGB_LIGHT";
+    const widgetState = (binding.last_known_state || {}) as Record<string, unknown>;
+    const meta = isRgb
+      ? `${String(widgetState.colorKey || "white").replace("_", " ")} • ${Number(widgetState.brightness ?? 100)}%`
+      : binding.device_type.replace("_", " ");
+
+    return (
+      <View
+        key={binding.binding_id}
+        style={styles.deviceCard}
+      >
+        <TouchableOpacity
+          onPress={() => {
+            if (!isRgb) {
+              showToast("This widget type is coming next.");
+              return;
+            }
+            setActiveRgbBindingId(binding.binding_id);
+            setRgbWidgetDraft({
+              colorKey: String(widgetState.colorKey || "white"),
+              brightness: Number(widgetState.brightness ?? 100),
+            });
+            setShowRgbWidgetModal(true);
+          }}
+          activeOpacity={0.85}
+        >
+          <View style={styles.deviceIcon}>
+            <Lightbulb size={26} color="#64748b" strokeWidth={1.5} />
+          </View>
+          <View style={styles.deviceInfo}>
+            <Text style={styles.deviceName}>{binding.display_name}</Text>
+            <Text style={styles.deviceMetaText}>{meta}</Text>
+          </View>
+          <View style={[styles.deviceStatus, { backgroundColor: "#64748b" }]} />
+        </TouchableOpacity>
       </View>
     );
   };
@@ -2930,6 +4265,14 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
         <View style={styles.devicesGrid}>
           {devices.map((device) => renderDeviceCard(device))}
         </View>
+        {widgetBindings.length ? (
+          <View style={styles.widgetSection}>
+            <Text style={styles.widgetSectionTitle}>IR Widgets</Text>
+            <View style={styles.devicesGrid}>
+              {widgetBindings.map((binding) => renderWidgetCard(binding))}
+            </View>
+          </View>
+        ) : null}
       </ScrollView>
 
       <Modal
@@ -2948,384 +4291,173 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
           >
             <View style={styles.sheetHandle} />
             <View style={styles.sheetContent}>
-              {sensorStep === "prompt" && (
-                <>
-                  <View style={styles.sheetHeader}>
-                    <Text style={styles.sheetTitle}>Motion Sensor Found</Text>
-                    <Pressable
-                      onPress={closeSheet}
-                      hitSlop={16}
-                      pressRetentionOffset={16}
-                      style={({ pressed }) => [
-                        styles.closeIconButton,
-                        pressed && styles.closeIconButtonPressed,
-                      ]}
-                    >
-                      <X size={22} color="#94a3b8" />
-                    </Pressable>
-                  </View>
-                  <View style={styles.sensorHero}>
-                    <Animated.View
-                      style={[
-                        styles.sensorSpin,
-                        {
-                          transform: [
-                            { perspective: 900 },
-                            {
-                              rotateY: rotation.interpolate({
-                                inputRange: [0, 1],
-                                outputRange: ["0deg", "360deg"],
-                              }),
-                            },
-                            { rotateX: "10deg" },
-                          ],
-                        },
-                      ]}
-                    >
-                      <Svg width={160} height={160} viewBox="0 0 160 160">
-                        <Defs>
-                          <LinearGradient
-                            id="front"
-                            x1="0"
-                            y1="0"
-                            x2="1"
-                            y2="1"
-                          >
-                            <Stop offset="0" stopColor="#ffffff" />
-                            <Stop offset="1" stopColor="#e5e7eb" />
-                          </LinearGradient>
-                          <LinearGradient id="side" x1="0" y1="0" x2="1" y2="1">
-                            <Stop offset="0" stopColor="#e5e7eb" />
-                            <Stop offset="1" stopColor="#cbd5e1" />
-                          </LinearGradient>
-                          <LinearGradient id="top" x1="0" y1="0" x2="1" y2="0">
-                            <Stop offset="0" stopColor="#ffffff" />
-                            <Stop offset="1" stopColor="#f1f5f9" />
-                          </LinearGradient>
-                          <LinearGradient id="dome" x1="0" y1="0" x2="1" y2="1">
-                            <Stop offset="0" stopColor="#ffffff" />
-                            <Stop offset="0.6" stopColor="#d8e1ec" />
-                            <Stop offset="1" stopColor="#b6c2d1" />
-                          </LinearGradient>
-                          <LinearGradient
-                            id="gloss"
-                            x1="0"
-                            y1="0"
-                            x2="1"
-                            y2="1"
-                          >
-                            <Stop
-                              offset="0"
-                              stopColor="rgba(255,255,255,0.7)"
-                            />
-                            <Stop
-                              offset="0.5"
-                              stopColor="rgba(255,255,255,0.2)"
-                            />
-                            <Stop offset="1" stopColor="rgba(255,255,255,0)" />
-                          </LinearGradient>
-                          <LinearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-                            <Stop offset="0" stopColor="#f8fafc" />
-                            <Stop offset="1" stopColor="#cbd5e1" />
-                          </LinearGradient>
-                          <LinearGradient
-                            id="baseShadow"
-                            x1="0"
-                            y1="0"
-                            x2="0"
-                            y2="1"
-                          >
-                            <Stop offset="0" stopColor="rgba(15,23,42,0.35)" />
-                            <Stop offset="1" stopColor="rgba(15,23,42,0)" />
-                          </LinearGradient>
-                        </Defs>
-                        {/* soft ground shadow */}
-                        <Circle
-                          cx="84"
-                          cy="140"
-                          r="26"
-                          fill="url(#baseShadow)"
-                        />
-                        {/* thickness */}
-                        <Polygon
-                          points="22,18 34,28 134,28 122,18"
-                          fill="url(#top)"
-                        />
-                        <Polygon
-                          points="122,18 134,28 134,146 122,136"
-                          fill="url(#side)"
-                        />
-                        {/* front plate */}
-                        <Rect
-                          x="22"
-                          y="18"
-                          width="100"
-                          height="118"
-                          rx="12"
-                          fill="url(#front)"
-                        />
-                        {/* subtle inner border */}
-                        <Rect
-                          x="25"
-                          y="21"
-                          width="94"
-                          height="112"
-                          rx="10"
-                          fill="none"
-                          stroke="url(#edge)"
-                        />
-                        {/* sensor housing */}
-                        <Rect
-                          x="58"
-                          y="54"
-                          width="46"
-                          height="46"
-                          rx="7"
-                          fill="#e9eef5"
-                          stroke="#cbd5e1"
-                        />
-                        {/* dome */}
-                        <Circle
-                          cx="81"
-                          cy="77"
-                          r="18.5"
-                          fill="url(#dome)"
-                          stroke="#b6c2d1"
-                        />
-                        {/* dome highlight */}
-                        <Circle
-                          cx="75"
-                          cy="70"
-                          r="6"
-                          fill="rgba(255,255,255,0.7)"
-                        />
-                        {/* gloss */}
-                        <Rect
-                          x="26"
-                          y="20"
-                          width="86"
-                          height="30"
-                          rx="9"
-                          fill="url(#gloss)"
-                        />
-                        {/* dome dots */}
-                        <Circle cx="74" cy="74" r="2" fill="#b6c2d1" />
-                        <Circle cx="81" cy="72" r="2" fill="#b6c2d1" />
-                        <Circle cx="88" cy="74" r="2" fill="#b6c2d1" />
-                        <Circle cx="74" cy="81" r="2" fill="#b6c2d1" />
-                        <Circle cx="81" cy="83" r="2" fill="#b6c2d1" />
-                        <Circle cx="88" cy="81" r="2" fill="#b6c2d1" />
-                      </Svg>
-                    </Animated.View>
-                  </View>
-                  <Text style={styles.sheetText}>
-                    Sensor {pendingSensor} is nearby. Do you want to attach it
-                    to this switchboard?
-                  </Text>
-                  <View style={styles.sheetActions}>
-                    <TouchableOpacity
-                      style={[styles.sheetBtn, styles.sheetBtnGhost]}
-                      disabled={attachInFlight}
-                      onPress={ignoreSensor}
-                    >
-                      <Text style={styles.sheetBtnGhostText}>Ignore</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[
-                        styles.sheetBtn,
-                        styles.sheetBtnPrimary,
-                        attachInFlight && { opacity: 0.7 },
-                      ]}
-                      disabled={attachInFlight}
-                      onPress={attachSensor}
-                    >
-                      <Text style={styles.sheetBtnPrimaryText}>
-                        {attachInFlight ? "Attaching..." : "Attach"}
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                </>
-              )}
-
-              {/* pin configuration moved to full-screen modal */}
-
-              {sensorStep === "attached" && (
-                <>
-                  <View style={styles.sheetHeader}>
-                    <Text style={styles.sheetTitle}>Sensor Attached</Text>
-                    <Pressable
-                      onPress={closeSheet}
-                      hitSlop={16}
-                      pressRetentionOffset={16}
-                      style={({ pressed }) => [
-                        styles.closeIconButton,
-                        pressed && styles.closeIconButtonPressed,
-                      ]}
-                    >
-                      <X size={22} color="#94a3b8" />
-                    </Pressable>
-                  </View>
-                  <View style={styles.sensorHero}>
-                    <Animated.View
-                      style={[
-                        styles.sensorSpin,
-                        {
-                          transform: [
-                            { perspective: 900 },
-                            {
-                              rotateY: rotation.interpolate({
-                                inputRange: [0, 1],
-                                outputRange: ["0deg", "360deg"],
-                              }),
-                            },
-                            { rotateX: "10deg" },
-                          ],
-                        },
-                      ]}
-                    >
-                      <Svg width={160} height={160} viewBox="0 0 160 160">
-                        <Defs>
-                          <LinearGradient
-                            id="front"
-                            x1="0"
-                            y1="0"
-                            x2="1"
-                            y2="1"
-                          >
-                            <Stop offset="0" stopColor="#ffffff" />
-                            <Stop offset="1" stopColor="#e5e7eb" />
-                          </LinearGradient>
-                          <LinearGradient id="side" x1="0" y1="0" x2="1" y2="1">
-                            <Stop offset="0" stopColor="#e5e7eb" />
-                            <Stop offset="1" stopColor="#cbd5e1" />
-                          </LinearGradient>
-                          <LinearGradient id="top" x1="0" y1="0" x2="1" y2="0">
-                            <Stop offset="0" stopColor="#ffffff" />
-                            <Stop offset="1" stopColor="#f1f5f9" />
-                          </LinearGradient>
-                          <LinearGradient id="dome" x1="0" y1="0" x2="1" y2="1">
-                            <Stop offset="0" stopColor="#ffffff" />
-                            <Stop offset="0.6" stopColor="#d8e1ec" />
-                            <Stop offset="1" stopColor="#b6c2d1" />
-                          </LinearGradient>
-                          <LinearGradient
-                            id="gloss"
-                            x1="0"
-                            y1="0"
-                            x2="1"
-                            y2="1"
-                          >
-                            <Stop
-                              offset="0"
-                              stopColor="rgba(255,255,255,0.7)"
-                            />
-                            <Stop
-                              offset="0.5"
-                              stopColor="rgba(255,255,255,0.2)"
-                            />
-                            <Stop offset="1" stopColor="rgba(255,255,255,0)" />
-                          </LinearGradient>
-                          <LinearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-                            <Stop offset="0" stopColor="#f8fafc" />
-                            <Stop offset="1" stopColor="#cbd5e1" />
-                          </LinearGradient>
-                          <LinearGradient
-                            id="baseShadow"
-                            x1="0"
-                            y1="0"
-                            x2="0"
-                            y2="1"
-                          >
-                            <Stop offset="0" stopColor="rgba(15,23,42,0.35)" />
-                            <Stop offset="1" stopColor="rgba(15,23,42,0)" />
-                          </LinearGradient>
-                        </Defs>
-                        <Circle
-                          cx="84"
-                          cy="140"
-                          r="26"
-                          fill="url(#baseShadow)"
-                        />
-                        <Polygon
-                          points="22,18 34,28 134,28 122,18"
-                          fill="url(#top)"
-                        />
-                        <Polygon
-                          points="122,18 134,28 134,146 122,136"
-                          fill="url(#side)"
-                        />
-                        <Rect
-                          x="22"
-                          y="18"
-                          width="100"
-                          height="118"
-                          rx="12"
-                          fill="url(#front)"
-                        />
-                        <Rect
-                          x="25"
-                          y="21"
-                          width="94"
-                          height="112"
-                          rx="10"
-                          fill="none"
-                          stroke="url(#edge)"
-                        />
-                        <Rect
-                          x="58"
-                          y="54"
-                          width="46"
-                          height="46"
-                          rx="7"
-                          fill="#e9eef5"
-                          stroke="#cbd5e1"
-                        />
-                        <Circle
-                          cx="81"
-                          cy="77"
-                          r="18.5"
-                          fill="url(#dome)"
-                          stroke="#b6c2d1"
-                        />
-                        <Circle
-                          cx="75"
-                          cy="70"
-                          r="6"
-                          fill="rgba(255,255,255,0.7)"
-                        />
-                        <Rect
-                          x="26"
-                          y="20"
-                          width="86"
-                          height="30"
-                          rx="9"
-                          fill="url(#gloss)"
-                        />
-                        <Circle cx="74" cy="74" r="2" fill="#b6c2d1" />
-                        <Circle cx="81" cy="72" r="2" fill="#b6c2d1" />
-                        <Circle cx="88" cy="74" r="2" fill="#b6c2d1" />
-                        <Circle cx="74" cy="81" r="2" fill="#b6c2d1" />
-                        <Circle cx="81" cy="83" r="2" fill="#b6c2d1" />
-                        <Circle cx="88" cy="81" r="2" fill="#b6c2d1" />
-                      </Svg>
-                    </Animated.View>
-                  </View>
-                  <Text style={styles.sheetText}>
-                    Sensor {pendingSensor} is attached to this hub. You can
-                    remove it if needed.
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.dangerButton}
-                    onPress={() => detachSensor()}
-                  >
-                    <Text style={styles.dangerButtonText}>Remove Sensor</Text>
-                  </TouchableOpacity>
-                </>
-              )}
+              <SensorPairingSheetContent
+                step={sensorStep}
+                sensorMac={pendingSensor}
+                attachInFlight={attachInFlight}
+                rotation={rotation}
+                promptTitle="Motion Sensor Found"
+                attachedTitle="Sensor Attached"
+                deviceLabel="sensor"
+                onClose={closeSheet}
+                onIgnore={ignoreSensor}
+                onAttach={attachSensor}
+                onRemove={() => detachSensor()}
+              />
             </View>
           </Animated.View>
         </View>
       </Modal>
+
+      <Modal
+        visible={showIrModuleModal}
+        transparent
+        animationType="slide"
+        onRequestClose={closeSheet}
+      >
+        <View style={styles.sheetOverlay}>
+          <Animated.View
+            style={[
+              styles.sheet,
+              { transform: [{ translateY: sheetTranslateY }] },
+            ]}
+            {...sheetPanResponder.panHandlers}
+          >
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetContent}>
+              <SensorPairingSheetContent
+                step={irStep}
+                sensorMac={pendingIrModule}
+                attachInFlight={irAttachInFlight}
+                rotation={rotation}
+                promptTitle={
+                  availableIrModules.length > 1
+                    ? "New AC Modules Found"
+                    : "New AC Module Found"
+                }
+                attachedTitle="AC Module Attached"
+                deviceLabel="AC module"
+                attachLabel="Link With Hub"
+                attachingLabel="Linking..."
+                removeLabel="Remove AC Module"
+                onClose={closeSheet}
+                onIgnore={ignoreIrModule}
+                onAttach={attachIrModule}
+                onRemove={closeSheet}
+              />
+            </View>
+          </Animated.View>
+        </View>
+      </Modal>
+
+      <AcControlModal
+        visible={showAcControlModal}
+        title={
+          activeAcDeviceId != null
+            ? (devices.find((entry) => entry.id === activeAcDeviceId)?.name ??
+              "AC Control")
+            : "AC Control"
+        }
+        value={acControlDraft}
+        busy={acCommandBusy}
+        onClose={() => setShowAcControlModal(false)}
+        onChange={setAcControlDraft}
+        onCommit={commitAcControl}
+      />
+
+      <IrWidgetSetupModal
+        visible={showIrWidgetSetupModal}
+        title={
+          irSetupMode === "widget"
+            ? selectedIrWidgetBinding
+              ? `Edit Widget • ${selectedIrWidgetBinding.display_name}`
+              : "Add New Widget"
+            : selectedIrSetupDevice
+            ? `Configure IR Widget • ${pinConfigs[selectedIrSetupDevice.id]?.name?.trim() || selectedIrSetupDevice.name}`
+            : "Configure IR Widget"
+        }
+        deviceTypes={irDeviceTypes.filter((deviceType) =>
+          irSetupMode === "widget" ? deviceType !== "AC" : deviceType === "AC",
+        )}
+        brands={irBrands}
+        models={irModels}
+        selectedDeviceType={selectedIrDeviceType}
+        selectedBrand={selectedIrBrand}
+        selectedModelId={selectedIrModelId}
+        confirmLabel={
+          irSetupMode === "widget"
+            ? selectedIrWidgetBinding
+              ? "Update Widget"
+              : "Add Widget"
+            : "Save AC Config"
+        }
+        busy={irWidgetSetupBusy}
+        onClose={closeIrWidgetSetup}
+        onSelectDeviceType={(value) => {
+          setSelectedIrDeviceType(value);
+          setSelectedIrBrand(null);
+          setSelectedIrModelId(null);
+          setIrModels([]);
+        }}
+        onSelectBrand={(value) => {
+          setSelectedIrBrand(value);
+          setSelectedIrModelId(null);
+        }}
+        onSelectModel={setSelectedIrModelId}
+        onContinue={() => {
+          void saveIrWidgetSetup();
+        }}
+      />
+
+      <IrModuleConfigModal
+        visible={showIrModuleConfigModal}
+        attachedIrModules={attachedIrModules}
+        acDevices={devices.filter((device) => device.device_type === "ac")}
+        irBindings={irWidgetBindings}
+        pinConfigs={pinConfigs}
+        busy={irWidgetSetupBusy}
+        onClose={() => setShowIrModuleConfigModal(false)}
+        onDetectModule={() => {
+          void requestIrModuleRefresh();
+        }}
+        onDetachModule={(mac) => {
+          void detachIrModule(mac);
+        }}
+        onConfigureAc={(device) => {
+          void openIrWidgetSetup(device);
+        }}
+        onAddWidget={() => {
+          void openIrWidgetSetupForWidget(null);
+        }}
+        onEditWidget={(binding) => {
+          void openIrWidgetSetupForWidget(binding);
+        }}
+      />
+
+      <RgbLightControlModal
+        visible={showRgbWidgetModal}
+        title={
+          widgetBindings.find((binding) => binding.binding_id === activeRgbBindingId)
+            ?.display_name || "RGB Light Widget"
+        }
+        colors={RGB_WIDGET_COLORS}
+        selectedColorKey={rgbWidgetDraft.colorKey}
+        brightness={rgbWidgetDraft.brightness}
+        busy={rgbWidgetBusy}
+        onClose={() => setShowRgbWidgetModal(false)}
+        onSelectColor={(key) =>
+          setRgbWidgetDraft((prev) => ({ ...prev, colorKey: key }))
+        }
+        onBrightnessChange={(value) =>
+          setRgbWidgetDraft((prev) => ({
+            ...prev,
+            brightness: Math.max(0, Math.min(100, Math.round(value))),
+          }))
+        }
+        onApply={() => {
+          void applyRgbWidget();
+        }}
+      />
 
       <Modal
         visible={showSettings}
@@ -3657,6 +4789,21 @@ export default function SwitchboardScreen({ route, navigation }: Props) {
                   </TouchableOpacity>
                 </View>
               ))}
+            </View>
+
+            <View style={styles.settingsCard}>
+              <View style={styles.settingsRow}>
+                <Text style={styles.sectionLabel}>IR Module Config</Text>
+                <TouchableOpacity
+                  style={styles.refreshBtn}
+                  onPress={openIrModuleConfig}
+                >
+                  <Text style={styles.refreshBtnText}>Open</Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.pinRulesHint}>
+                Manage IR module settings, AC brand/model, and synced widgets from a dedicated screen.
+              </Text>
             </View>
 
             <TouchableOpacity
@@ -5340,6 +6487,11 @@ const styles = StyleSheet.create({
   deviceNameActive: {
     color: "#fff",
   },
+  deviceMetaText: {
+    marginTop: 4,
+    fontSize: 12,
+    color: "#94a3b8",
+  },
   deviceStatus: {
     width: 10,
     height: 10,
@@ -5531,6 +6683,11 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 8,
   },
+  settingsInlineActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
   refreshBtn: {
     paddingVertical: 6,
     paddingHorizontal: 10,
@@ -5663,6 +6820,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+  },
+  irWidgetRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
   },
   sensorMac: {
     color: "#e2e8f0",

@@ -16,7 +16,7 @@ import {
   State,
   Subscription,
 } from "react-native-ble-plx";
-import { DATA_CHAR_UUID, ESP_SERVICE_UUID as DEFAULT_ESP_SERVICE_UUID, STANDARD_SERVICE_UUIDS } from "../constants";
+import { DATA_CHAR_UUID, DATA_CHAR_UUIDS, ESP_SERVICE_UUID as DEFAULT_ESP_SERVICE_UUID, STANDARD_SERVICE_UUIDS } from "../constants";
 import { getScanId } from "./bleIds";
 
 const Buffer = require("buffer").Buffer;
@@ -318,6 +318,26 @@ class BLEManagerService {
     return connected;
   }
 
+  private async resolveDataCharacteristicUUID(
+    device: Device,
+    serviceUUID: string,
+    preferredUUID?: string,
+  ): Promise<string> {
+    const chars = await device.characteristicsForService(serviceUUID);
+    const supported = new Set(DATA_CHAR_UUIDS.map((uuid) => uuid.toLowerCase()));
+    const preferred = String(preferredUUID || "").trim().toLowerCase();
+
+    if (preferred) {
+      const exact = chars.find((c) => c.uuid.toLowerCase() === preferred);
+      if (exact) return exact.uuid;
+    }
+
+    const matched = chars.find((c) => supported.has(c.uuid.toLowerCase()));
+    if (matched) return matched.uuid;
+
+    throw new Error("Supported data characteristic not found");
+  }
+
   /**
    * Send an arbitrary UTF-8 string to the device.
    * Resolves once the write is acknowledged.
@@ -329,12 +349,17 @@ class BLEManagerService {
   ): Promise<void> {
     try {
       const base64 = Buffer.from(data, "utf8").toString("base64");
-      const res = await device.writeCharacteristicWithResponseForService(
+      const charUUID = await this.resolveDataCharacteristicUUID(
+        device,
         serviceUUID,
         DATA_CHAR_UUID,
+      );
+      await device.writeCharacteristicWithResponseForService(
+        serviceUUID,
+        charUUID,
         base64,
       );
-    } catch (err) {}
+    } catch {}
   }
 
   /**
@@ -347,22 +372,44 @@ class BLEManagerService {
     onReceive: (data: string) => void,
     onError?: (error: Error) => void,
   ) {
-    return device.monitorCharacteristicForService(
-      serviceUUID,
-      DATA_CHAR_UUID,
-      (error, char: Characteristic | null) => {
-        if (error) {
-          onError?.(error);
-          return;
-        }
+    let innerSubscription: Subscription | null = null;
+    let cancelled = false;
 
-        if (char?.value) {
-          // decode Base64 → UTF8 string
-          const received = Buffer.from(char.value, "base64").toString("utf8");
-          onReceive(received);
-        }
+    (async () => {
+      try {
+        const charUUID = await this.resolveDataCharacteristicUUID(
+          device,
+          serviceUUID,
+          DATA_CHAR_UUID,
+        );
+        if (cancelled) return;
+
+        innerSubscription = device.monitorCharacteristicForService(
+          serviceUUID,
+          charUUID,
+          (error, char: Characteristic | null) => {
+            if (error) {
+              onError?.(error);
+              return;
+            }
+
+            if (char?.value) {
+              const received = Buffer.from(char.value, "base64").toString("utf8");
+              onReceive(received);
+            }
+          },
+        );
+      } catch (error) {
+        onError?.(error as Error);
+      }
+    })();
+
+    return {
+      remove: () => {
+        cancelled = true;
+        innerSubscription?.remove();
       },
-    );
+    };
   }
 
   async safeWrite({
@@ -391,22 +438,27 @@ class BLEManagerService {
     }
 
     // 4) Confirm the characteristic is writable the way you intend
+    const resolvedCharUUID = await this.resolveDataCharacteristicUUID(
+      device,
+      serviceUUID,
+      charUUID,
+    );
     const chars = await device.characteristicsForService(serviceUUID);
     const target = chars.find(
-      (c) => c.uuid.toLowerCase() === charUUID.toLowerCase(),
+      (c) => c.uuid.toLowerCase() === resolvedCharUUID.toLowerCase(),
     );
     if (!target) throw new Error("Characteristic not found");
 
     if (target.isWritableWithResponse) {
       return device.writeCharacteristicWithResponseForService(
         serviceUUID,
-        charUUID,
+        resolvedCharUUID,
         base64Payload,
       );
     } else if (target.isWritableWithoutResponse) {
       return device.writeCharacteristicWithoutResponseForService(
         serviceUUID,
-        charUUID,
+        resolvedCharUUID,
         base64Payload,
       );
     } else {

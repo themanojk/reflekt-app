@@ -1,4 +1,4 @@
-import { Bath, Bed, Coffee, Fan, Hop as Home, Lamp, Lightbulb, Plug, Sofa, Tv, Utensils } from 'lucide-react-native';
+import { Bath, Bed, Coffee, Fan, Hop as Home, Lamp, Lightbulb, Plug, Snowflake, Sofa, Tv, Utensils } from 'lucide-react-native';
 
 export const ESP_SERVICE_UUID = [
   "3f542309-50a0-4edb-aa41-c4d068dc72f5",
@@ -6,7 +6,13 @@ export const ESP_SERVICE_UUID = [
   "12345678-1234-1234-1234-1234567890ab",
 ];
 
-export const DATA_CHAR_UUID = '39861dbb-c278-4e78-a542-17468828adb9';
+export const DATA_CHAR_UUIDS = [
+  '39861dbb-c278-4e78-a542-17468828adb9',
+  '39861dbb-c278-4e78-a542-17468828adba',
+  '39861dbb-c278-4e78-a542-17468828adbb',
+];
+
+export const DATA_CHAR_UUID = DATA_CHAR_UUIDS[0];
 
 
 export const STANDARD_SERVICE_UUIDS = [
@@ -28,5 +34,6 @@ export const ROOM_ICONS: { [key: string]: any } = {
   'dimmer': Lightbulb,
   'rgb_led': Lightbulb,
   'fan': Fan,
-  'outlet': Plug
+  'outlet': Plug,
+  'ac': Snowflake,
 };

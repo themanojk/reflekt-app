@@ -265,18 +265,6 @@ export default function AddSwitchboardAdminScreen({ navigation }: any) {
         return;
       }
 
-      void bleManager
-        .connectSafely(device.id, {
-          retries: 2,
-          connectTimeoutMs: 6000,
-          autoConnect: false,
-          skipScan: true,
-          scanTimeoutMs: 2500,
-        })
-        .catch((error) => {
-          console.warn("[ADMIN_SCAN] warm BLE connect failed", error);
-        });
-
       navigation.navigate("Switchboard", {
         switchboardName:
           details?.title || row.name || `Device ${normalizedMac.slice(-5)}`,
